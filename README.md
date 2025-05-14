@@ -51,17 +51,12 @@ curl -sSL https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/installer.s
 
 ### 💻 Usage
 
-1. **Immediate Run**:
+1. **Interactive Mode**:
 
    ```bash
-   dnsniper.sh --run
+   dnsniper
    ```
-2. **Interactive Mode**:
-
-   ```bash
-   dnsniper.sh
-   ```
-3. **Menu Options**:
+2. **Menu Options**:
 
    * Run Now, Update Defaults, Set Schedule, Max IPs
    * Add/Remove Domain, View Status, Clear Rules, Uninstall
