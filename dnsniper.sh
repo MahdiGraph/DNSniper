@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 1.2.0
+# Version: 1.3.0
 
 # Strict error handling mode
 set -o errexit
@@ -15,6 +15,7 @@ YELLOW='\e[33m'
 BLUE='\e[34m'
 CYAN='\e[36m'
 WHITE='\e[97m'
+MAGENTA='\e[35m'
 BOLD='\e[1m'
 DIM='\e[2m'
 NC='\e[0m'
@@ -45,7 +46,7 @@ IPT_CHAIN="DNSniper"
 IPT6_CHAIN="DNSniper6"
 
 # Version
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 # Dependencies
 DEPENDENCIES=(iptables ip6tables curl dig sqlite3 crontab)
@@ -74,17 +75,15 @@ echo_safe() {
 show_banner() {
     if [[ -t 1 ]]; then  # Only show banner in interactive terminal
         clear
-        echo -e "${BLUE}${BOLD}
-$WHITE╔$BLUE═══════════════════════════════════════════$WHITE╗
-$WHITE║$BLUE  ____  _   _ ____       _                 $WHITE║
-$WHITE║$BLUE |  _ \\| \\ | / ___|_ __ (_)_ __   ___ _ __ $WHITE║
-$WHITE║$BLUE | | | |  \\| \\___ \\ '_ \\| | '_ \\ / _ \\ '__|$WHITE║
-$WHITE║$BLUE | |_| | |\\  |___) | | | | | |_) |  __/ |  $WHITE║
-$WHITE║$BLUE |____/|_| \\_|____/|_| |_|_| .__/ \\___|_|  $WHITE║
-$WHITE║$BLUE                           |_|              $WHITE║
-$WHITE║$GREEN${BOLD} Domain-based Network Threat Mitigation v$VERSION $WHITE║
-$WHITE╚$BLUE═══════════════════════════════════════════$WHITE╝${NC}
-"
+        echo -e "${BLUE}${BOLD}"
+        echo -e "    ____  _   _ ____       _                 "
+        echo -e "   |  _ \\| \\ | / ___|_ __ (_)_ __   ___ _ __ "
+        echo -e "   | | | |  \\| \\___ \\ '_ \\| | '_ \\ / _ \\ '__|"
+        echo -e "   | |_| | |\\  |___) | | | | | |_) |  __/ |  "
+        echo -e "   |____/|_| \\_|____/|_| |_|_| .__/ \\___|_|  "
+        echo -e "                             |_|              "
+        echo -e "${GREEN}${BOLD} Domain-based Network Threat Mitigation v$VERSION ${NC}"
+        echo -e ""
     fi
 }
 
@@ -714,7 +713,27 @@ unblock_ip() {
     return $((1 - success))
 }
 
-### 10) Resolve domains and apply iptables/ip6tables rules
+### 10) Count actual blocked IPs (not just rules)
+count_blocked_ips() {
+    local v4_rules v6_rules unique_ips
+    local ipv4_list ipv6_list
+    
+    # Get unique IPs by extracting from actual rules
+    ipv4_list=$(iptables-save 2>/dev/null | grep -E "$IPT_CHAIN.*DROP" | grep -o -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u)
+    ipv6_list=$(ip6tables-save 2>/dev/null | grep -E "$IPT6_CHAIN.*DROP" | grep -o -E '([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}' | sort -u)
+    
+    # Count unique IPs
+    v4_rules=$(echo "$ipv4_list" | wc -l)
+    v6_rules=$(echo "$ipv6_list" | wc -l)
+    
+    # Return total (accounting for empty results)
+    if [[ -z "$ipv4_list" ]]; then v4_rules=0; fi
+    if [[ -z "$ipv6_list" ]]; then v6_rules=0; fi
+    
+    echo $((v4_rules + v6_rules))
+}
+
+### 11) Resolve domains and apply iptables/ip6tables rules
 resolve_block() {
     log "INFO" "Starting domain resolution and blocking" "verbose"
     
@@ -871,21 +890,23 @@ resolve_block() {
     return 0
 }
 
-### 11) Interactive menu functions
-
+### 12) Interactive menu functions
 # --- Settings submenu ---
 settings_menu() {
     while true; do
         show_banner
-        echo_safe "${BLUE}${BOLD}===== DNSniper Settings =====${NC}\n"
-        echo_safe "${YELLOW}1)${NC} Set Schedule"
-        echo_safe "${YELLOW}2)${NC} Set Max IPs Per Domain"
-        echo_safe "${YELLOW}3)${NC} Set Timeout"
-        echo_safe "${YELLOW}4)${NC} Set Update URL"
-        echo_safe "${YELLOW}5)${NC} Toggle Auto-Update"
-        echo_safe "${YELLOW}0)${NC} Back to Main Menu"
+        echo_safe "${BLUE}${BOLD}SETTINGS${NC}"
+        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+        echo_safe "${YELLOW}1.${NC} Set Schedule"
+        echo_safe "${YELLOW}2.${NC} Set Max IPs Per Domain"
+        echo_safe "${YELLOW}3.${NC} Set Timeout"
+        echo_safe "${YELLOW}4.${NC} Set Update URL"
+        echo_safe "${YELLOW}5.${NC} Toggle Auto-Update"
+        echo_safe "${YELLOW}6.${NC} Import/Export"
+        echo_safe "${YELLOW}0.${NC} Back to Main Menu"
+        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
         
-        read -rp "Select (0-5): " choice
+        read -rp "Select option: " choice
         
         case "$choice" in
             1) set_schedule ;;
@@ -893,8 +914,9 @@ settings_menu() {
             3) set_timeout ;;
             4) set_update_url ;;
             5) toggle_auto_update ;;
+            6) import_export_menu ;;
             0) return ;;
-            *) echo_safe "${RED}Invalid selection. Please choose 0-5.${NC}" ;;
+            *) echo_safe "${RED}Invalid selection. Please choose 0-6.${NC}" ;;
         esac
         
         read -rp "Press Enter to continue..."
@@ -1031,26 +1053,32 @@ toggle_auto_update() {
 import_export_menu() {
     while true; do
         show_banner
-        echo_safe "${BLUE}${BOLD}===== Import/Export =====${NC}\n"
-        echo_safe "${YELLOW}1)${NC} Import Domains List"
-        echo_safe "${YELLOW}2)${NC} Export Domains List"
-        echo_safe "${YELLOW}3)${NC} Import IP List"
-        echo_safe "${YELLOW}4)${NC} Export IP List"
-        echo_safe "${YELLOW}5)${NC} Export All Config"
-        echo_safe "${YELLOW}6)${NC} Export Firewall Rules"
-        echo_safe "${YELLOW}0)${NC} Back to Main Menu"
+        echo_safe "${BLUE}${BOLD}IMPORT / EXPORT${NC}"
+        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+        echo_safe "${YELLOW}1.${NC} Import Domains"
+        echo_safe "${YELLOW}2.${NC} Export Domains"
+        echo_safe "${YELLOW}3.${NC} Import IP Addresses"
+        echo_safe "${YELLOW}4.${NC} Export IP Addresses"
+        echo_safe "${YELLOW}5.${NC} Export Configuration"
+        echo_safe "${YELLOW}6.${NC} Export Firewall Rules"
+        echo_safe "${YELLOW}7.${NC} Import Complete Backup"
+        echo_safe "${YELLOW}8.${NC} Export Complete Backup"
+        echo_safe "${YELLOW}0.${NC} Back to Settings"
+        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
         
-        read -rp "Select (0-6): " choice
+        read -rp "Select option: " choice
         
         case "$choice" in
             1) import_domains ;;
             2) export_domains ;;
             3) import_ips ;;
             4) export_ips ;;
-            5) export_all ;;
+            5) export_config ;;
             6) export_firewall_rules ;;
+            7) import_all ;;
+            8) export_all ;;
             0) return ;;
-            *) echo_safe "${RED}Invalid selection. Please choose 0-6.${NC}" ;;
+            *) echo_safe "${RED}Invalid selection. Please choose 0-8.${NC}" ;;
         esac
         
         read -rp "Press Enter to continue..."
@@ -1059,7 +1087,7 @@ import_export_menu() {
 
 # Import domains
 import_domains() {
-    echo_safe "${BOLD}=== Import Domains List ===${NC}"
+    echo_safe "${BOLD}=== Import Domains ===${NC}"
     read -rp "Enter path to domains file: " file
     
     if [[ -f "$file" ]]; then
@@ -1088,7 +1116,7 @@ import_domains() {
 
 # Export domains
 export_domains() {
-    echo_safe "${BOLD}=== Export Domains List ===${NC}"
+    echo_safe "${BOLD}=== Export Domains ===${NC}"
     read -rp "Enter export path: " file
     
     if [[ -n "$file" ]]; then
@@ -1117,7 +1145,7 @@ export_domains() {
 
 # Import IPs
 import_ips() {
-    echo_safe "${BOLD}=== Import IP List ===${NC}"
+    echo_safe "${BOLD}=== Import IP Addresses ===${NC}"
     read -rp "Enter path to IP list file: " file
     
     if [[ -f "$file" ]]; then
@@ -1154,7 +1182,7 @@ import_ips() {
 
 # Export IPs
 export_ips() {
-    echo_safe "${BOLD}=== Export IP List ===${NC}"
+    echo_safe "${BOLD}=== Export IP Addresses ===${NC}"
     read -rp "Enter export path: " file
     
     if [[ -n "$file" ]]; then
@@ -1181,6 +1209,27 @@ export_ips() {
     fi
 }
 
+# Export config
+export_config() {
+    echo_safe "${BOLD}=== Export Configuration ===${NC}"
+    read -rp "Enter export path: " file
+    
+    if [[ -n "$file" ]]; then
+        # Export config file with header
+        {
+            echo "# DNSniper Configuration Export"
+            echo "# Date: $(date)"
+            echo ""
+            cat "$CONFIG_FILE"
+        } > "$file"
+        
+        echo_safe "${GREEN}Configuration exported to $file.${NC}"
+        log "INFO" "Configuration exported to file: $file" "verbose"
+    else
+        echo_safe "${RED}Invalid export path.${NC}"
+    fi
+}
+
 # Export firewall rules
 export_firewall_rules() {
     echo_safe "${BOLD}=== Export Firewall Rules ===${NC}"
@@ -1202,14 +1251,64 @@ export_firewall_rules() {
     fi
 }
 
-# Export all config
+# Import all (complete backup)
+import_all() {
+    echo_safe "${BOLD}=== Import Complete Backup ===${NC}"
+    read -rp "Enter backup directory: " dir
+    
+    if [[ -n "$dir" && -d "$dir" ]]; then
+        # Check if backup files exist
+        if [[ -f "$dir/domains.txt" || -f "$dir/ips.txt" || -f "$dir/config.conf" ]]; then
+            
+            # Import domains if exists
+            if [[ -f "$dir/domains.txt" ]]; then
+                cp "$dir/domains.txt" "$ADD_FILE.tmp"
+                mv "$ADD_FILE.tmp" "$ADD_FILE"
+                echo_safe "${GREEN}Imported domains from backup.${NC}"
+            fi
+            
+            # Import IPs if exists
+            if [[ -f "$dir/ips.txt" ]]; then
+                cp "$dir/ips.txt" "$IP_ADD_FILE.tmp"
+                mv "$IP_ADD_FILE.tmp" "$IP_ADD_FILE"
+                echo_safe "${GREEN}Imported IPs from backup.${NC}"
+            fi
+            
+            # Import config if exists
+            if [[ -f "$dir/config.conf" ]]; then
+                cp "$dir/config.conf" "$CONFIG_FILE.tmp"
+                mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+                echo_safe "${GREEN}Imported configuration from backup.${NC}"
+            fi
+            
+            # Import database if exists
+            if [[ -f "$dir/history.db" ]]; then
+                cp "$dir/history.db" "$DB_FILE.tmp"
+                mv "$DB_FILE.tmp" "$DB_FILE"
+                echo_safe "${GREEN}Imported history database from backup.${NC}"
+            fi
+            
+            # Re-initialize environment with imported settings
+            ensure_environment
+            
+            echo_safe "${GREEN}Import complete!${NC}"
+            log "INFO" "Imported complete backup from: $dir" "verbose"
+        else
+            echo_safe "${RED}No valid backup files found in directory.${NC}"
+        fi
+    else
+        echo_safe "${RED}Invalid directory.${NC}"
+    fi
+}
+
+# Export all (complete backup)
 export_all() {
-    echo_safe "${BOLD}=== Export All Configuration ===${NC}"
+    echo_safe "${BOLD}=== Export Complete Backup ===${NC}"
     read -rp "Enter export directory: " dir
     
     if [[ -n "$dir" && -d "$dir" ]]; then
         # Export directory confirmed
-        local export_dir="${dir%/}/dnsniper-export-$(date +%Y%m%d-%H%M%S)"
+        local export_dir="${dir%/}/dnsniper-backup-$(date +%Y%m%d-%H%M%S)"
         if ! mkdir -p "$export_dir"; then
             echo_safe "${RED}Cannot create export directory.${NC}"
             return 1
@@ -1257,8 +1356,24 @@ export_all() {
             cp "$DB_FILE" "$export_dir/history.db" 2>/dev/null || true
         fi
         
-        echo_safe "${GREEN}All configuration exported to $export_dir.${NC}"
-        log "INFO" "All configuration exported to: $export_dir" "verbose"
+        # Create README
+        {
+            echo "DNSniper Backup"
+            echo "Date: $(date)"
+            echo "Version: $VERSION"
+            echo ""
+            echo "This backup contains:"
+            echo "- Blocked domains"
+            echo "- Blocked IP addresses"
+            echo "- Configuration settings"
+            echo "- Firewall rules"
+            echo "- History database"
+            echo ""
+            echo "To restore, use the 'Import Complete Backup' feature in DNSniper."
+        } > "$export_dir/README.txt"
+        
+        echo_safe "${GREEN}Complete backup exported to: $export_dir${NC}"
+        log "INFO" "Complete backup exported to: $export_dir" "verbose"
     else
         echo_safe "${RED}Invalid directory.${NC}"
     fi
@@ -1381,7 +1496,7 @@ unblock_domain() {
     fi
     
     # Display numbered list of domains
-    echo_safe "${BLUE}Current domains:${NC}"
+    echo_safe "${BLUE}Current blocked domains:${NC}"
     local i=1
     for d in "${domains[@]}"; do
         printf "%3d) %s\n" $i "$d"
@@ -1506,7 +1621,7 @@ unblock_custom_ip() {
     fi
     
     # Display numbered list of IPs
-    echo_safe "${BLUE}Current custom IPs:${NC}"
+    echo_safe "${BLUE}Current blocked IPs:${NC}"
     local i=1
     for ip in "${custom_ips[@]}"; do
         printf "%3d) %s\n" $i "$ip"
@@ -1559,18 +1674,6 @@ unblock_custom_ip() {
     return 0
 }
 
-# ANSI formatting for status display tables
-print_table_header() {
-    local title="$1"
-    echo -e "\n${BOLD}${BLUE}┌───────────────────────────────────────────┐${NC}"
-    echo -e "${BOLD}${BLUE}│${WHITE} %-40s ${BLUE}│${NC}" "$title"
-    echo -e "${BOLD}${BLUE}├───────────────────────────────────────────┤${NC}"
-}
-
-print_table_footer() {
-    echo -e "${BOLD}${BLUE}└───────────────────────────────────────────┘${NC}"
-}
-
 # Show status
 display_status() {
     clear
@@ -1615,94 +1718,92 @@ display_status() {
     local schedule_text="$sched"
     [[ "$sched" == "# DNSniper disabled" ]] && schedule_text="${RED}Disabled${NC}"
     
-    # Count active rules
-    local v4_rules=0
-    local v6_rules=0
-    
-    if command -v iptables-save &>/dev/null; then
-        v4_rules=$(iptables-save 2>/dev/null | grep -c "$IPT_CHAIN" || echo 0)
-        v6_rules=$(ip6tables-save 2>/dev/null | grep -c "$IPT6_CHAIN" || echo 0)
-    fi
+    # Count actual blocked IPs
+    local actual_blocked_ips=$(count_blocked_ips)
     
     # Display summary counts
-    echo -e "\n${BOLD}${WHITE} DNSniper Status Summary${NC}\n"
-    echo -e "${BOLD}   Blocked Domains:${NC} ${GREEN}${#domains[@]}${NC}"
-    echo -e "${BOLD}   Blocked IPs:${NC}    ${RED}$((v4_rules + v6_rules))${NC}"
-    echo -e "${BOLD}   Custom IPs:${NC}      ${YELLOW}${#custom_ips[@]}${NC}"
+    echo_safe "${CYAN}${BOLD}SYSTEM STATUS${NC}"
+    echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+    echo_safe "${BOLD}Blocked Domains:${NC}   ${GREEN}${#domains[@]}${NC}"
+    echo_safe "${BOLD}Blocked IPs:${NC}       ${RED}$actual_blocked_ips${NC}"
+    echo_safe "${BOLD}Custom IPs:${NC}        ${YELLOW}${#custom_ips[@]}${NC}"
     
     # Config section
-    print_table_header "Configuration"
-    echo -e "${BLUE}│${NC} Schedule:       $schedule_text"
-    echo -e "${BLUE}│${NC} Max IPs/domain: ${YELLOW}$max_ips${NC}"
-    echo -e "${BLUE}│${NC} Timeout:        ${YELLOW}$timeout seconds${NC}"
-    echo -e "${BLUE}│${NC} Auto-update:    $auto_update_text"
-    print_table_footer
+    echo_safe ""
+    echo_safe "${CYAN}${BOLD}CONFIGURATION${NC}"
+    echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+    echo_safe "${BOLD}Schedule:${NC}        $schedule_text"
+    echo_safe "${BOLD}Max IPs/domain:${NC}  ${YELLOW}$max_ips${NC}"
+    echo_safe "${BOLD}Timeout:${NC}         ${YELLOW}$timeout seconds${NC}"
+    echo_safe "${BOLD}Auto-update:${NC}     $auto_update_text"
     
-    # Firewall Rules section
-    print_table_header "Firewall Rules"
-    echo -e "${BLUE}│${NC} IPv4 Chain:     ${YELLOW}$IPT_CHAIN${NC}"
-    echo -e "${BLUE}│${NC} IPv6 Chain:     ${YELLOW}$IPT6_CHAIN${NC}"
-    echo -e "${BLUE}│${NC} IPv4 Rules:     ${RED}$v4_rules${NC}"
-    echo -e "${BLUE}│${NC} IPv6 Rules:     ${RED}$v6_rules${NC}"
-    echo -e "${BLUE}│${NC} Persistence:    ${GREEN}$(detect_system)${NC}"
-    print_table_footer
+    # Firewall information
+    echo_safe ""
+    echo_safe "${CYAN}${BOLD}FIREWALL${NC}"
+    echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+    echo_safe "${BOLD}IPv4 Chain:${NC}      ${YELLOW}$IPT_CHAIN${NC}"
+    echo_safe "${BOLD}IPv6 Chain:${NC}      ${YELLOW}$IPT6_CHAIN${NC}"
+    echo_safe "${BOLD}Persistence:${NC}     ${GREEN}$(detect_system)${NC}"
     
-    # Last Run section
-    print_table_header "System Information"
+    # System information
+    echo_safe ""
+    echo_safe "${CYAN}${BOLD}SYSTEM INFO${NC}"
+    echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
     local last_run
     if [[ -f "$LOG_FILE" ]]; then
         last_run=$(stat -c %y "$LOG_FILE" 2>/dev/null || echo "Never")
     else
         last_run="Never"
     fi
-    echo -e "${BLUE}│${NC} Last Run:       ${CYAN}$last_run${NC}"
-    echo -e "${BLUE}│${NC} Version:        ${GREEN}$VERSION${NC}"
-    print_table_footer
+    echo_safe "${BOLD}Last Run:${NC}        ${BLUE}$last_run${NC}"
+    echo_safe "${BOLD}Version:${NC}         ${GREEN}$VERSION${NC}"
     
     # Domains section if exists
     if [[ ${#domains[@]} -gt 0 ]]; then
-        print_table_header "Blocked Domains (Top 10 of ${#domains[@]})"
+        echo_safe ""
+        echo_safe "${CYAN}${BOLD}BLOCKED DOMAINS (TOP 10 OF ${#domains[@]})${NC}"
+        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
         local dom_count=0
         for dom in "${domains[@]}"; do
             # Get most recent IP list
             local esc_dom=$(sql_escape "$dom")
             local ips
             ips=$(sqlite3 -separator ',' "$DB_FILE" \
-                "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
+                "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null || echo "")
             
             if [[ -n "$ips" ]]; then
                 local ip_count=$(echo "$ips" | tr -cd ',' | wc -c)
                 ip_count=$((ip_count + 1))
-                echo -e "${BLUE}│${NC} ${GREEN}$dom${NC} (${YELLOW}$ip_count IPs${NC})"
+                echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs${NC})"
             else
-                echo -e "${BLUE}│${NC} ${GREEN}$dom${NC} (${RED}No IPs resolved${NC})"
+                echo_safe "${GREEN}$dom${NC} (${RED}No IPs resolved yet${NC})"
             fi
             
             dom_count=$((dom_count + 1))
             [[ $dom_count -ge 10 && ${#domains[@]} -gt 10 ]] && { 
-                echo -e "${BLUE}│${NC} ${YELLOW}... and $((${#domains[@]} - 10)) more domains${NC}"; 
+                echo_safe "${YELLOW}... and $((${#domains[@]} - 10)) more domains${NC}"; 
                 break; 
             }
         done
-        print_table_footer
     fi
     
     # Custom IPs section if exists
     if [[ ${#custom_ips[@]} -gt 0 ]]; then
-        print_table_header "Custom Blocked IPs (Top 10 of ${#custom_ips[@]})"
+        echo_safe ""
+        echo_safe "${CYAN}${BOLD}BLOCKED IPs (TOP 10 OF ${#custom_ips[@]})${NC}"
+        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
         local ip_count=0
         for ip in "${custom_ips[@]}"; do
-            echo -e "${BLUE}│${NC} ${GREEN}$ip${NC}"
+            echo_safe "${GREEN}$ip${NC}"
             ip_count=$((ip_count + 1))
             [[ $ip_count -ge 10 && ${#custom_ips[@]} -gt 10 ]] && { 
-                echo -e "${BLUE}│${NC} ${YELLOW}... and $((${#custom_ips[@]} - 10)) more IPs${NC}"; 
+                echo_safe "${YELLOW}... and $((${#custom_ips[@]} - 10)) more IPs${NC}"; 
                 break; 
             }
         done
-        print_table_footer
     fi
     
-    echo -e "\n${DIM}Press Enter to return to the menu...${NC}"
+    echo_safe ""
     
     return 0
 }
@@ -1798,62 +1899,64 @@ uninstall() {
 show_help() {
     show_banner
     
-    echo -e "\n${BOLD}=== DNSniper v$VERSION Help ===${NC}"
-    echo -e "${BOLD}Usage:${NC} dnsniper [options]"
-    echo -e "\n${BOLD}Options:${NC}"
-    echo -e "  ${YELLOW}--run${NC}        Run DNSniper once (non-interactive)"
-    echo -e "  ${YELLOW}--update${NC}     Update default domains list"
-    echo -e "  ${YELLOW}--status${NC}     Display status"
-    echo -e "  ${YELLOW}--block${NC} DOMAIN Add a domain to block list"
-    echo -e "  ${YELLOW}--unblock${NC} DOMAIN Remove a domain from block list"
-    echo -e "  ${YELLOW}--block-ip${NC} IP Add an IP to block list"
-    echo -e "  ${YELLOW}--unblock-ip${NC} IP Remove an IP from block list"
-    echo -e "  ${YELLOW}--version${NC}    Show version"
-    echo -e "  ${YELLOW}--help${NC}       Show this help\n"
-    echo -e "${BOLD}Interactive Menu:${NC}"
-    echo -e "  Run without arguments to access the interactive menu"
-    echo -e "  which provides all functionality, configuration options,"
-    echo -e "  and maintenance features.\n"
+    echo_safe "${BOLD}=== DNSniper v$VERSION Help ===${NC}"
+    echo_safe "${BOLD}Usage:${NC} dnsniper [options]"
+    echo_safe ""
+    echo_safe "${BOLD}Options:${NC}"
+    echo_safe "  ${YELLOW}--run${NC}        Run DNSniper once (non-interactive)"
+    echo_safe "  ${YELLOW}--update${NC}     Update default domains list"
+    echo_safe "  ${YELLOW}--status${NC}     Display status"
+    echo_safe "  ${YELLOW}--block${NC} DOMAIN Add a domain to block list"
+    echo_safe "  ${YELLOW}--unblock${NC} DOMAIN Remove a domain from block list"
+    echo_safe "  ${YELLOW}--block-ip${NC} IP Add an IP to block list"
+    echo_safe "  ${YELLOW}--unblock-ip${NC} IP Remove an IP from block list"
+    echo_safe "  ${YELLOW}--version${NC}    Show version"
+    echo_safe "  ${YELLOW}--help${NC}       Show this help"
+    echo_safe ""
+    echo_safe "${BOLD}Interactive Menu:${NC}"
+    echo_safe "  Run without arguments to access the interactive menu"
+    echo_safe "  which provides all functionality, configuration options,"
+    echo_safe "  and maintenance features."
+    echo_safe ""
     
     return 0
 }
 
-### 12) Main menu loop
+### 13) Main menu loop
 main_menu() {
     while true; do
         show_banner
         
-        echo -e "${BLUE}${BOLD}               Main Menu${NC}"
-        echo -e "┌───────────────────────────────────────────┐"
-        echo -e "│ ${YELLOW}1)${NC} Run Now        ${YELLOW}2)${NC} Status           │"
-        echo -e "│ ${YELLOW}3)${NC} Block Domain   ${YELLOW}4)${NC} Unblock Domain    │"
-        echo -e "│ ${YELLOW}5)${NC} Block IP       ${YELLOW}6)${NC} Unblock IP        │"
-        echo -e "│ ${YELLOW}7)${NC} Settings       ${YELLOW}8)${NC} Import/Export     │"
-        echo -e "│ ${YELLOW}9)${NC} Update Lists   ${YELLOW}0)${NC} Exit              │"
-        echo -e "│ ${YELLOW}C)${NC} Clear Rules    ${YELLOW}U)${NC} Uninstall         │"
-        echo -e "└───────────────────────────────────────────┘"
+        echo_safe "${CYAN}${BOLD}MAIN MENU${NC}"
+        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+        echo_safe "${YELLOW}1.${NC} Run Now              ${YELLOW}2.${NC} Status"
+        echo_safe "${YELLOW}3.${NC} Block Domain         ${YELLOW}4.${NC} Unblock Domain"
+        echo_safe "${YELLOW}5.${NC} Block IP Address     ${YELLOW}6.${NC} Unblock IP Address"
+        echo_safe "${YELLOW}7.${NC} Settings             ${YELLOW}8.${NC} Update Lists"
+        echo_safe "${YELLOW}9.${NC} Clear Rules          ${YELLOW}0.${NC} Exit"
+        echo_safe "${YELLOW}U.${NC} Uninstall"
+        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
         
         read -rp "Select an option: " choice
         
         case "$choice" in
             1) clear; resolve_block; read -rp "Press Enter to continue..." ;;
-            2) display_status; read -rp "" ;;
+            2) display_status; read -rp "Press Enter to continue..." ;;
             3) clear; block_domain; read -rp "Press Enter to continue..." ;;
             4) clear; unblock_domain; read -rp "Press Enter to continue..." ;;
             5) clear; block_custom_ip; read -rp "Press Enter to continue..." ;;
             6) clear; unblock_custom_ip; read -rp "Press Enter to continue..." ;;
             7) settings_menu ;;
-            8) import_export_menu ;;
-            9) clear; update_default; read -rp "Press Enter to continue..." ;;
+            8) clear; update_default; read -rp "Press Enter to continue..." ;;
+            9) clear; clear_rules; read -rp "Press Enter to continue..." ;;
             0) echo_safe "${GREEN}Exiting...${NC}"; exit 0 ;;
-            [Cc]) clear; clear_rules; read -rp "Press Enter to continue..." ;;
             [Uu]) clear; uninstall ;;
             *) echo_safe "${RED}Invalid selection. Please choose from the menu.${NC}"; sleep 1 ;;
         esac
     done
 }
 
-### 13) Command line arguments handling
+### 14) Command line arguments handling
 handle_args() {
     case "$1" in
         --run)
@@ -1924,7 +2027,7 @@ handle_args() {
     return 0
 }
 
-### 14) Entry point
+### 15) Entry point
 main() {
     # Create log directory if needed
     if [[ ! -d "$(dirname "$LOG_FILE")" ]]; then

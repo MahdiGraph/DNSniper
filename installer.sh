@@ -8,22 +8,22 @@ RED='\e[31m'
 GREEN='\e[32m'
 YELLOW='\e[33m'
 BLUE='\e[34m'
+CYAN='\e[36m'
+MAGENTA='\e[35m'
 WHITE='\e[97m'
 BOLD='\e[1m'
 NC='\e[0m'
 
 # Display banner
-echo -e "${BLUE}${BOLD}
-$WHITE╔$BLUE═══════════════════════════════════════════$WHITE╗
-$WHITE║$BLUE  ____  _   _ ____       _                 $WHITE║
-$WHITE║$BLUE |  _ \\| \\ | / ___|_ __ (_)_ __   ___ _ __ $WHITE║
-$WHITE║$BLUE | | | |  \\| \\___ \\ '_ \\| | '_ \\ / _ \\ '__|$WHITE║
-$WHITE║$BLUE | |_| | |\\  |___) | | | | | |_) |  __/ |  $WHITE║
-$WHITE║$BLUE |____/|_| \\_|____/|_| |_|_| .__/ \\___|_|  $WHITE║
-$WHITE║$BLUE                           |_|              $WHITE║
-$WHITE║$GREEN${BOLD} Domain-based Network Threat Mitigation    $WHITE║
-$WHITE╚$BLUE═══════════════════════════════════════════$WHITE╝${NC}
-"
+echo -e "${BLUE}${BOLD}"
+echo -e "    ____  _   _ ____       _                 "
+echo -e "   |  _ \\| \\ | / ___|_ __ (_)_ __   ___ _ __ "
+echo -e "   | | | |  \\| \\___ \\ '_ \\| | '_ \\ / _ \\ '__|"
+echo -e "   | |_| | |\\  |___) | | | | | |_) |  __/ |  "
+echo -e "   |____/|_| \\_|____/|_| |_|_| .__/ \\___|_|  "
+echo -e "                             |_|              "
+echo -e "${GREEN}${BOLD} Domain-based Network Threat Mitigation v1.3.0 ${NC}"
+echo -e ""
 
 # Paths
 BASE_DIR="/etc/dnsniper"
@@ -36,7 +36,8 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-echo -e "${BLUE}${BOLD}[1/6]${NC} Detecting system..."
+echo -e "${CYAN}${BOLD}SYSTEM DETECTION${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 
 # Detect package manager and set command variables
 if command -v apt &>/dev/null; then
@@ -72,12 +73,13 @@ echo -e "${GREEN}Detected system: ${PKG_MANAGER}${NC}"
 
 # Install dependencies
 if [[ "$PKG_MANAGER" != "manual" ]]; then
-    echo -e "\n${BLUE}${BOLD}[2/6]${NC} Installing dependencies..."
+    echo -e ""
+    echo -e "${CYAN}${BOLD}DEPENDENCIES${NC}"
+    echo -e "${MAGENTA}───────────────────────────────────────${NC}"
     echo -e "${YELLOW}Updating package lists...${NC}"
     $PKG_UPDATE
     
-    echo -e "${YELLOW}Installing required packages:${NC}"
-    echo -e "${DEPS}"
+    echo -e "${YELLOW}Installing required packages:${NC} ${DEPS}"
     if ! $PKG_INSTALL $DEPS; then
         echo -e "${RED}${BOLD}Error:${NC} Failed to install dependencies."
         echo -e "Please install these packages manually and try again:"
@@ -86,7 +88,9 @@ if [[ "$PKG_MANAGER" != "manual" ]]; then
     fi
     echo -e "${GREEN}Dependencies successfully installed.${NC}"
 else
-    echo -e "\n${BLUE}${BOLD}[2/6]${NC} Checking dependencies..."
+    echo -e ""
+    echo -e "${CYAN}${BOLD}DEPENDENCIES CHECK${NC}"
+    echo -e "${MAGENTA}───────────────────────────────────────${NC}"
     missing=()
     for cmd in iptables ip6tables curl dig sqlite3 crontab; do
         if ! command -v "$cmd" &>/dev/null; then
@@ -103,12 +107,16 @@ else
 fi
 
 # Create directories
-echo -e "\n${BLUE}${BOLD}[3/6]${NC} Setting up directories..."
+echo -e ""
+echo -e "${CYAN}${BOLD}DIRECTORY SETUP${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 mkdir -p "$BASE_DIR"
 echo -e "${GREEN}Directory created: $BASE_DIR${NC}"
 
 # Setup firewall persistence according to system type
-echo -e "\n${BLUE}${BOLD}[4/6]${NC} Configuring firewall persistence..."
+echo -e ""
+echo -e "${CYAN}${BOLD}FIREWALL PERSISTENCE${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 
 # Detect OS type
 if [[ -f /etc/debian_version ]]; then
@@ -159,7 +167,9 @@ EOF
 fi
 
 # Download script
-echo -e "\n${BLUE}${BOLD}[5/6]${NC} Downloading DNSniper script..."
+echo -e ""
+echo -e "${CYAN}${BOLD}SCRIPT DOWNLOAD${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 if curl -sfL --connect-timeout 10 --max-time 30 "https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/dnsniper.sh" -o "$TMP_SCRIPT"; then
     # Verify script health
     if [[ ! -s "$TMP_SCRIPT" ]]; then
@@ -190,7 +200,9 @@ else
 fi
 
 # Initialize DNSniper
-echo -e "\n${BLUE}${BOLD}[6/6]${NC} Initializing DNSniper..."
+echo -e ""
+echo -e "${CYAN}${BOLD}INITIALIZATION${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 if "$BIN_PATH" --version &>/dev/null; then
     echo -e "${GREEN}DNSniper successfully initialized.${NC}"
     
@@ -206,9 +218,14 @@ else
 fi
 
 # Final instructions
-echo -e "\n${GREEN}${BOLD}=== Installation Completed Successfully! ===${NC}"
-echo -e "\n${YELLOW}To start using DNSniper:${NC}"
+echo -e ""
+echo -e "${CYAN}${BOLD}INSTALLATION COMPLETE!${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+echo -e "${YELLOW}To start using DNSniper:${NC}"
 echo -e "  ${BOLD}Command:${NC} sudo dnsniper"
-echo -e "\n${YELLOW}To view help:${NC}"
+echo -e ""
+echo -e "${YELLOW}To view help:${NC}"
 echo -e "  ${BOLD}Command:${NC} sudo dnsniper --help" 
-echo -e "\n${BLUE}${BOLD}Protect your servers against malicious domains with DNSniper!${NC}\n"
+echo -e ""
+echo -e "${BLUE}${BOLD}Protect your servers against malicious domains with DNSniper!${NC}"
+echo -e ""
