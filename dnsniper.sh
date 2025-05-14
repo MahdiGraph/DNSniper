@@ -12,10 +12,10 @@ ADD_FILE="$BASE_DIR/domains-add.txt"
 REMOVE_FILE="$BASE_DIR/domains-remove.txt"
 CONFIG_FILE="$BASE_DIR/config.conf"
 DB_FILE="$BASE_DIR/history.db"
-BINARY_PATH="/usr/local/bin/dnsniper"
+BIN_CMD="/usr/local/bin/dnsniper"
 
 # Defaults
-DEFAULT_CRON="0 * * * * $BINARY_PATH"
+DEFAULT_CRON="0 * * * * $BIN_CMD"
 DEFAULT_MAX_IPS=10
 
 # Dependencies
@@ -23,22 +23,29 @@ dependencies=(iptables ip6tables curl dig sqlite3 crontab)
 
 enhanced_echo(){ printf "%b\n" "$1"; }
 
-# 1) Ensure env: dirs, files, DB, cron & config
+### 1) Prepare environment: dirs, files, DB, cron & config
 ensure_environment(){
   mkdir -p "$BASE_DIR"
   touch "$DEFAULT_FILE" "$ADD_FILE" "$REMOVE_FILE" "$CONFIG_FILE"
-  # config defaults
-  grep -q '^cron=' "$CONFIG_FILE" || echo "cron='$DEFAULT_CRON'" >> "$CONFIG_FILE"
+  # set defaults in config file
+  grep -q '^cron='   "$CONFIG_FILE" || echo "cron='$DEFAULT_CRON'" >> "$CONFIG_FILE"
   grep -q '^max_ips=' "$CONFIG_FILE" || echo "max_ips=$DEFAULT_MAX_IPS" >> "$CONFIG_FILE"
-  # init DB
-  sqlite3 "$DB_FILE" \
-    "CREATE TABLE IF NOT EXISTS history(domain TEXT, ips TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP);"
-  # ensure cron job
+  # initialize SQLite history DB
+  sqlite3 "$DB_FILE" <<SQL
+CREATE TABLE IF NOT EXISTS history(
+  domain TEXT,
+  ips    TEXT,
+  ts     DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+SQL
+  # install or update cron job
   cron_expr=$(grep '^cron=' "$CONFIG_FILE" | cut -d"'" -f2)
-  ( crontab -l 2>/dev/null | grep -vF "$BINARY_PATH" || true; echo "$cron_expr" ) | crontab -
+  ( crontab -l 2>/dev/null | grep -vF "$BIN_CMD" || true
+    echo "$cron_expr"
+  ) | crontab -
 }
 
-# 2) Root & deps
+### 2) Privilege & dependencies check
 check_root(){
   [[ $EUID -ne 0 ]] && enhanced_echo "${RED}Error:${NC} Must run as root." && exit 1
 }
@@ -47,24 +54,20 @@ check_dependencies(){
   for cmd in "${dependencies[@]}"; do
     command -v "$cmd" &>/dev/null || miss+=("$cmd")
   done
-  [[ ${#miss[@]} -gt 0 ]] && enhanced_echo "${RED}Missing:${NC} ${miss[*]}" && exit 1
+  if [[ ${#miss[@]} -gt 0 ]]; then
+    enhanced_echo "${RED}Missing:${NC} ${miss[*]}"
+    exit 1
+  fi
 }
 
-# 3) Install/update binary
-install_binary(){
-  enhanced_echo "${BLUE}Installing symlink...${NC}"
-  ln -sf "$0" "$BINARY_PATH"
-  chmod +x "$BINARY_PATH"
-}
-
-# 4) Fetch default domains
+### 3) Fetch default domains list from GitHub
 update_default(){
   enhanced_echo "${BLUE}Fetching defaults...${NC}"
   curl -sfL "https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt" \
     -o "$DEFAULT_FILE" && enhanced_echo "${GREEN}OK${NC}" || enhanced_echo "${RED}Fail${NC}"
 }
 
-# 5) Merge domain lists
+### 4) Merge default + added, minus removed
 merge_domains(){
   mapfile -t d1 < "$DEFAULT_FILE"
   mapfile -t d2 < "$ADD_FILE"
@@ -80,23 +83,25 @@ merge_domains(){
   done
 }
 
-# 6) Record resolve history, trim to max_ips
+### 5) Record history and trim to max_ips
 record_history(){
   local dom="$1" ips_csv="$2"
-  max=$(grep '^max_ips=' "$CONFIG_FILE" | cut -d= -f2)
-  sqlite3 "$DB_FILE" \
-    "INSERT INTO history(domain,ips) VALUES('$dom','$ips_csv');"
-  sqlite3 "$DB_FILE" \
-    "DELETE FROM history WHERE rowid NOT IN (
-       SELECT rowid FROM history
-       WHERE domain='$dom'
-       ORDER BY ts DESC LIMIT $max
-     );"
+  local max=$(grep '^max_ips=' "$CONFIG_FILE" | cut -d= -f2)
+  sqlite3 "$DB_FILE" <<SQL
+INSERT INTO history(domain,ips) VALUES('$dom','$ips_csv');
+DELETE FROM history
+ WHERE rowid NOT IN (
+   SELECT rowid FROM history
+    WHERE domain='$dom'
+    ORDER BY ts DESC
+    LIMIT $max
+ );
+SQL
 }
 
-# 7) Detect CDN by comparing last two entries
+### 6) Detect CDN by comparing last two resolves
 detect_cdn(){
-  warnings=()
+  local warnings=()
   for dom in "${merged[@]}"; do
     rows=$(sqlite3 -separator '|' "$DB_FILE" \
       "SELECT ips FROM history WHERE domain='$dom' ORDER BY ts DESC LIMIT 2;")
@@ -113,9 +118,9 @@ detect_cdn(){
   fi
 }
 
-# 8) Resolve and block
+### 7) Resolve domains and apply iptables/ip6tables rules
 resolve_block(){
-  enhanced_echo "${BLUE}Resolving...${NC}"
+  enhanced_echo "${BLUE}Resolving domains...${NC}"
   merge_domains
   for dom in "${merged[@]}"; do
     enhanced_echo "${BOLD}Domain:${NC} ${GREEN}$dom${NC}"
@@ -126,8 +131,7 @@ resolve_block(){
     ips_csv=$(IFS=,; echo "${unique[*]}")
     record_history "$dom" "$ips_csv"
     for ip in "${unique[@]}"; do
-      tbl=iptables
-      [[ "$ip" == *:* ]] && tbl=ip6tables
+      tbl=iptables; [[ "$ip" == *:* ]] && tbl=ip6tables
       if $tbl -C INPUT -d "$ip" -j DROP &>/dev/null; then
         enhanced_echo "  - ${YELLOW}Exists${NC}: $ip"
       else
@@ -135,25 +139,22 @@ resolve_block(){
         enhanced_echo "  - ${RED}Blocked${NC}: $ip"
       fi
     done
-    current_ips["$dom"]="$ips_csv"
     echo
   done
-  enhanced_echo "${GREEN}Done.${NC}"
+  enhanced_echo "${GREEN}Resolution complete.${NC}"
   detect_cdn
 }
 
-# 9) Menu actions
+### 8) Interactive menu actions
 set_schedule(){
-  read -rp "Interval minutes (default 60): " m
-  m=${m:-60}
-  expr="*/$m * * * * $BINARY_PATH"
+  read -rp "Interval minutes (default 60): " m; m=${m:-60}
+  expr="*/$m * * * * $BIN_CMD"
   sed -i "s|^cron=.*|cron='$expr'|" "$CONFIG_FILE"
   ensure_environment
   enhanced_echo "${GREEN}Scheduled every $m minutes.${NC}"
 }
 set_max_ips(){
-  read -rp "Max IPs per domain (default $DEFAULT_MAX_IPS): " n
-  n=${n:-$DEFAULT_MAX_IPS}
+  read -rp "Max IPs per domain (default $DEFAULT_MAX_IPS): " n; n=${n:-$DEFAULT_MAX_IPS}
   sed -i "s|^max_ips=.*|max_ips=$n|" "$CONFIG_FILE"
   enhanced_echo "${GREEN}Max IPs set to $n.${NC}"
 }
@@ -171,7 +172,7 @@ display_status(){
   merge_domains
   enhanced_echo "\n${BOLD}Domains (${#merged[@]}):${NC}"
   for dom in "${merged[@]}"; do
-    enhanced_echo "  - ${GREEN}$dom${NC}: ${CYAN}${current_ips[$dom]:-N/A}${NC}"
+    enhanced_echo "  - ${GREEN}$dom${NC}"
   done
   sched=$(grep '^cron=' "$CONFIG_FILE" | cut -d"'" -f2)
   max=$(grep '^max_ips=' "$CONFIG_FILE" | cut -d= -f2)
@@ -192,9 +193,9 @@ clear_rules(){
 uninstall(){
   read -rp "Uninstall DNSniper? [y/N]: " a
   if [[ $a =~ ^[Yy] ]]; then
-    enhanced_echo "${BLUE}Removing DNSniper...${NC}"
-    crontab -l | grep -vF "$BINARY_PATH" | crontab -
-    rm -rf "$BASE_DIR" "$BINARY_PATH"
+    enhanced_echo "${BLUE}Removing...${NC}"
+    crontab -l | grep -vF "$BIN_CMD" | crontab -
+    rm -rf "$BASE_DIR" "$BIN_CMD"
     clear_rules
     enhanced_echo "${GREEN}Uninstalled.${NC}"
     exit 0
@@ -203,7 +204,7 @@ uninstall(){
   fi
 }
 
-# 10) Main menu
+### 9) Main menu loop
 main_menu(){
   while :; do
     enhanced_echo "\n${BOLD}=== DNSniper Menu ===${NC}"
@@ -214,26 +215,26 @@ main_menu(){
     echo -e "${YELLOW}9)${NC} Uninstall ${YELLOW}0)${NC} Exit"
     read -rp "Choice: " c
     case $c in
-      1) resolve_block ;;
-      2) update_default ;;
-      3) set_schedule ;;
-      4) set_max_ips ;;
-      5) add_dom ;;
-      6) rem_dom ;;
-      7) display_status ;;
-      8) clear_rules ;;
-      9) uninstall ;;
-      0) exit 0 ;;
+      1) resolve_block   ;;
+      2) update_default  ;;
+      3) set_schedule    ;;
+      4) set_max_ips     ;;
+      5) add_dom         ;;
+      6) rem_dom         ;;
+      7) display_status  ;;
+      8) clear_rules     ;;
+      9) uninstall       ;;
+      0) exit 0          ;;
       *) enhanced_echo "${RED}Invalid choice${NC}" ;;
     esac
   done
 }
 
-# 11) Entrypoint: interactive vs cron
+### 10) Entrypoint: interactive if TTY, else cron-run
 if [[ -t 0 && -t 1 ]]; then
-  check_root && check_dependencies && ensure_environment && install_binary && main_menu
+  check_root && check_dependencies && ensure_environment && main_menu
 else
-  check_root && check_dependencies && ensure_environment && install_binary && resolve_block
+  check_root && check_dependencies && ensure_environment && resolve_block
 fi
 
 exit 0

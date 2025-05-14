@@ -53,13 +53,3 @@ ln -sf "$BIN_PATH" /usr/local/bin/dnsniper
 # 6) initialize (config, DB, cron)
 echo "Initializing DNSniper..."
 dnsniper
-
-echo "
-🎉 DNSniper installed successfully! 🎉
-
-Use the command:
-    dnsniper
-
-to open the interactive menu.  
-A cron job will run it every hour automatically.
-"
