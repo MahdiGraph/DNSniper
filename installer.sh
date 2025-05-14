@@ -8,13 +8,13 @@ echo "
 === DNSniper Installer ===
 "
 
-# 1) Ensure running as root
+# 1) root check
 if [[ $EUID -ne 0 ]]; then
-  echo "Error: This installer must be run as root." >&2
+  echo "Error: Run as root." >&2
   exit 1
 fi
 
-# 2) Detect package manager
+# 2) detect package manager
 if   command -v apt   &>/dev/null; then
   PKG_UPDATE="apt update"
   PKG_INSTALL="apt install -y"
@@ -25,32 +25,41 @@ elif command -v dnf   &>/dev/null; then
   PKG_UPDATE="dnf makecache"
   PKG_INSTALL="dnf install -y"
 else
-  echo "Error: Unsupported package manager. Please install dependencies manually: iptables, curl, dnsutils, sqlite3, cron." >&2
+  echo "Error: Unsupported package manager. Install: iptables, curl, dnsutils, sqlite3, cron." >&2
   exit 1
 fi
 
-# 3) Install dependencies
+# 3) install deps
 echo "Updating package lists..."
 $PKG_UPDATE
-
-echo "Installing dependencies: iptables, curl, dnsutils, sqlite3, cron"
+echo "Installing: iptables curl dnsutils sqlite3 cron"
 $PKG_INSTALL iptables curl dnsutils sqlite3 cron
 
-# 4) Download the DNSniper script
-echo "Downloading DNSniper..."
-curl -sfL https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/dnsniper.sh \
-     -o /usr/local/bin/dnsniper
-chmod +x /usr/local/bin/dnsniper
+# 4) fetch script into BASE_DIR
+BASE_DIR="/etc/dnsniper"
+BIN_PATH="$BASE_DIR/dnsniper.sh"
+echo "Setting up directory $BASE_DIR..."
+mkdir -p "$BASE_DIR"
 
-# 5) First-time initialization (creates configs, DB, cron job, etc.)
+echo "Downloading DNSniper core script..."
+curl -sfL https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/dnsniper.sh \
+     -o "$BIN_PATH"
+chmod +x "$BIN_PATH"
+
+# 5) create symlink
+echo "Creating symlink /usr/local/bin/dnsniper → $BIN_PATH"
+ln -sf "$BIN_PATH" /usr/local/bin/dnsniper
+
+# 6) initialize (config, DB, cron)
 echo "Initializing DNSniper..."
-/usr/local/bin/dnsniper
+dnsniper
 
 echo "
-🎉 Installation complete! 🎉
+🎉 DNSniper installed successfully! 🎉
 
-• To open the interactive menu:
+Use the command:
     dnsniper
 
-A cron job has been set up to run DNSniper automatically every hour.
+to open the interactive menu.  
+A cron job will run it every hour automatically.
 "

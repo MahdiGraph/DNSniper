@@ -52,8 +52,8 @@ check_dependencies(){
 
 # 3) Install/update binary
 install_binary(){
-  enhanced_echo "${BLUE}Installing to $BINARY_PATH...${NC}"
-  cp "$0" "$BINARY_PATH"
+  enhanced_echo "${BLUE}Installing symlink...${NC}"
+  ln -sf "$0" "$BINARY_PATH"
   chmod +x "$BINARY_PATH"
 }
 
