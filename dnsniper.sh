@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 1.1.0
+# Version: 1.2.0
 
-# ANSI color codes
-RED='\e[31m' GREEN='\e[32m' YELLOW='\e[33m' BLUE='\e[34m' CYAN='\e[36m' BOLD='\e[1m' NC='\e[0m'
+# Strict error handling mode
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# ANSI color codes and formatting
+RED='\e[31m'
+GREEN='\e[32m'
+YELLOW='\e[33m'
+BLUE='\e[34m'
+CYAN='\e[36m'
+WHITE='\e[97m'
+BOLD='\e[1m'
+DIM='\e[2m'
+NC='\e[0m'
 
 # Paths
 BASE_DIR="/etc/dnsniper"
@@ -15,6 +28,8 @@ IP_ADD_FILE="$BASE_DIR/ips-add.txt"
 IP_REMOVE_FILE="$BASE_DIR/ips-remove.txt"
 CONFIG_FILE="$BASE_DIR/config.conf"
 DB_FILE="$BASE_DIR/history.db"
+RULES_V4_FILE="$BASE_DIR/iptables.rules"
+RULES_V6_FILE="$BASE_DIR/ip6tables.rules"
 BIN_CMD="/usr/local/bin/dnsniper"
 LOG_FILE="$BASE_DIR/dnsniper.log"
 
@@ -23,9 +38,14 @@ DEFAULT_CRON="0 * * * * $BIN_CMD --run >/dev/null 2>&1"
 DEFAULT_MAX_IPS=10
 DEFAULT_TIMEOUT=30
 DEFAULT_URL="https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"
+DEFAULT_AUTO_UPDATE=1
+
+# Chain names
+IPT_CHAIN="DNSniper"
+IPT6_CHAIN="DNSniper6"
 
 # Version
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 # Dependencies
 DEPENDENCIES=(iptables ip6tables curl dig sqlite3 crontab)
@@ -48,6 +68,24 @@ log() {
 # Enhanced echo with error checking
 echo_safe() {
     echo -e "$1"
+}
+
+# Display banner
+show_banner() {
+    if [[ -t 1 ]]; then  # Only show banner in interactive terminal
+        clear
+        echo -e "${BLUE}${BOLD}
+$WHITE╔$BLUE═══════════════════════════════════════════$WHITE╗
+$WHITE║$BLUE  ____  _   _ ____       _                 $WHITE║
+$WHITE║$BLUE |  _ \\| \\ | / ___|_ __ (_)_ __   ___ _ __ $WHITE║
+$WHITE║$BLUE | | | |  \\| \\___ \\ '_ \\| | '_ \\ / _ \\ '__|$WHITE║
+$WHITE║$BLUE | |_| | |\\  |___) | | | | | |_) |  __/ |  $WHITE║
+$WHITE║$BLUE |____/|_| \\_|____/|_| |_|_| .__/ \\___|_|  $WHITE║
+$WHITE║$BLUE                           |_|              $WHITE║
+$WHITE║$GREEN${BOLD} Domain-based Network Threat Mitigation v$VERSION $WHITE║
+$WHITE╚$BLUE═══════════════════════════════════════════$WHITE╝${NC}
+"
+    fi
 }
 
 # SQL escape
@@ -119,13 +157,162 @@ exit_with_error() {
     exit "${2:-1}"
 }
 
+# Detect persistence mechanism and OS type
+detect_system() {
+    # Detect OS family
+    if [[ -f /etc/debian_version ]]; then
+        echo "debian"
+    elif [[ -f /etc/redhat-release ]]; then
+        echo "redhat"
+    elif [[ -f /etc/fedora-release ]]; then
+        echo "fedora"
+    else
+        echo "unknown"
+    fi
+}
+
+# Make iptables rules persistent based on system type
+make_rules_persistent() {
+    local os_type=$(detect_system)
+    local success=0
+    
+    case "$os_type" in
+        debian)
+            # For Debian/Ubuntu
+            if command -v netfilter-persistent &>/dev/null; then
+                log "INFO" "Using netfilter-persistent for rule persistence" "verbose"
+                netfilter-persistent save &>/dev/null && success=1
+            elif [[ -d /etc/iptables ]]; then
+                log "INFO" "Saving rules to /etc/iptables/" "verbose"
+                iptables-save > /etc/iptables/rules.v4 2>/dev/null && \
+                ip6tables-save > /etc/iptables/rules.v6 2>/dev/null && \
+                success=1
+            else
+                log "INFO" "Creating persistence files in $BASE_DIR" "verbose"
+                # Save rules to our own directory
+                iptables-save > "$RULES_V4_FILE" 2>/dev/null && \
+                ip6tables-save > "$RULES_V6_FILE" 2>/dev/null && \
+                success=1
+                
+                # Create systemd unit for loading rules at boot if not exists
+                if [[ ! -f /etc/systemd/system/dnsniper-firewall.service ]]; then
+                    create_systemd_service
+                fi
+            fi
+            ;;
+        
+        redhat|fedora)
+            # For RHEL/CentOS/Fedora
+            if command -v service &>/dev/null && \
+               systemctl list-unit-files iptables.service &>/dev/null; then
+                log "INFO" "Using iptables service for rule persistence" "verbose"
+                service iptables save &>/dev/null && \
+                service ip6tables save &>/dev/null && \
+                success=1
+            else
+                log "INFO" "Creating persistence files in $BASE_DIR" "verbose"
+                # Save rules to our own directory
+                iptables-save > "$RULES_V4_FILE" 2>/dev/null && \
+                ip6tables-save > "$RULES_V6_FILE" 2>/dev/null && \
+                success=1
+                
+                # Create systemd unit for loading rules at boot if not exists
+                if [[ ! -f /etc/systemd/system/dnsniper-firewall.service ]]; then
+                    create_systemd_service
+                fi
+            fi
+            ;;
+            
+        *)
+            # Generic method for other systems
+            log "INFO" "Creating persistence files in $BASE_DIR" "verbose"
+            iptables-save > "$RULES_V4_FILE" 2>/dev/null && \
+            ip6tables-save > "$RULES_V6_FILE" 2>/dev/null && \
+            success=1
+            
+            # Create systemd unit for loading rules at boot if not exists
+            if [[ ! -f /etc/systemd/system/dnsniper-firewall.service ]]; then
+                create_systemd_service
+            fi
+            ;;
+    esac
+    
+    if [[ $success -eq 1 ]]; then
+        log "INFO" "Firewall rules have been made persistent" "verbose"
+        return 0
+    else
+        log "WARNING" "Could not make firewall rules persistent automatically."
+        log "WARNING" "You may need to install iptables-persistent package." "verbose"
+        return 1
+    fi
+}
+
+# Create systemd service for loading rules at boot
+create_systemd_service() {
+    log "INFO" "Creating systemd service for firewall rules persistence" "verbose"
+    
+    cat > /etc/systemd/system/dnsniper-firewall.service << EOF
+[Unit]
+Description=DNSniper Firewall Rules
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables-restore $RULES_V4_FILE
+ExecStart=/sbin/ip6tables-restore $RULES_V6_FILE
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload &>/dev/null || true
+    systemctl enable dnsniper-firewall.service &>/dev/null || true
+    log "INFO" "DNSniper firewall systemd service enabled" "verbose"
+}
+
+# Initialize iptables chains
+initialize_chains() {
+    # Create IPv4 chain if it doesn't exist
+    if ! iptables -L "$IPT_CHAIN" &>/dev/null; then
+        iptables -N "$IPT_CHAIN" 2>/dev/null || true
+        log "INFO" "Created IPv4 chain $IPT_CHAIN" "verbose"
+    fi
+    
+    # Create IPv6 chain if it doesn't exist
+    if ! ip6tables -L "$IPT6_CHAIN" &>/dev/null; then
+        ip6tables -N "$IPT6_CHAIN" 2>/dev/null || true
+        log "INFO" "Created IPv6 chain $IPT6_CHAIN" "verbose"
+    fi
+    
+    # Make sure our chains are referenced in the main chains if not already
+    if ! iptables -C INPUT -j "$IPT_CHAIN" &>/dev/null; then
+        iptables -I INPUT -j "$IPT_CHAIN" 2>/dev/null || true
+    fi
+    
+    if ! iptables -C OUTPUT -j "$IPT_CHAIN" &>/dev/null; then
+        iptables -I OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
+    fi
+    
+    if ! ip6tables -C INPUT -j "$IPT6_CHAIN" &>/dev/null; then
+        ip6tables -I INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+    fi
+    
+    if ! ip6tables -C OUTPUT -j "$IPT6_CHAIN" &>/dev/null; then
+        ip6tables -I OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+    fi
+    
+    # Make the rules persistent
+    make_rules_persistent
+}
+
 ### 1) Prepare environment: dirs, files, DB, cron
 ensure_environment() {
     log "INFO" "Setting up environment" "verbose"
     
     # Create base directory if it doesn't exist
     if [[ ! -d "$BASE_DIR" ]]; then
-        if ! mkdir -p "$BASE_DIR"; then
+        if ! mkdir -p "$BASE_DIR" &>/dev/null; then
             exit_with_error "Cannot create directory $BASE_DIR"
         fi
     fi
@@ -133,7 +320,7 @@ ensure_environment() {
     # Create required files if they don't exist
     for file in "$DEFAULT_FILE" "$ADD_FILE" "$REMOVE_FILE" "$IP_ADD_FILE" "$IP_REMOVE_FILE" "$CONFIG_FILE"; do
         if [[ ! -f "$file" ]]; then
-            if ! touch "$file"; then
+            if ! touch "$file" &>/dev/null; then
                 exit_with_error "Cannot create file $file"
             fi
         fi
@@ -154,6 +341,10 @@ ensure_environment() {
     
     if ! grep -q '^update_url=' "$CONFIG_FILE" 2>/dev/null; then
         echo "update_url='$DEFAULT_URL'" >> "$CONFIG_FILE"
+    fi
+    
+    if ! grep -q '^auto_update=' "$CONFIG_FILE" 2>/dev/null; then
+        echo "auto_update=$DEFAULT_AUTO_UPDATE" >> "$CONFIG_FILE"
     fi
     
     # Initialize SQLite history DB
@@ -180,6 +371,9 @@ SQL
             log "INFO" "Cron job successfully updated" "verbose"
         fi
     fi
+    
+    # Initialize iptables chains
+    initialize_chains
     
     return 0
 }
@@ -225,7 +419,7 @@ update_default() {
         # Verify the downloaded file has content
         if [[ -s "$DEFAULT_FILE.tmp" ]]; then
             if ! mv "$DEFAULT_FILE.tmp" "$DEFAULT_FILE"; then
-                rm -f "$DEFAULT_FILE.tmp" 2>/dev/null || true
+                rm -f "$DEFAULT_FILE.tmp" &>/dev/null || true
                 log "ERROR" "Failed to update default domains file"
                 echo_safe "${RED}Failed to update default domains file${NC}"
                 return 1
@@ -233,13 +427,13 @@ update_default() {
             log "INFO" "Default domains successfully updated" "verbose"
             echo_safe "${GREEN}Default domains successfully updated${NC}"
         else
-            rm -f "$DEFAULT_FILE.tmp" 2>/dev/null || true
+            rm -f "$DEFAULT_FILE.tmp" &>/dev/null || true
             log "ERROR" "Downloaded file is empty"
             echo_safe "${RED}Downloaded file is empty${NC}"
             return 1
         fi
     else
-        rm -f "$DEFAULT_FILE.tmp" 2>/dev/null || true
+        rm -f "$DEFAULT_FILE.tmp" &>/dev/null || true
         log "ERROR" "Error downloading default domains from $update_url"
         echo_safe "${RED}Error downloading default domains${NC}"
         return 1
@@ -307,6 +501,7 @@ merge_domains() {
         [[ $should_remove -eq 0 ]] && filtered_domains+=("$d")
     done
     
+    # Output each domain on separate line
     for domain in "${filtered_domains[@]}"; do
         echo "$domain"
     done
@@ -359,6 +554,7 @@ get_custom_ips() {
         [[ $should_remove -eq 0 ]] && filtered_ips+=("$ip")
     done
     
+    # Output each IP on separate line
     for ip in "${filtered_ips[@]}"; do
         echo "$ip"
     done
@@ -458,32 +654,29 @@ detect_cdn() {
 block_ip() {
     local ip="$1" comment="$2"
     local tbl="iptables"
+    local chain="$IPT_CHAIN"
     
     # Use correct iptables command based on IP type
     if is_ipv6 "$ip"; then
         tbl="ip6tables"
+        chain="$IPT6_CHAIN"
     fi
     
-    # Block IP in INPUT chain (traffic to server)
-    if ! $tbl -C INPUT -s "$ip" -j DROP -m comment --comment "$comment" 2>/dev/null; then
-        if ! $tbl -A INPUT -s "$ip" -j DROP -m comment --comment "$comment"; then
+    # Block IP in our custom chain
+    if ! $tbl -C "$chain" -s "$ip" -j DROP -m comment --comment "$comment" &>/dev/null; then
+        if ! $tbl -A "$chain" -s "$ip" -j DROP -m comment --comment "$comment"; then
             return 1
         fi
     fi
     
-    # Block IP in INPUT chain (traffic to server, destination IP)
-    if ! $tbl -C INPUT -d "$ip" -j DROP -m comment --comment "$comment" 2>/dev/null; then
-        if ! $tbl -A INPUT -d "$ip" -j DROP -m comment --comment "$comment"; then
+    if ! $tbl -C "$chain" -d "$ip" -j DROP -m comment --comment "$comment" &>/dev/null; then
+        if ! $tbl -A "$chain" -d "$ip" -j DROP -m comment --comment "$comment"; then
             return 1
         fi
     fi
     
-    # Block IP in OUTPUT chain (traffic from server)
-    if ! $tbl -C OUTPUT -d "$ip" -j DROP -m comment --comment "$comment" 2>/dev/null; then
-        if ! $tbl -A OUTPUT -d "$ip" -j DROP -m comment --comment "$comment"; then
-            return 1
-        fi
-    fi
+    # Make rules persistent
+    make_rules_persistent
     
     return 0
 }
@@ -492,29 +685,30 @@ block_ip() {
 unblock_ip() {
     local ip="$1" comment_pattern="$2"
     local tbl="iptables"
+    local chain="$IPT_CHAIN"
     local success=0
     
     # Use correct iptables command based on IP type
     if is_ipv6 "$ip"; then
         tbl="ip6tables"
+        chain="$IPT6_CHAIN"
     fi
     
-    # Try to remove rule from INPUT chain (source)
-    if $tbl -C INPUT -s "$ip" -j DROP -m comment --comment "$comment_pattern" 2>/dev/null; then
-        $tbl -D INPUT -s "$ip" -j DROP -m comment --comment "$comment_pattern"
+    # Try to remove rule from chain (source)
+    if $tbl -C "$chain" -s "$ip" -j DROP -m comment --comment "$comment_pattern" &>/dev/null 2>&1; then
+        $tbl -D "$chain" -s "$ip" -j DROP -m comment --comment "$comment_pattern"
         success=1
     fi
     
-    # Try to remove rule from INPUT chain (destination)
-    if $tbl -C INPUT -d "$ip" -j DROP -m comment --comment "$comment_pattern" 2>/dev/null; then
-        $tbl -D INPUT -d "$ip" -j DROP -m comment --comment "$comment_pattern"
+    # Try to remove rule from chain (destination)
+    if $tbl -C "$chain" -d "$ip" -j DROP -m comment --comment "$comment_pattern" &>/dev/null 2>&1; then
+        $tbl -D "$chain" -d "$ip" -j DROP -m comment --comment "$comment_pattern"
         success=1
     fi
     
-    # Try to remove rule from OUTPUT chain
-    if $tbl -C OUTPUT -d "$ip" -j DROP -m comment --comment "$comment_pattern" 2>/dev/null; then
-        $tbl -D OUTPUT -d "$ip" -j DROP -m comment --comment "$comment_pattern"
-        success=1
+    # Make rules persistent if we made changes
+    if [[ $success -eq 1 ]]; then
+        make_rules_persistent
     fi
     
     return $((1 - success))
@@ -523,6 +717,19 @@ unblock_ip() {
 ### 10) Resolve domains and apply iptables/ip6tables rules
 resolve_block() {
     log "INFO" "Starting domain resolution and blocking" "verbose"
+    
+    # Check if we should auto-update
+    local auto_update=$(grep '^auto_update=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
+    if [[ -z "$auto_update" || ! "$auto_update" =~ ^[0-9]+$ ]]; then
+        auto_update=$DEFAULT_AUTO_UPDATE
+    fi
+    
+    if [[ $auto_update -eq 1 ]]; then
+        echo_safe "${BLUE}Auto-updating domain lists...${NC}"
+        update_default
+    fi
+    
     echo_safe "${BLUE}Resolving domains...${NC}"
     
     # Get domains
@@ -658,6 +865,9 @@ resolve_block() {
         log "INFO" "Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked." "verbose"
     fi
     
+    # Make sure the rules are persistent
+    make_rules_persistent
+    
     return 0
 }
 
@@ -666,23 +876,25 @@ resolve_block() {
 # --- Settings submenu ---
 settings_menu() {
     while true; do
-        clear
+        show_banner
         echo_safe "${BLUE}${BOLD}===== DNSniper Settings =====${NC}\n"
         echo_safe "${YELLOW}1)${NC} Set Schedule"
         echo_safe "${YELLOW}2)${NC} Set Max IPs Per Domain"
         echo_safe "${YELLOW}3)${NC} Set Timeout"
         echo_safe "${YELLOW}4)${NC} Set Update URL"
+        echo_safe "${YELLOW}5)${NC} Toggle Auto-Update"
         echo_safe "${YELLOW}0)${NC} Back to Main Menu"
         
-        read -rp "Select (0-4): " choice
+        read -rp "Select (0-5): " choice
         
         case "$choice" in
             1) set_schedule ;;
             2) set_max_ips ;;
             3) set_timeout ;;
             4) set_update_url ;;
+            5) toggle_auto_update ;;
             0) return ;;
-            *) echo_safe "${RED}Invalid selection. Please choose 0-4.${NC}" ;;
+            *) echo_safe "${RED}Invalid selection. Please choose 0-5.${NC}" ;;
         esac
         
         read -rp "Press Enter to continue..."
@@ -781,19 +993,54 @@ set_update_url() {
     fi
 }
 
+# Toggle auto-update
+toggle_auto_update() {
+    echo_safe "${BOLD}=== Toggle Auto-Update ===${NC}"
+    local current=$(grep '^auto_update=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
+    if [[ -z "$current" || ! "$current" =~ ^[0-9]+$ ]]; then
+        current=$DEFAULT_AUTO_UPDATE
+    fi
+    
+    if [[ $current -eq 1 ]]; then
+        echo_safe "${BLUE}Auto-update is currently:${NC} ${GREEN}Enabled${NC}"
+        read -rp "Disable auto-update? [y/N]: " choice
+        
+        if [[ "$choice" =~ ^[Yy] ]]; then
+            sed -i "s|^auto_update=.*|auto_update=0|" "$CONFIG_FILE"
+            echo_safe "${YELLOW}Auto-update disabled.${NC}"
+            log "INFO" "Auto-update disabled by user" "verbose"
+        else
+            echo_safe "${YELLOW}No change.${NC}"
+        fi
+    else
+        echo_safe "${BLUE}Auto-update is currently:${NC} ${RED}Disabled${NC}"
+        read -rp "Enable auto-update? [y/N]: " choice
+        
+        if [[ "$choice" =~ ^[Yy] ]]; then
+            sed -i "s|^auto_update=.*|auto_update=1|" "$CONFIG_FILE"
+            echo_safe "${GREEN}Auto-update enabled.${NC}"
+            log "INFO" "Auto-update enabled by user" "verbose"
+        else
+            echo_safe "${YELLOW}No change.${NC}"
+        fi
+    fi
+}
+
 # --- Import/Export submenu ---
 import_export_menu() {
     while true; do
-        clear
+        show_banner
         echo_safe "${BLUE}${BOLD}===== Import/Export =====${NC}\n"
         echo_safe "${YELLOW}1)${NC} Import Domains List"
         echo_safe "${YELLOW}2)${NC} Export Domains List"
         echo_safe "${YELLOW}3)${NC} Import IP List"
         echo_safe "${YELLOW}4)${NC} Export IP List"
         echo_safe "${YELLOW}5)${NC} Export All Config"
+        echo_safe "${YELLOW}6)${NC} Export Firewall Rules"
         echo_safe "${YELLOW}0)${NC} Back to Main Menu"
         
-        read -rp "Select (0-5): " choice
+        read -rp "Select (0-6): " choice
         
         case "$choice" in
             1) import_domains ;;
@@ -801,8 +1048,9 @@ import_export_menu() {
             3) import_ips ;;
             4) export_ips ;;
             5) export_all ;;
+            6) export_firewall_rules ;;
             0) return ;;
-            *) echo_safe "${RED}Invalid selection. Please choose 0-5.${NC}" ;;
+            *) echo_safe "${RED}Invalid selection. Please choose 0-6.${NC}" ;;
         esac
         
         read -rp "Press Enter to continue..."
@@ -933,6 +1181,27 @@ export_ips() {
     fi
 }
 
+# Export firewall rules
+export_firewall_rules() {
+    echo_safe "${BOLD}=== Export Firewall Rules ===${NC}"
+    read -rp "Enter directory path for export: " dir
+    
+    if [[ -n "$dir" && -d "$dir" ]]; then
+        local ipv4_rules="${dir}/dnsniper-ipv4-rules.txt"
+        local ipv6_rules="${dir}/dnsniper-ipv6-rules.txt"
+        
+        # Export current rules
+        iptables-save | grep -E "(^*|^:|^-A $IPT_CHAIN)" > "$ipv4_rules" 2>/dev/null
+        ip6tables-save | grep -E "(^*|^:|^-A $IPT6_CHAIN)" > "$ipv6_rules" 2>/dev/null
+        
+        echo_safe "${GREEN}Exported IPv4 rules to:${NC} $ipv4_rules"
+        echo_safe "${GREEN}Exported IPv6 rules to:${NC} $ipv6_rules"
+        log "INFO" "Exported firewall rules to: $dir" "verbose"
+    else
+        echo_safe "${RED}Invalid directory.${NC}"
+    fi
+}
+
 # Export all config
 export_all() {
     echo_safe "${BOLD}=== Export All Configuration ===${NC}"
@@ -979,8 +1248,13 @@ export_all() {
         
         # Export current iptables rules
         if command -v iptables-save &>/dev/null; then
-            iptables-save | grep 'DNSniper' > "$export_dir/iptables-rules.txt" 2>/dev/null || true
-            ip6tables-save | grep 'DNSniper' >> "$export_dir/iptables-rules.txt" 2>/dev/null || true
+            iptables-save | grep -E "(^*|^:|^-A $IPT_CHAIN)" > "$export_dir/iptables-rules.txt" 2>/dev/null || true
+            ip6tables-save | grep -E "(^*|^:|^-A $IPT6_CHAIN)" > "$export_dir/ip6tables-rules.txt" 2>/dev/null || true
+        fi
+        
+        # Export database if available
+        if [[ -f "$DB_FILE" ]]; then
+            cp "$DB_FILE" "$export_dir/history.db" 2>/dev/null || true
         fi
         
         echo_safe "${GREEN}All configuration exported to $export_dir.${NC}"
@@ -1085,6 +1359,9 @@ block_domain() {
                 echo_safe "  - ${RED}Error blocking${NC}: $ip"
             fi
         done
+        
+        # Make rules persistent
+        make_rules_persistent
     fi
     
     return 0
@@ -1152,6 +1429,9 @@ unblock_domain() {
                         echo_safe "  - ${GREEN}Unblocked${NC}: $ip"
                     fi
                 done
+                
+                # Make rules persistent
+                make_rules_persistent
             else
                 echo_safe "${YELLOW}No IP records found for this domain.${NC}"
             fi
@@ -1202,6 +1482,8 @@ block_custom_ip() {
     if [[ "$block_now" =~ ^[Yy] ]]; then
         if block_ip "$ip" "DNSniper: custom"; then
             echo_safe "${GREEN}Successfully blocked IP:${NC} $ip"
+            # Make rules persistent
+            make_rules_persistent
         else
             echo_safe "${RED}Error blocking IP:${NC} $ip"
         fi
@@ -1264,6 +1546,8 @@ unblock_custom_ip() {
         if [[ "$unblock_now" =~ ^[Yy] ]]; then
             if unblock_ip "$ip_to_unblock" "DNSniper: custom"; then
                 echo_safe "${GREEN}Successfully unblocked IP:${NC} $ip_to_unblock"
+                # Make rules persistent
+                make_rules_persistent
             else
                 echo_safe "${RED}Error unblocking IP:${NC} $ip_to_unblock"
             fi
@@ -1275,20 +1559,38 @@ unblock_custom_ip() {
     return 0
 }
 
+# ANSI formatting for status display tables
+print_table_header() {
+    local title="$1"
+    echo -e "\n${BOLD}${BLUE}┌───────────────────────────────────────────┐${NC}"
+    echo -e "${BOLD}${BLUE}│${WHITE} %-40s ${BLUE}│${NC}" "$title"
+    echo -e "${BOLD}${BLUE}├───────────────────────────────────────────┤${NC}"
+}
+
+print_table_footer() {
+    echo -e "${BOLD}${BLUE}└───────────────────────────────────────────┘${NC}"
+}
+
 # Show status
 display_status() {
     clear
+    show_banner
+    
+    # Get domains and IPs
     local domains=()
     mapfile -t domains < <(merge_domains)
     
     local custom_ips=()
     mapfile -t custom_ips < <(get_custom_ips)
     
+    # Get config values
     local max_ips=$(grep '^max_ips=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local sched=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
     local update_url=$(grep '^update_url=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
+    local auto_update=$(grep '^auto_update=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     
+    # Apply defaults if missing or invalid
     if [[ -z "$max_ips" || ! "$max_ips" =~ ^[0-9]+$ ]]; then
         max_ips=$DEFAULT_MAX_IPS
     fi
@@ -1301,13 +1603,66 @@ display_status() {
         update_url=$DEFAULT_URL
     fi
     
-    echo_safe "${BLUE}${BOLD}====== DNSniper Status ======${NC}\n"
+    if [[ -z "$auto_update" || ! "$auto_update" =~ ^[01]$ ]]; then
+        auto_update=$DEFAULT_AUTO_UPDATE
+    fi
     
-    echo_safe "${BOLD}Blocked Domains:${NC} ${#domains[@]}"
-    echo_safe "${BOLD}Blocked Custom IPs:${NC} ${#custom_ips[@]}"
+    # Format auto-update text
+    local auto_update_text="${RED}Disabled${NC}"
+    [[ "$auto_update" == "1" ]] && auto_update_text="${GREEN}Enabled${NC}"
     
+    # Format schedule text
+    local schedule_text="$sched"
+    [[ "$sched" == "# DNSniper disabled" ]] && schedule_text="${RED}Disabled${NC}"
+    
+    # Count active rules
+    local v4_rules=0
+    local v6_rules=0
+    
+    if command -v iptables-save &>/dev/null; then
+        v4_rules=$(iptables-save 2>/dev/null | grep -c "$IPT_CHAIN" || echo 0)
+        v6_rules=$(ip6tables-save 2>/dev/null | grep -c "$IPT6_CHAIN" || echo 0)
+    fi
+    
+    # Display summary counts
+    echo -e "\n${BOLD}${WHITE} DNSniper Status Summary${NC}\n"
+    echo -e "${BOLD}   Blocked Domains:${NC} ${GREEN}${#domains[@]}${NC}"
+    echo -e "${BOLD}   Blocked IPs:${NC}    ${RED}$((v4_rules + v6_rules))${NC}"
+    echo -e "${BOLD}   Custom IPs:${NC}      ${YELLOW}${#custom_ips[@]}${NC}"
+    
+    # Config section
+    print_table_header "Configuration"
+    echo -e "${BLUE}│${NC} Schedule:       $schedule_text"
+    echo -e "${BLUE}│${NC} Max IPs/domain: ${YELLOW}$max_ips${NC}"
+    echo -e "${BLUE}│${NC} Timeout:        ${YELLOW}$timeout seconds${NC}"
+    echo -e "${BLUE}│${NC} Auto-update:    $auto_update_text"
+    print_table_footer
+    
+    # Firewall Rules section
+    print_table_header "Firewall Rules"
+    echo -e "${BLUE}│${NC} IPv4 Chain:     ${YELLOW}$IPT_CHAIN${NC}"
+    echo -e "${BLUE}│${NC} IPv6 Chain:     ${YELLOW}$IPT6_CHAIN${NC}"
+    echo -e "${BLUE}│${NC} IPv4 Rules:     ${RED}$v4_rules${NC}"
+    echo -e "${BLUE}│${NC} IPv6 Rules:     ${RED}$v6_rules${NC}"
+    echo -e "${BLUE}│${NC} Persistence:    ${GREEN}$(detect_system)${NC}"
+    print_table_footer
+    
+    # Last Run section
+    print_table_header "System Information"
+    local last_run
+    if [[ -f "$LOG_FILE" ]]; then
+        last_run=$(stat -c %y "$LOG_FILE" 2>/dev/null || echo "Never")
+    else
+        last_run="Never"
+    fi
+    echo -e "${BLUE}│${NC} Last Run:       ${CYAN}$last_run${NC}"
+    echo -e "${BLUE}│${NC} Version:        ${GREEN}$VERSION${NC}"
+    print_table_footer
+    
+    # Domains section if exists
     if [[ ${#domains[@]} -gt 0 ]]; then
-        echo_safe "\n${BOLD}Domains:${NC}"
+        print_table_header "Blocked Domains (Top 10 of ${#domains[@]})"
+        local dom_count=0
         for dom in "${domains[@]}"; do
             # Get most recent IP list
             local esc_dom=$(sql_escape "$dom")
@@ -1318,54 +1673,36 @@ display_status() {
             if [[ -n "$ips" ]]; then
                 local ip_count=$(echo "$ips" | tr -cd ',' | wc -c)
                 ip_count=$((ip_count + 1))
-                echo_safe "  - ${GREEN}$dom${NC} (${YELLOW}$ip_count IPs${NC})"
+                echo -e "${BLUE}│${NC} ${GREEN}$dom${NC} (${YELLOW}$ip_count IPs${NC})"
             else
-                echo_safe "  - ${GREEN}$dom${NC} (${RED}No IPs resolved yet${NC})"
+                echo -e "${BLUE}│${NC} ${GREEN}$dom${NC} (${RED}No IPs resolved${NC})"
             fi
+            
+            dom_count=$((dom_count + 1))
+            [[ $dom_count -ge 10 && ${#domains[@]} -gt 10 ]] && { 
+                echo -e "${BLUE}│${NC} ${YELLOW}... and $((${#domains[@]} - 10)) more domains${NC}"; 
+                break; 
+            }
         done
+        print_table_footer
     fi
     
+    # Custom IPs section if exists
     if [[ ${#custom_ips[@]} -gt 0 ]]; then
-        echo_safe "\n${BOLD}Custom IPs:${NC}"
+        print_table_header "Custom Blocked IPs (Top 10 of ${#custom_ips[@]})"
         local ip_count=0
         for ip in "${custom_ips[@]}"; do
-            if [ $ip_count -lt 10 ]; then
-                echo_safe "  - ${GREEN}$ip${NC}"
-                ip_count=$((ip_count + 1))
-            else
-                echo_safe "  - ${YELLOW}...and $((${#custom_ips[@]} - 10)) more${NC}"
-                break
-            fi
+            echo -e "${BLUE}│${NC} ${GREEN}$ip${NC}"
+            ip_count=$((ip_count + 1))
+            [[ $ip_count -ge 10 && ${#custom_ips[@]} -gt 10 ]] && { 
+                echo -e "${BLUE}│${NC} ${YELLOW}... and $((${#custom_ips[@]} - 10)) more IPs${NC}"; 
+                break; 
+            }
         done
+        print_table_footer
     fi
     
-    echo_safe "\n${BOLD}Configuration:${NC}"
-    echo_safe "  - ${BLUE}Schedule:${NC} $sched"
-    echo_safe "  - ${BLUE}Max IPs per domain:${NC} $max_ips"
-    echo_safe "  - ${BLUE}Timeout:${NC} $timeout seconds"
-    echo_safe "  - ${BLUE}Update URL:${NC} $update_url"
-    
-    # Count active rules
-    local v4_rules=0
-    local v6_rules=0
-    
-    if command -v iptables-save &>/dev/null; then
-        v4_rules=$(iptables-save 2>/dev/null | grep -c 'DNSniper' || echo 0)
-        v6_rules=$(ip6tables-save 2>/dev/null | grep -c 'DNSniper' || echo 0)
-    fi
-    
-    echo_safe "\n${BOLD}Firewall Rules:${NC}"
-    echo_safe "  - ${BLUE}IPv4 Rules:${NC} $v4_rules"
-    echo_safe "  - ${BLUE}IPv6 Rules:${NC} $v6_rules"
-    
-    echo_safe "\n${BOLD}Last Run:${NC}"
-    local last_run
-    if [[ -f "$LOG_FILE" ]]; then
-        last_run=$(stat -c %y "$LOG_FILE" 2>/dev/null || echo "Never")
-    else
-        last_run="Never"
-    fi
-    echo_safe "  - ${BLUE}$last_run${NC}\n"
+    echo -e "\n${DIM}Press Enter to return to the menu...${NC}"
     
     return 0
 }
@@ -1378,15 +1715,19 @@ clear_rules() {
         echo_safe "${BLUE}Removing DNSniper rules...${NC}"
         
         local success=0
-        # Save current rules without DNSniper entries
-        if iptables-save 2>/dev/null | grep -v 'DNSniper' | iptables-restore 2>/dev/null && 
-           ip6tables-save 2>/dev/null | grep -v 'DNSniper' | ip6tables-restore 2>/dev/null; then
-            echo_safe "${GREEN}All DNSniper rules cleared.${NC}"
-            log "INFO" "All firewall rules cleared" "verbose"
+        
+        # Flush our custom chains
+        if iptables -F "$IPT_CHAIN" 2>/dev/null && ip6tables -F "$IPT6_CHAIN" 2>/dev/null; then
             success=1
         fi
         
-        if [[ $success -eq 0 ]]; then
+        # Make rules persistent
+        make_rules_persistent
+        
+        if [[ $success -eq 1 ]]; then
+            echo_safe "${GREEN}All DNSniper rules cleared.${NC}"
+            log "INFO" "All firewall rules cleared" "verbose"
+        else
             echo_safe "${RED}Error clearing rules. Check iptables status.${NC}"
             log "ERROR" "Error clearing firewall rules"
             return 1
@@ -1411,8 +1752,30 @@ uninstall() {
         
         if [[ ! "$keep_rules" =~ ^[Yy] ]]; then
             echo_safe "${BLUE}Removing firewall rules...${NC}"
-            iptables-save 2>/dev/null | grep -v 'DNSniper' | iptables-restore 2>/dev/null || true
-            ip6tables-save 2>/dev/null | grep -v 'DNSniper' | ip6tables-restore 2>/dev/null || true
+            
+            # Remove references to our chains
+            iptables -D INPUT -j "$IPT_CHAIN" 2>/dev/null || true
+            iptables -D OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
+            ip6tables -D INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+            ip6tables -D OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+            
+            # Flush our chains
+            iptables -F "$IPT_CHAIN" 2>/dev/null || true
+            ip6tables -F "$IPT6_CHAIN" 2>/dev/null || true
+            
+            # Delete our chains
+            iptables -X "$IPT_CHAIN" 2>/dev/null || true
+            ip6tables -X "$IPT6_CHAIN" 2>/dev/null || true
+            
+            # Make changes persistent
+            make_rules_persistent
+        fi
+        
+        # Remove systemd service if we created one
+        if [[ -f "/etc/systemd/system/dnsniper-firewall.service" ]]; then
+            systemctl disable dnsniper-firewall.service &>/dev/null || true
+            rm -f "/etc/systemd/system/dnsniper-firewall.service" &>/dev/null || true
+            systemctl daemon-reload &>/dev/null || true
         fi
         
         # Remove cron job
@@ -1433,22 +1796,24 @@ uninstall() {
 
 # Show help
 show_help() {
-    echo_safe "\n${BOLD}=== DNSniper v$VERSION Help ===${NC}"
-    echo_safe "${BOLD}Usage:${NC} dnsniper [options]"
-    echo_safe "\n${BOLD}Options:${NC}"
-    echo_safe "  ${YELLOW}--run${NC}        Run DNSniper once (non-interactive)"
-    echo_safe "  ${YELLOW}--update${NC}     Update default domains list"
-    echo_safe "  ${YELLOW}--status${NC}     Display status"
-    echo_safe "  ${YELLOW}--block${NC} DOMAIN Add a domain to block list"
-    echo_safe "  ${YELLOW}--unblock${NC} DOMAIN Remove a domain from block list"
-    echo_safe "  ${YELLOW}--block-ip${NC} IP Add an IP to block list"
-    echo_safe "  ${YELLOW}--unblock-ip${NC} IP Remove an IP from block list"
-    echo_safe "  ${YELLOW}--version${NC}    Show version"
-    echo_safe "  ${YELLOW}--help${NC}       Show this help\n"
-    echo_safe "${BOLD}Interactive Menu:${NC}"
-    echo_safe "  Run without arguments to access the interactive menu"
-    echo_safe "  which provides all functionality, configuration options,"
-    echo_safe "  and maintenance features.\n"
+    show_banner
+    
+    echo -e "\n${BOLD}=== DNSniper v$VERSION Help ===${NC}"
+    echo -e "${BOLD}Usage:${NC} dnsniper [options]"
+    echo -e "\n${BOLD}Options:${NC}"
+    echo -e "  ${YELLOW}--run${NC}        Run DNSniper once (non-interactive)"
+    echo -e "  ${YELLOW}--update${NC}     Update default domains list"
+    echo -e "  ${YELLOW}--status${NC}     Display status"
+    echo -e "  ${YELLOW}--block${NC} DOMAIN Add a domain to block list"
+    echo -e "  ${YELLOW}--unblock${NC} DOMAIN Remove a domain from block list"
+    echo -e "  ${YELLOW}--block-ip${NC} IP Add an IP to block list"
+    echo -e "  ${YELLOW}--unblock-ip${NC} IP Remove an IP from block list"
+    echo -e "  ${YELLOW}--version${NC}    Show version"
+    echo -e "  ${YELLOW}--help${NC}       Show this help\n"
+    echo -e "${BOLD}Interactive Menu:${NC}"
+    echo -e "  Run without arguments to access the interactive menu"
+    echo -e "  which provides all functionality, configuration options,"
+    echo -e "  and maintenance features.\n"
     
     return 0
 }
@@ -1456,20 +1821,23 @@ show_help() {
 ### 12) Main menu loop
 main_menu() {
     while true; do
-        clear
-        echo_safe "${BLUE}${BOLD}====== DNSniper v$VERSION ======${NC}"
-        echo_safe "${YELLOW}1)${NC} Run Now         ${YELLOW}2)${NC} Status"
-        echo_safe "${YELLOW}3)${NC} Block Domain    ${YELLOW}4)${NC} Unblock Domain"
-        echo_safe "${YELLOW}5)${NC} Block IP        ${YELLOW}6)${NC} Unblock IP"
-        echo_safe "${YELLOW}7)${NC} Settings        ${YELLOW}8)${NC} Import/Export"
-        echo_safe "${YELLOW}9)${NC} Update Lists    ${YELLOW}0)${NC} Exit"
-        echo_safe "${YELLOW}C)${NC} Clear Rules     ${YELLOW}U)${NC} Uninstall"
+        show_banner
         
-        read -rp "Select: " choice
+        echo -e "${BLUE}${BOLD}               Main Menu${NC}"
+        echo -e "┌───────────────────────────────────────────┐"
+        echo -e "│ ${YELLOW}1)${NC} Run Now        ${YELLOW}2)${NC} Status           │"
+        echo -e "│ ${YELLOW}3)${NC} Block Domain   ${YELLOW}4)${NC} Unblock Domain    │"
+        echo -e "│ ${YELLOW}5)${NC} Block IP       ${YELLOW}6)${NC} Unblock IP        │"
+        echo -e "│ ${YELLOW}7)${NC} Settings       ${YELLOW}8)${NC} Import/Export     │"
+        echo -e "│ ${YELLOW}9)${NC} Update Lists   ${YELLOW}0)${NC} Exit              │"
+        echo -e "│ ${YELLOW}C)${NC} Clear Rules    ${YELLOW}U)${NC} Uninstall         │"
+        echo -e "└───────────────────────────────────────────┘"
+        
+        read -rp "Select an option: " choice
         
         case "$choice" in
             1) clear; resolve_block; read -rp "Press Enter to continue..." ;;
-            2) display_status; read -rp "Press Enter to continue..." ;;
+            2) display_status; read -rp "" ;;
             3) clear; block_domain; read -rp "Press Enter to continue..." ;;
             4) clear; unblock_domain; read -rp "Press Enter to continue..." ;;
             5) clear; block_custom_ip; read -rp "Press Enter to continue..." ;;
