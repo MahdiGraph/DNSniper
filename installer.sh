@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # DNSniper Installer
 # Usage: curl -sSL https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/installer.sh | bash
-
 set -e
 
 # ANSI color codes
@@ -9,11 +8,11 @@ RED='\e[31m' GREEN='\e[32m' YELLOW='\e[33m' BLUE='\e[34m' BOLD='\e[1m' NC='\e[0m
 
 # Display banner
 echo -e "${BLUE}${BOLD}
- ____  _   _ ____       _                 
-|  _ \| \ | / ___|_ __ (_)_ __   ___ _ __ 
-| | | |  \| \___ \ '_ \| | '_ \ / _ \ '__|
-| |_| | |\  |___) | | | | | |_) |  __/ |   
-|____/|_| \_|____/|_| |_|_| .__/ \___|_|   
+____  _   _ ____       _                 
+|   _\\| \\ | /_ __|_ __ (_)_ __   ___ _ __
+| | | |  \\| \\___ \\ '_ \\| | '_ \\ / _\\ '__|
+| |_| | |\\  |___) | | | | | |_) |  __/ |   
+|____/|_| \\_|____/|_| |_|_| .__/ \\___|_|   
                           |_|             
 ${NC}
 ${BOLD}Domain-based Threat Mitigation${NC}
@@ -113,10 +112,15 @@ if curl -sfL --connect-timeout 10 --max-time 30 "https://raw.githubusercontent.c
     # Make sure script is executable
     chmod +x "$TMP_SCRIPT"
     
+    # Test the script with a simple command
+    if ! bash "$TMP_SCRIPT" --help >/dev/null 2>&1; then
+        echo -e "${RED}${BOLD}Warning:${NC} Script test failed. Installing anyway, but there might be issues."
+    fi
+    
     # Move script to final location
     cp "$TMP_SCRIPT" "$BASE_DIR/dnsniper.sh"
     ln -sf "$BASE_DIR/dnsniper.sh" "$BIN_PATH"
-    chmod +x "$BIN_PATH"
+    chmod +x "$BASE_DIR/dnsniper.sh" "$BIN_PATH"
     
     # Clean up
     rm -f "$TMP_SCRIPT"
@@ -129,11 +133,10 @@ fi
 
 # Initialize DNSniper
 echo -e "\n${BLUE}${BOLD}[5/5]${NC} Initializing DNSniper..."
-if "$BIN_PATH" --version; then
+if "$BIN_PATH" --help >/dev/null 2>&1; then
     echo -e "${GREEN}DNSniper successfully initialized.${NC}"
 else
-    echo -e "${RED}${BOLD}Error:${NC} Failed to initialize DNSniper."
-    exit 1
+    echo -e "${RED}${BOLD}Error:${NC} Failed to initialize DNSniper. Please run 'sudo dnsniper' to check for errors."
 fi
 
 # Final instructions
