@@ -5,14 +5,9 @@
 set -e
 
 # ANSI color codes
-RED='\e[31m'
-GREEN='\e[32m'
-YELLOW='\e[33m'
-BLUE='\e[34m'
-BOLD='\e[1m'
-NC='\e[0m'
+RED='\e[31m' GREEN='\e[32m' YELLOW='\e[33m' BLUE='\e[34m' BOLD='\e[1m' NC='\e[0m'
 
-# Print banner
+# Display banner
 echo -e "${BLUE}${BOLD}
  ____  _   _ ____       _                 
 |  _ \| \ | / ___|_ __ (_)_ __   ___ _ __ 
@@ -29,7 +24,7 @@ BASE_DIR="/etc/dnsniper"
 BIN_PATH="/usr/local/bin/dnsniper"
 TMP_SCRIPT="/tmp/dnsniper.sh"
 
-# Check if running as root
+# Check root
 if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}${BOLD}Error:${NC} This installer must be run as root (sudo)." >&2
     exit 1
@@ -55,7 +50,7 @@ elif command -v yum &>/dev/null; then
     DEPS="iptables curl bind-utils sqlite crontabs"
 else
     echo -e "${YELLOW}${BOLD}Warning:${NC} Unsupported package manager."
-    echo -e "You will need to manually install these dependencies:"
+    echo -e "You'll need to manually install these dependencies:"
     echo -e "- iptables\n- ip6tables\n- curl\n- bind-utils/dnsutils (for dig)\n- sqlite3\n- cron/crontabs"
     
     read -rp "Continue anyway? [y/N]: " response
@@ -79,11 +74,11 @@ if [[ "$PKG_MANAGER" != "manual" ]]; then
     echo -e "${DEPS}"
     if ! $PKG_INSTALL $DEPS; then
         echo -e "${RED}${BOLD}Error:${NC} Failed to install dependencies."
-        echo -e "Please install these manually and try again:"
+        echo -e "Please install these packages manually and try again:"
         echo -e "${DEPS}"
         exit 1
     fi
-    echo -e "${GREEN}Dependencies installed successfully.${NC}"
+    echo -e "${GREEN}Dependencies successfully installed.${NC}"
 else
     echo -e "\n${BLUE}${BOLD}[2/5]${NC} Checking dependencies..."
     missing=()
@@ -98,24 +93,24 @@ else
         echo -e "${YELLOW}Please install these dependencies and run the installer again.${NC}"
         exit 1
     fi
-    echo -e "${GREEN}All dependencies are available.${NC}"
+    echo -e "${GREEN}All dependencies present.${NC}"
 fi
 
 # Create directories
 echo -e "\n${BLUE}${BOLD}[3/5]${NC} Setting up directories..."
 mkdir -p "$BASE_DIR"
-echo -e "${GREEN}Created directory: $BASE_DIR${NC}"
+echo -e "${GREEN}Directory created: $BASE_DIR${NC}"
 
 # Download script
 echo -e "\n${BLUE}${BOLD}[4/5]${NC} Downloading DNSniper script..."
 if curl -sfL --connect-timeout 10 --max-time 30 "https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/dnsniper.sh" -o "$TMP_SCRIPT"; then
-    # Verify script integrity
+    # Verify script health
     if [[ ! -s "$TMP_SCRIPT" ]]; then
         echo -e "${RED}${BOLD}Error:${NC} Downloaded script is empty."
         exit 1
     fi
     
-    # Make sure the script is executable
+    # Make sure script is executable
     chmod +x "$TMP_SCRIPT"
     
     # Move script to final location
@@ -126,7 +121,7 @@ if curl -sfL --connect-timeout 10 --max-time 30 "https://raw.githubusercontent.c
     # Clean up
     rm -f "$TMP_SCRIPT"
     
-    echo -e "${GREEN}DNSniper script installed at: $BIN_PATH${NC}"
+    echo -e "${GREEN}DNSniper script installed to: $BIN_PATH${NC}"
 else
     echo -e "${RED}${BOLD}Error:${NC} Failed to download DNSniper script."
     exit 1
@@ -134,8 +129,8 @@ fi
 
 # Initialize DNSniper
 echo -e "\n${BLUE}${BOLD}[5/5]${NC} Initializing DNSniper..."
-if dnsniper --version; then
-    echo -e "${GREEN}DNSniper initialized successfully.${NC}"
+if "$BIN_PATH" --version; then
+    echo -e "${GREEN}DNSniper successfully initialized.${NC}"
 else
     echo -e "${RED}${BOLD}Error:${NC} Failed to initialize DNSniper."
     exit 1
@@ -144,9 +139,7 @@ fi
 # Final instructions
 echo -e "\n${GREEN}${BOLD}=== Installation Completed Successfully! ===${NC}"
 echo -e "\n${YELLOW}To start using DNSniper:${NC}"
-echo -e "  ${BOLD}Command:${NC} dnsniper"
+echo -e "  ${BOLD}Command:${NC} sudo dnsniper"
 echo -e "\n${YELLOW}To view help:${NC}"
-echo -e "  ${BOLD}Command:${NC} dnsniper --help"
-echo -e "\n${YELLOW}To run without interaction (e.g., from cron):${NC}"
-echo -e "  ${BOLD}Command:${NC} dnsniper --run"
-echo -e "\n${BLUE}${BOLD}Enjoy blocking malicious domains with DNSniper!${NC}\n"
+echo -e "  ${BOLD}Command:${NC} sudo dnsniper --help"
+echo -e "\n${BLUE}${BOLD}Protect your servers against malicious domains with DNSniper!${NC}\n"
