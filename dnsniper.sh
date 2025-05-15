@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 1.3.0
+# Version: 1.3.1
 
 # Strict error handling mode
 set -o errexit
@@ -40,13 +40,18 @@ DEFAULT_MAX_IPS=10
 DEFAULT_TIMEOUT=30
 DEFAULT_URL="https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"
 DEFAULT_AUTO_UPDATE=1
+DEFAULT_EXPIRE_ENABLED=1
+DEFAULT_EXPIRE_MULTIPLIER=5
+DEFAULT_BLOCK_SOURCE=1
+DEFAULT_BLOCK_DESTINATION=1
+DEFAULT_BLOCK_FORWARD=0
 
 # Chain names
 IPT_CHAIN="DNSniper"
 IPT6_CHAIN="DNSniper6"
 
 # Version
-VERSION="1.3.0"
+VERSION="1.3.1"
 
 # Dependencies
 DEPENDENCIES=(iptables ip6tables curl dig sqlite3 crontab)
@@ -293,12 +298,27 @@ initialize_chains() {
         iptables -I OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
     fi
     
+    # Add FORWARD chain if block_forward is enabled
+    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    if [[ "$block_forward" == "1" ]]; then
+        if ! iptables -C FORWARD -j "$IPT_CHAIN" &>/dev/null; then
+            iptables -I FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
+        fi
+    fi
+    
     if ! ip6tables -C INPUT -j "$IPT6_CHAIN" &>/dev/null; then
         ip6tables -I INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
     fi
     
     if ! ip6tables -C OUTPUT -j "$IPT6_CHAIN" &>/dev/null; then
         ip6tables -I OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+    fi
+    
+    # Add FORWARD chain for IPv6 if block_forward is enabled
+    if [[ "$block_forward" == "1" ]]; then
+        if ! ip6tables -C FORWARD -j "$IPT6_CHAIN" &>/dev/null; then
+            ip6tables -I FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
+        fi
     fi
     
     # Make the rules persistent
@@ -346,6 +366,28 @@ ensure_environment() {
         echo "auto_update=$DEFAULT_AUTO_UPDATE" >> "$CONFIG_FILE"
     fi
     
+    # Add new config options for domain expiration
+    if ! grep -q '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null; then
+        echo "expire_enabled=$DEFAULT_EXPIRE_ENABLED" >> "$CONFIG_FILE"
+    fi
+    
+    if ! grep -q '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null; then
+        echo "expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER" >> "$CONFIG_FILE"
+    fi
+    
+    # Add new config options for block rule types
+    if ! grep -q '^block_source=' "$CONFIG_FILE" 2>/dev/null; then
+        echo "block_source=$DEFAULT_BLOCK_SOURCE" >> "$CONFIG_FILE"
+    fi
+    
+    if ! grep -q '^block_destination=' "$CONFIG_FILE" 2>/dev/null; then
+        echo "block_destination=$DEFAULT_BLOCK_DESTINATION" >> "$CONFIG_FILE"
+    fi
+    
+    if ! grep -q '^block_forward=' "$CONFIG_FILE" 2>/dev/null; then
+        echo "block_forward=$DEFAULT_BLOCK_FORWARD" >> "$CONFIG_FILE"
+    fi
+    
     # Initialize SQLite history DB
     if ! sqlite3 "$DB_FILE" <<SQL 2>/dev/null
 CREATE TABLE IF NOT EXISTS history(
@@ -355,6 +397,15 @@ CREATE TABLE IF NOT EXISTS history(
 );
 CREATE INDEX IF NOT EXISTS idx_domain ON history(domain);
 CREATE INDEX IF NOT EXISTS idx_ts ON history(ts);
+
+-- Table for tracking domains expiration
+CREATE TABLE IF NOT EXISTS expired_domains(
+  domain TEXT PRIMARY KEY,
+  last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+  source TEXT DEFAULT 'default'
+);
+CREATE INDEX IF NOT EXISTS idx_expired_domain ON expired_domains(domain);
+CREATE INDEX IF NOT EXISTS idx_last_seen ON expired_domains(last_seen);
 SQL
     then
         exit_with_error "Problem initializing SQLite database"
@@ -414,6 +465,21 @@ update_default() {
     
     echo_safe "${BLUE}Fetching default domains from $update_url...${NC}"
     
+    # Keep track of domains that were in the default list but are removed now
+    local expire_enabled=$(grep '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    if [[ "$expire_enabled" == "1" ]]; then
+        # Get current default domains
+        local old_domains=()
+        if [[ -f "$DEFAULT_FILE" ]]; then
+            while IFS= read -r d || [[ -n "$d" ]]; do
+                [[ -z "$d" || "$d" =~ ^[[:space:]]*# ]] && continue
+                d=$(echo "$d" | tr -d '\r' | tr -d '\n' | xargs)
+                [[ -z "$d" ]] && continue
+                old_domains+=("$d")
+            done < "$DEFAULT_FILE"
+        fi
+    fi
+    
     if curl -sfL --connect-timeout "$timeout" --max-time "$timeout" "$update_url" -o "$DEFAULT_FILE.tmp"; then
         # Verify the downloaded file has content
         if [[ -s "$DEFAULT_FILE.tmp" ]]; then
@@ -423,6 +489,40 @@ update_default() {
                 echo_safe "${RED}Failed to update default domains file${NC}"
                 return 1
             fi
+            
+            # Process expired domains if feature is enabled
+            if [[ "$expire_enabled" == "1" ]]; then
+                # Get new default domains
+                local new_domains=()
+                while IFS= read -r d || [[ -n "$d" ]]; do
+                    [[ -z "$d" || "$d" =~ ^[[:space:]]*# ]] && continue
+                    d=$(echo "$d" | tr -d '\r' | tr -d '\n' | xargs)
+                    [[ -z "$d" ]] && continue
+                    new_domains+=("$d")
+                done < "$DEFAULT_FILE"
+                
+                # Find domains that were in old list but not in new list
+                for old_dom in "${old_domains[@]}"; do
+                    local found=0
+                    for new_dom in "${new_domains[@]}"; do
+                        if [[ "$old_dom" == "$new_dom" ]]; then
+                            found=1
+                            break
+                        fi
+                    done
+                    
+                    if [[ $found -eq 0 ]]; then
+                        # Domain was removed, add/update in expired_domains table
+                        local esc_dom=$(sql_escape "$old_dom")
+                        sqlite3 "$DB_FILE" <<SQL 2>/dev/null
+INSERT OR REPLACE INTO expired_domains(domain, last_seen, source) 
+VALUES('$esc_dom', datetime('now'), 'default');
+SQL
+                        log "INFO" "Tracking expired domain: $old_dom" "verbose"
+                    fi
+                done
+            fi
+            
             log "INFO" "Default domains successfully updated" "verbose"
             echo_safe "${GREEN}Default domains successfully updated${NC}"
         else
@@ -432,7 +532,7 @@ update_default() {
             return 1
         fi
     else
-        rm -f "$DEFAULT_FILE.tmp" &>/dev/null || true
+        rm -f "$DEFAULT_FILE.tmp" 2>/dev/null || true
         log "ERROR" "Error downloading default domains from $update_url"
         echo_safe "${RED}Error downloading default domains${NC}"
         return 1
@@ -441,7 +541,87 @@ update_default() {
     return 0
 }
 
-### 4) Merge default + added, minus removed domains
+### 4) Check for expired domains and remove their rules
+check_expired_domains() {
+    # Check if domain expiration is enabled
+    local expire_enabled=$(grep '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
+    if [[ "$expire_enabled" != "1" ]]; then
+        return 0
+    fi
+    
+    log "INFO" "Checking for expired domains" "verbose"
+    
+    # Get cron schedule to determine update frequency
+    local cron_expr=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
+    local update_minutes=60 # Default to hourly if can't determine
+    
+    if [[ "$cron_expr" == "# DNSniper disabled" ]]; then
+        # Cron is disabled, use 60 minutes as default
+        update_minutes=60
+    elif [[ "$cron_expr" =~ \*/([0-9]+)[[:space:]] ]]; then
+        # Format */X * * * *
+        update_minutes="${BASH_REMATCH[1]}"
+    elif [[ "$cron_expr" =~ ^[0-9]+[[:space:]]+\*/([0-9]+) ]]; then
+        # Format Y */X * * *
+        update_minutes=$((${BASH_REMATCH[1]} * 60))
+    fi
+    
+    # Get expiration multiplier
+    local expire_multiplier=$(grep '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    if [[ -z "$expire_multiplier" || ! "$expire_multiplier" =~ ^[0-9]+$ ]]; then
+        expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
+    fi
+    
+    # Calculate expiration time in minutes
+    local expire_minutes=$((update_minutes * expire_multiplier))
+    
+    # Get domains that have expired
+    local expired_domains
+    expired_domains=$(sqlite3 "$DB_FILE" "SELECT domain FROM expired_domains 
+                                          WHERE source='default' AND 
+                                          datetime(last_seen, '+$expire_minutes minutes') < datetime('now');" 2>/dev/null)
+    
+    # Process expired domains
+    if [[ -n "$expired_domains" ]]; then
+        echo_safe "${YELLOW}Found expired domains to clean up...${NC}"
+        
+        while IFS= read -r domain; do
+            echo_safe "${YELLOW}Removing expired domain:${NC} $domain"
+            
+            # Get IPs associated with this domain
+            local esc_dom=$(sql_escape "$domain")
+            local ips
+            ips=$(sqlite3 "$DB_FILE" "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
+            
+            if [[ -n "$ips" ]]; then
+                IFS=',' read -ra ip_list <<< "$ips"
+                
+                # Unblock each IP
+                for ip in "${ip_list[@]}"; do
+                    if unblock_ip "$ip" "DNSniper: $domain"; then
+                        echo_safe "  - ${GREEN}Unblocked expired IP:${NC} $ip"
+                    fi
+                done
+            fi
+            
+            # Remove from expired domains tracking
+            sqlite3 "$DB_FILE" "DELETE FROM expired_domains WHERE domain='$esc_dom';" 2>/dev/null
+            
+            # If domain was manually added to remove list, honor that
+            if ! grep -Fxq "$domain" "$REMOVE_FILE" 2>/dev/null; then
+                echo "$domain" >> "$REMOVE_FILE"
+            fi
+            
+            log "INFO" "Removed expired domain: $domain" "verbose"
+        done <<< "$expired_domains"
+        
+        # Make rules persistent
+        make_rules_persistent
+    fi
+}
+
+### 5) Merge default + added, minus removed domains
 merge_domains() {
     log "INFO" "Merging domain lists"
     
@@ -506,7 +686,7 @@ merge_domains() {
     done
 }
 
-### 5) Get list of custom IPs to block
+### 6) Get list of custom IPs to block
 get_custom_ips() {
     log "INFO" "Getting custom IP list"
     
@@ -559,7 +739,7 @@ get_custom_ips() {
     done
 }
 
-### 6) Record history and trim to max_ips
+### 7) Record history and trim to max_ips
 record_history() {
     local domain="$1" ips_csv="$2"
     
@@ -595,7 +775,7 @@ SQL
     return 0
 }
 
-### 7) Detect CDN by comparing last two resolves
+### 8) Detect CDN by comparing last two resolves
 detect_cdn() {
     local domains=("$@")
     local warnings=()
@@ -649,7 +829,7 @@ detect_cdn() {
     fi
 }
 
-### 8) Block a specific IP with iptables/ip6tables
+### 9) Block a specific IP with iptables/ip6tables
 block_ip() {
     local ip="$1" comment="$2"
     local tbl="iptables"
@@ -661,26 +841,62 @@ block_ip() {
         chain="$IPT6_CHAIN"
     fi
     
-    # Block IP in our custom chain
-    if ! $tbl -C "$chain" -s "$ip" -j DROP -m comment --comment "$comment" &>/dev/null; then
-        if ! $tbl -A "$chain" -s "$ip" -j DROP -m comment --comment "$comment"; then
-            return 1
+    # Get rule type settings
+    local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
+    # Validate settings, use defaults if invalid
+    [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
+    [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
+    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
+    
+    local rules_added=0
+    
+    # Block source IP in INPUT chain if enabled
+    if [[ "$block_source" == "1" ]]; then
+        if ! $tbl -C "$chain" -s "$ip" -j DROP -m comment --comment "$comment" &>/dev/null; then
+            if $tbl -A "$chain" -s "$ip" -j DROP -m comment --comment "$comment"; then
+                rules_added=1
+            else
+                log "ERROR" "Failed to add source rule for $ip" "verbose"
+            fi
         fi
     fi
     
-    if ! $tbl -C "$chain" -d "$ip" -j DROP -m comment --comment "$comment" &>/dev/null; then
-        if ! $tbl -A "$chain" -d "$ip" -j DROP -m comment --comment "$comment"; then
-            return 1
+    # Block destination IP in INPUT and OUTPUT chains if enabled
+    if [[ "$block_destination" == "1" ]]; then
+        if ! $tbl -C "$chain" -d "$ip" -j DROP -m comment --comment "$comment" &>/dev/null; then
+            if $tbl -A "$chain" -d "$ip" -j DROP -m comment --comment "$comment"; then
+                rules_added=1
+            else
+                log "ERROR" "Failed to add destination rule for $ip" "verbose"
+            fi
         fi
     fi
     
-    # Make rules persistent
-    make_rules_persistent
+    # Block in FORWARD chain if enabled
+    if [[ "$block_forward" == "1" ]]; then
+        # Ensure our chain is referenced in FORWARD
+        if ! $tbl -C FORWARD -j "$chain" &>/dev/null; then
+            $tbl -I FORWARD -j "$chain" 2>/dev/null || true
+        fi
+        
+        # Add specific FORWARD rules
+        if ! $tbl -C "$chain" -s "$ip" -m comment --comment "$comment" -j DROP &>/dev/null; then
+            $tbl -A "$chain" -s "$ip" -m comment --comment "$comment" -j DROP
+            rules_added=1
+        fi
+        if ! $tbl -C "$chain" -d "$ip" -m comment --comment "$comment" -j DROP &>/dev/null; then
+            $tbl -A "$chain" -d "$ip" -m comment --comment "$comment" -j DROP
+            rules_added=1
+        fi
+    fi
     
-    return 0
+    return $((1 - rules_added))
 }
 
-### 9) Unblock a specific IP from iptables/ip6tables
+### 10) Unblock a specific IP from iptables/ip6tables
 unblock_ip() {
     local ip="$1" comment_pattern="$2"
     local tbl="iptables"
@@ -693,16 +909,43 @@ unblock_ip() {
         chain="$IPT6_CHAIN"
     fi
     
+    # Get rule type settings to know what to unblock
+    local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
+    # Validate settings, use defaults if invalid
+    [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
+    [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
+    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
+    
     # Try to remove rule from chain (source)
-    if $tbl -C "$chain" -s "$ip" -j DROP -m comment --comment "$comment_pattern" &>/dev/null 2>&1; then
-        $tbl -D "$chain" -s "$ip" -j DROP -m comment --comment "$comment_pattern"
-        success=1
+    if [[ "$block_source" == "1" ]]; then
+        while $tbl -C "$chain" -s "$ip" -j DROP -m comment --comment "$comment_pattern" &>/dev/null 2>&1; do
+            $tbl -D "$chain" -s "$ip" -j DROP -m comment --comment "$comment_pattern"
+            success=1
+        done
     fi
     
     # Try to remove rule from chain (destination)
-    if $tbl -C "$chain" -d "$ip" -j DROP -m comment --comment "$comment_pattern" &>/dev/null 2>&1; then
-        $tbl -D "$chain" -d "$ip" -j DROP -m comment --comment "$comment_pattern"
-        success=1
+    if [[ "$block_destination" == "1" ]]; then
+        while $tbl -C "$chain" -d "$ip" -j DROP -m comment --comment "$comment_pattern" &>/dev/null 2>&1; do
+            $tbl -D "$chain" -d "$ip" -j DROP -m comment --comment "$comment_pattern"
+            success=1
+        done
+    fi
+    
+    # Try to remove from FORWARD chain
+    if [[ "$block_forward" == "1" ]]; then
+        while $tbl -C "$chain" -s "$ip" -m comment --comment "$comment_pattern" -j DROP &>/dev/null 2>&1; do
+            $tbl -D "$chain" -s "$ip" -m comment --comment "$comment_pattern" -j DROP
+            success=1
+        done
+        
+        while $tbl -C "$chain" -d "$ip" -m comment --comment "$comment_pattern" -j DROP &>/dev/null 2>&1; do
+            $tbl -D "$chain" -d "$ip" -m comment --comment "$comment_pattern" -j DROP
+            success=1
+        done
     fi
     
     # Make rules persistent if we made changes
@@ -713,7 +956,7 @@ unblock_ip() {
     return $((1 - success))
 }
 
-### 10) Count actual blocked IPs (not just rules)
+### 11) Count actual blocked IPs (not just rules)
 count_blocked_ips() {
     local v4_rules v6_rules unique_ips
     local ipv4_list ipv6_list
@@ -733,7 +976,79 @@ count_blocked_ips() {
     echo $((v4_rules + v6_rules))
 }
 
-### 11) Resolve domains and apply iptables/ip6tables rules
+### 12) Check if a domain has active IP blocks
+has_active_blocks() {
+    local domain="$1"
+    local esc_dom=$(sql_escape "$domain")
+    
+    # First check if domain exists in history
+    local count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM history WHERE domain='$esc_dom';" 2>/dev/null || echo 0)
+    
+    if [[ $count -eq 0 ]]; then
+        return 1  # No records found
+    fi
+    
+    # Get the most recent IPs for this domain
+    local ips=$(sqlite3 "$DB_FILE" "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
+    
+    if [[ -z "$ips" ]]; then
+        return 1  # No IPs found
+    fi
+    
+    # Convert CSV to array
+    local ip_list=()
+    IFS=',' read -ra ip_list <<< "$ips"
+    
+    # Check if any IP is actively blocked
+    for ip in "${ip_list[@]}"; do
+        local blocked=0
+        
+        # Determine which table to use
+        local tbl="iptables"
+        if is_ipv6 "$ip"; then
+            tbl="ip6tables"
+        fi
+        
+        # Check if IP is blocked in firewall
+        if $tbl-save 2>/dev/null | grep -q "$ip.*DNSniper: $domain"; then
+            return 0  # At least one IP is actively blocked
+        fi
+    done
+    
+    return 1  # No active blocks found
+}
+
+### 13) Apply block rule type changes
+apply_rule_type_changes() {
+    log "INFO" "Applying rule type changes" "verbose"
+    echo_safe "${BLUE}Applying rule type changes...${NC}"
+    
+    # Clear existing rules to rebuild them with new settings
+    clear_rules
+    
+    # If forward blocking is enabled/disabled, adjust chains
+    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    if [[ "$block_forward" == "1" ]]; then
+        # Add our chains to FORWARD chains if not already there
+        if ! iptables -C FORWARD -j "$IPT_CHAIN" &>/dev/null; then
+            iptables -I FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
+        fi
+        if ! ip6tables -C FORWARD -j "$IPT6_CHAIN" &>/dev/null; then
+            ip6tables -I FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
+        fi
+    else
+        # Remove references to our chains from FORWARD
+        iptables -D FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
+        ip6tables -D FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
+    fi
+    
+    # Run a full resolve_block to rebuild the rules with new settings
+    resolve_block
+    
+    echo_safe "${GREEN}Rule type changes applied successfully.${NC}"
+}
+
+### 14) Resolve domains and apply iptables/ip6tables rules
 resolve_block() {
     log "INFO" "Starting domain resolution and blocking" "verbose"
     
@@ -748,6 +1063,9 @@ resolve_block() {
         echo_safe "${BLUE}Auto-updating domain lists...${NC}"
         update_default
     fi
+    
+    # Check for expired domains
+    check_expired_domains
     
     echo_safe "${BLUE}Resolving domains...${NC}"
     
@@ -890,7 +1208,7 @@ resolve_block() {
     return 0
 }
 
-### 12) Interactive menu functions
+### 15) Interactive menu functions
 # --- Settings submenu ---
 settings_menu() {
     while true; do
@@ -903,6 +1221,8 @@ settings_menu() {
         echo_safe "${YELLOW}4.${NC} Set Update URL"
         echo_safe "${YELLOW}5.${NC} Toggle Auto-Update"
         echo_safe "${YELLOW}6.${NC} Import/Export"
+        echo_safe "${YELLOW}7.${NC} Rule Expiration Settings"
+        echo_safe "${YELLOW}8.${NC} Block Rule Types"
         echo_safe "${YELLOW}0.${NC} Back to Main Menu"
         echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
         
@@ -915,12 +1235,224 @@ settings_menu() {
             4) set_update_url ;;
             5) toggle_auto_update ;;
             6) import_export_menu ;;
+            7) expiration_settings ;;
+            8) rule_types_settings ;;
             0) return ;;
-            *) echo_safe "${RED}Invalid selection. Please choose 0-6.${NC}" ;;
+            *) echo_safe "${RED}Invalid selection. Please choose 0-8.${NC}" ;;
         esac
         
         read -rp "Press Enter to continue..."
     done
+}
+
+# Rule expiration settings
+expiration_settings() {
+    echo_safe "${BOLD}=== Rule Expiration Settings ===${NC}"
+    
+    # Get current settings
+    local expire_enabled=$(grep '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local expire_multiplier=$(grep '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
+    # Validate settings, use defaults if invalid
+    [[ -z "$expire_enabled" || ! "$expire_enabled" =~ ^[01]$ ]] && expire_enabled=$DEFAULT_EXPIRE_ENABLED
+    [[ -z "$expire_multiplier" || ! "$expire_multiplier" =~ ^[0-9]+$ ]] && expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
+    
+    # Get cron schedule to determine update frequency
+    local cron_expr=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
+    local update_minutes=60 # Default to hourly if can't determine
+    
+    if [[ "$cron_expr" == "# DNSniper disabled" ]]; then
+        # Cron is disabled, use 60 minutes as default for display purposes
+        update_minutes=60
+    elif [[ "$cron_expr" =~ \*/([0-9]+)[[:space:]] ]]; then
+        # Format */X * * * *
+        update_minutes="${BASH_REMATCH[1]}"
+    elif [[ "$cron_expr" =~ ^[0-9]+[[:space:]]+\*/([0-9]+) ]]; then
+        # Format Y */X * * *
+        update_minutes=$((${BASH_REMATCH[1]} * 60))
+    fi
+    
+    # Calculate actual expiration time
+    local expire_minutes=$((update_minutes * expire_multiplier))
+    local expire_hours=$((expire_minutes / 60))
+    local expire_days=$((expire_hours / 24))
+    local expire_display
+    
+    if [[ $expire_days -gt 1 ]]; then
+        expire_display="$expire_days days"
+    elif [[ $expire_hours -gt 1 ]]; then
+        expire_display="$expire_hours hours"
+    else
+        expire_display="$expire_minutes minutes"
+    fi
+    
+    # Display current settings
+    if [[ "$expire_enabled" == "1" ]]; then
+        echo_safe "${BLUE}Rule expiration:${NC} ${GREEN}Enabled${NC}"
+        echo_safe "${BLUE}Current expiration time:${NC} ${YELLOW}$expire_display${NC} ($expire_multiplier x update frequency)"
+        echo_safe "\n${YELLOW}Note:${NC} Rule expiration only applies to domains from the default list, not custom domains."
+        echo_safe "Expired rules are automatically removed after the specified time."
+        
+        # Ask to toggle
+        read -rp "Disable rule expiration? [y/N]: " choice
+        if [[ "$choice" =~ ^[Yy] ]]; then
+            sed -i "s|^expire_enabled=.*|expire_enabled=0|" "$CONFIG_FILE"
+            echo_safe "${YELLOW}Rule expiration disabled.${NC}"
+            log "INFO" "Rule expiration disabled by user" "verbose"
+        else
+            # If not disabling, ask to change multiplier
+            read -rp "Change expiration multiplier? (current: $expire_multiplier) [y/N]: " change_mult
+            if [[ "$change_mult" =~ ^[Yy] ]]; then
+                read -rp "New multiplier (1-100): " new_mult
+                if [[ "$new_mult" =~ ^[0-9]+$ && $new_mult -ge 1 && $new_mult -le 100 ]]; then
+                    sed -i "s|^expire_multiplier=.*|expire_multiplier=$new_mult|" "$CONFIG_FILE"
+                    
+                    # Calculate new expiration time
+                    local new_expire_minutes=$((update_minutes * new_mult))
+                    local new_expire_hours=$((new_expire_minutes / 60))
+                    local new_expire_days=$((new_expire_hours / 24))
+                    local new_expire_display
+                    
+                    if [[ $new_expire_days -gt 1 ]]; then
+                        new_expire_display="$new_expire_days days"
+                    elif [[ $new_expire_hours -gt 1 ]]; then
+                        new_expire_display="$new_expire_hours hours"
+                    else
+                        new_expire_display="$new_expire_minutes minutes"
+                    fi
+                    
+                    echo_safe "${GREEN}Expiration multiplier set to $new_mult (${new_expire_display}).${NC}"
+                    log "INFO" "Expiration multiplier updated to $new_mult" "verbose"
+                else
+                    echo_safe "${RED}Invalid input. Please enter a number between 1 and 100.${NC}"
+                fi
+            else
+                echo_safe "${YELLOW}No change.${NC}"
+            fi
+        fi
+    else
+        echo_safe "${BLUE}Rule expiration:${NC} ${RED}Disabled${NC}"
+        echo_safe "${BLUE}Default expiration time:${NC} ${YELLOW}$expire_display${NC} ($expire_multiplier x update frequency)"
+        echo_safe "\n${YELLOW}Note:${NC} When enabled, rule expiration only applies to domains from the default list."
+        
+        read -rp "Enable rule expiration? [y/N]: " choice
+        if [[ "$choice" =~ ^[Yy] ]]; then
+            sed -i "s|^expire_enabled=.*|expire_enabled=1|" "$CONFIG_FILE"
+            echo_safe "${GREEN}Rule expiration enabled.${NC}"
+            log "INFO" "Rule expiration enabled by user" "verbose"
+            
+            # Ask to change multiplier
+            read -rp "Change expiration multiplier? (current: $expire_multiplier) [y/N]: " change_mult
+            if [[ "$change_mult" =~ ^[Yy] ]]; then
+                read -rp "New multiplier (1-100): " new_mult
+                if [[ "$new_mult" =~ ^[0-9]+$ && $new_mult -ge 1 && $new_mult -le 100 ]]; then
+                    sed -i "s|^expire_multiplier=.*|expire_multiplier=$new_mult|" "$CONFIG_FILE"
+                    
+                    # Calculate new expiration time
+                    local new_expire_minutes=$((update_minutes * new_mult))
+                    local new_expire_hours=$((new_expire_minutes / 60))
+                    local new_expire_days=$((new_expire_hours / 24))
+                    local new_expire_display
+                    
+                    if [[ $new_expire_days -gt 1 ]]; then
+                        new_expire_display="$new_expire_days days"
+                    elif [[ $new_expire_hours -gt 1 ]]; then
+                        new_expire_display="$new_expire_hours hours"
+                    else
+                        new_expire_display="$new_expire_minutes minutes"
+                    fi
+                    
+                    echo_safe "${GREEN}Expiration multiplier set to $new_mult (${new_expire_display}).${NC}"
+                    log "INFO" "Expiration multiplier updated to $new_mult" "verbose"
+                else
+                    echo_safe "${RED}Invalid input. Please enter a number between 1 and 100.${NC}"
+                fi
+            fi
+        else
+            echo_safe "${YELLOW}No change.${NC}"
+        fi
+    fi
+}
+
+# Rule types settings
+rule_types_settings() {
+    local need_apply=0
+    
+    echo_safe "${BOLD}=== Block Rule Types ===${NC}"
+    
+    # Get current settings
+    local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
+    # Validate settings, use defaults if invalid
+    [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
+    [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
+    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
+    
+    # Store original values for comparison
+    local orig_source=$block_source
+    local orig_destination=$block_destination
+    local orig_forward=$block_forward
+    
+    # Display current settings
+    echo_safe "${BLUE}Current rule types:${NC}"
+    echo_safe "  ${block_source:+${GREEN}✓${NC}}${block_source:=${RED}✗${NC}} Source IPs      (block traffic FROM malicious IPs)"
+    echo_safe "  ${block_destination:+${GREEN}✓${NC}}${block_destination:=${RED}✗${NC}} Destination IPs (block traffic TO malicious IPs)"
+    echo_safe "  ${block_forward:+${GREEN}✓${NC}}${block_forward:=${RED}✗${NC}} Forward        (block forwarded traffic through this server)"
+    
+    echo_safe "\n${YELLOW}Note:${NC} Changing these settings will affect all existing and future blocking rules."
+    
+    # Allow toggles
+    read -rp "Toggle Source blocking? [y/N]: " toggle_source
+    if [[ "$toggle_source" =~ ^[Yy] ]]; then
+        block_source=$((1 - block_source))
+        sed -i "s|^block_source=.*|block_source=$block_source|" "$CONFIG_FILE"
+        if [[ $block_source -eq 1 ]]; then
+            echo_safe "${GREEN}Source IP blocking enabled.${NC}"
+        else
+            echo_safe "${RED}Source IP blocking disabled.${NC}"
+        fi
+        need_apply=1
+    fi
+    
+    read -rp "Toggle Destination blocking? [y/N]: " toggle_dest
+    if [[ "$toggle_dest" =~ ^[Yy] ]]; then
+        block_destination=$((1 - block_destination))
+        sed -i "s|^block_destination=.*|block_destination=$block_destination|" "$CONFIG_FILE"
+        if [[ $block_destination -eq 1 ]]; then
+            echo_safe "${GREEN}Destination IP blocking enabled.${NC}"
+        else
+            echo_safe "${RED}Destination IP blocking disabled.${NC}"
+        fi
+        need_apply=1
+    fi
+    
+    read -rp "Toggle Forward blocking? [y/N]: " toggle_forward
+    if [[ "$toggle_forward" =~ ^[Yy] ]]; then
+        block_forward=$((1 - block_forward))
+        sed -i "s|^block_forward=.*|block_forward=$block_forward|" "$CONFIG_FILE"
+        if [[ $block_forward -eq 1 ]]; then
+            echo_safe "${GREEN}Forward traffic blocking enabled.${NC}"
+        else
+            echo_safe "${RED}Forward traffic blocking disabled.${NC}"
+        fi
+        need_apply=1
+    fi
+    
+    # If changes were made, ask to apply them now
+    if [[ $need_apply -eq 1 ]]; then
+        echo_safe "\n${YELLOW}Warning:${NC} Rule type changes have been saved but require rule reconfiguration to take effect."
+        read -rp "Apply changes now? (Recommended) [Y/n]: " apply_now
+        if [[ ! "$apply_now" =~ ^[Nn] ]]; then
+            apply_rule_type_changes
+        else
+            echo_safe "${YELLOW}Changes will take effect on next 'Run Now' or cron job execution.${NC}"
+            log "WARNING" "Rule type changes deferred until next run" "verbose"
+        fi
+    else
+        echo_safe "${YELLOW}No changes made.${NC}"
+    fi
 }
 
 # Set schedule
@@ -1533,8 +2065,7 @@ unblock_domain() {
             # Get IPs from history
             local esc_dom=$(sql_escape "$domain_to_unblock")
             local ips
-            ips=$(sqlite3 -separator ',' "$DB_FILE" \
-                "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
+            ips=$(sqlite3 "$DB_FILE" "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
             
             if [[ -n "$ips" ]]; then
                 IFS=',' read -ra ip_list <<< "$ips"
@@ -1692,58 +2223,95 @@ display_status() {
     local sched=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
     local update_url=$(grep '^update_url=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
     local auto_update=$(grep '^auto_update=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local expire_enabled=$(grep '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local expire_multiplier=$(grep '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     
     # Apply defaults if missing or invalid
-    if [[ -z "$max_ips" || ! "$max_ips" =~ ^[0-9]+$ ]]; then
-        max_ips=$DEFAULT_MAX_IPS
-    fi
-    
-    if [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]]; then
-        timeout=$DEFAULT_TIMEOUT
-    fi
-    
-    if [[ -z "$update_url" ]]; then
-        update_url=$DEFAULT_URL
-    fi
-    
-    if [[ -z "$auto_update" || ! "$auto_update" =~ ^[01]$ ]]; then
-        auto_update=$DEFAULT_AUTO_UPDATE
-    fi
+    [[ -z "$max_ips" || ! "$max_ips" =~ ^[0-9]+$ ]] && max_ips=$DEFAULT_MAX_IPS
+    [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]] && timeout=$DEFAULT_TIMEOUT
+    [[ -z "$update_url" ]] && update_url=$DEFAULT_URL
+    [[ -z "$auto_update" || ! "$auto_update" =~ ^[01]$ ]] && auto_update=$DEFAULT_AUTO_UPDATE
+    [[ -z "$expire_enabled" || ! "$expire_enabled" =~ ^[01]$ ]] && expire_enabled=$DEFAULT_EXPIRE_ENABLED
+    [[ -z "$expire_multiplier" || ! "$expire_multiplier" =~ ^[0-9]+$ ]] && expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
+    [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
+    [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
+    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
     
     # Format auto-update text
     local auto_update_text="${RED}Disabled${NC}"
     [[ "$auto_update" == "1" ]] && auto_update_text="${GREEN}Enabled${NC}"
     
+    # Format expiration text
+    local expire_text="${RED}Disabled${NC}"
+    [[ "$expire_enabled" == "1" ]] && expire_text="${GREEN}Enabled (${expire_multiplier}x)${NC}"
+    
     # Format schedule text
     local schedule_text="$sched"
     [[ "$sched" == "# DNSniper disabled" ]] && schedule_text="${RED}Disabled${NC}"
     
+    # Format rule types text
+    local rule_types=""
+    [[ "$block_source" == "1" ]] && rule_types+="Source, "
+    [[ "$block_destination" == "1" ]] && rule_types+="Destination, "
+    [[ "$block_forward" == "1" ]] && rule_types+="Forward, "
+    rule_types=${rule_types%, }
+    [[ -z "$rule_types" ]] && rule_types="${RED}None${NC}"
+    
     # Count actual blocked IPs
     local actual_blocked_ips=$(count_blocked_ips)
+    
+    # Count expired domains pending cleanup
+    local expired_count=0
+    if [[ "$expire_enabled" == "1" ]]; then
+        local cron_expr=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
+        local update_minutes=60 # Default to hourly if can't determine
+        
+        if [[ "$cron_expr" == "# DNSniper disabled" ]]; then
+            update_minutes=60
+        elif [[ "$cron_expr" =~ \*/([0-9]+)[[:space:]] ]]; then
+            update_minutes="${BASH_REMATCH[1]}"
+        elif [[ "$cron_expr" =~ ^[0-9]+[[:space:]]+\*/([0-9]+) ]]; then
+            update_minutes=$((${BASH_REMATCH[1]} * 60))
+        fi
+        
+        local expire_minutes=$((update_minutes * expire_multiplier))
+        
+        expired_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM expired_domains 
+                                          WHERE source='default' AND 
+                                          datetime(last_seen, '+$expire_minutes minutes') < datetime('now');" 2>/dev/null || echo 0)
+    fi
     
     # Display summary counts
     echo_safe "${CYAN}${BOLD}SYSTEM STATUS${NC}"
     echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-    echo_safe "${BOLD}Blocked Domains:${NC}   ${GREEN}${#domains[@]}${NC}"
-    echo_safe "${BOLD}Blocked IPs:${NC}       ${RED}$actual_blocked_ips${NC}"
-    echo_safe "${BOLD}Custom IPs:${NC}        ${YELLOW}${#custom_ips[@]}${NC}"
+    echo_safe "${BOLD}Blocked Domains:${NC}      ${GREEN}${#domains[@]}${NC}"
+    echo_safe "${BOLD}Blocked IPs:${NC}          ${RED}$actual_blocked_ips${NC}"
+    echo_safe "${BOLD}Custom IPs:${NC}           ${YELLOW}${#custom_ips[@]}${NC}"
+    if [[ $expired_count -gt 0 && "$expire_enabled" == "1" ]]; then
+        echo_safe "${BOLD}Pending Expirations:${NC}  ${YELLOW}$expired_count${NC}"
+    fi
     
     # Config section
     echo_safe ""
     echo_safe "${CYAN}${BOLD}CONFIGURATION${NC}"
     echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-    echo_safe "${BOLD}Schedule:${NC}        $schedule_text"
-    echo_safe "${BOLD}Max IPs/domain:${NC}  ${YELLOW}$max_ips${NC}"
-    echo_safe "${BOLD}Timeout:${NC}         ${YELLOW}$timeout seconds${NC}"
-    echo_safe "${BOLD}Auto-update:${NC}     $auto_update_text"
+    echo_safe "${BOLD}Schedule:${NC}           $schedule_text"
+    echo_safe "${BOLD}Max IPs/domain:${NC}     ${YELLOW}$max_ips${NC}"
+    echo_safe "${BOLD}Timeout:${NC}            ${YELLOW}$timeout seconds${NC}"
+    echo_safe "${BOLD}Auto-update:${NC}        $auto_update_text"
+    echo_safe "${BOLD}Rule Expiration:${NC}    $expire_text"
+    echo_safe "${BOLD}Rule Types:${NC}         $rule_types"
     
     # Firewall information
     echo_safe ""
     echo_safe "${CYAN}${BOLD}FIREWALL${NC}"
     echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-    echo_safe "${BOLD}IPv4 Chain:${NC}      ${YELLOW}$IPT_CHAIN${NC}"
-    echo_safe "${BOLD}IPv6 Chain:${NC}      ${YELLOW}$IPT6_CHAIN${NC}"
-    echo_safe "${BOLD}Persistence:${NC}     ${GREEN}$(detect_system)${NC}"
+    echo_safe "${BOLD}IPv4 Chain:${NC}         ${YELLOW}$IPT_CHAIN${NC}"
+    echo_safe "${BOLD}IPv6 Chain:${NC}         ${YELLOW}$IPT6_CHAIN${NC}"
+    echo_safe "${BOLD}Persistence:${NC}        ${GREEN}$(detect_system)${NC}"
     
     # System information
     echo_safe ""
@@ -1755,8 +2323,8 @@ display_status() {
     else
         last_run="Never"
     fi
-    echo_safe "${BOLD}Last Run:${NC}        ${BLUE}$last_run${NC}"
-    echo_safe "${BOLD}Version:${NC}         ${GREEN}$VERSION${NC}"
+    echo_safe "${BOLD}Last Run:${NC}           ${BLUE}$last_run${NC}"
+    echo_safe "${BOLD}Version:${NC}            ${GREEN}$VERSION${NC}"
     
     # Domains section if exists
     if [[ ${#domains[@]} -gt 0 ]]; then
@@ -1765,18 +2333,60 @@ display_status() {
         echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
         local dom_count=0
         for dom in "${domains[@]}"; do
-            # Get most recent IP list
+            # Get most recent IP list - Fixed approach
             local esc_dom=$(sql_escape "$dom")
-            local ips
-            ips=$(sqlite3 -separator ',' "$DB_FILE" \
-                "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null || echo "")
             
-            if [[ -n "$ips" ]]; then
-                local ip_count=$(echo "$ips" | tr -cd ',' | wc -c)
-                ip_count=$((ip_count + 1))
-                echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs${NC})"
+            # Check if there are records for this domain
+            local record_count
+            record_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM history WHERE domain='$esc_dom';" 2>/dev/null || echo "0")
+            
+            if [[ "$record_count" -gt 0 ]]; then
+                # Records exist, get the IPs
+                local ips
+                ips=$(sqlite3 "$DB_FILE" "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null || echo "")
+                
+                if [[ -n "$ips" ]]; then
+                    local ip_count
+                    # Count the commas and add 1
+                    ip_count=$(echo "$ips" | tr -cd ',' | wc -c)
+                    ip_count=$((ip_count + 1))
+                    
+                    # Check if any IPs are actively blocked
+                    local active_blocks=0
+                    IFS=',' read -ra ip_list <<< "$ips"
+                    for ip in "${ip_list[@]}"; do
+                        local tbl="iptables"
+                        if is_ipv6 "$ip"; then
+                            tbl="ip6tables"
+                        fi
+                        
+                        if $tbl-save 2>/dev/null | grep -q "$ip.*$dom"; then
+                            active_blocks=1
+                            break
+                        fi
+                    done
+                    
+                    if [[ $active_blocks -eq 1 ]]; then
+                        echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs${NC})"
+                    else
+                        echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs ${CYAN}not blocked yet${NC})"
+                    fi
+                else
+                    # Database record exists but IPs field is empty
+                    echo_safe "${GREEN}$dom${NC} (${RED}No IPs in database${NC})"
+                fi
             else
-                echo_safe "${GREEN}$dom${NC} (${RED}No IPs resolved yet${NC})"
+                # Try to resolve now to show up-to-date info
+                local resolved_now
+                resolved_now=$(dig +short A "$dom" 2>/dev/null)
+                
+                if [[ -n "$resolved_now" ]]; then
+                    # We can resolve it, but it's not in the DB yet
+                    echo_safe "${GREEN}$dom${NC} (${YELLOW}Resolvable, run 'Run Now' to block${NC})"
+                else
+                    # Cannot resolve at all
+                    echo_safe "${GREEN}$dom${NC} (${RED}No IPs resolved yet${NC})"
+                fi
             fi
             
             dom_count=$((dom_count + 1))
@@ -1857,8 +2467,10 @@ uninstall() {
             # Remove references to our chains
             iptables -D INPUT -j "$IPT_CHAIN" 2>/dev/null || true
             iptables -D OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
+            iptables -D FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
             ip6tables -D INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
             ip6tables -D OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+            ip6tables -D FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
             
             # Flush our chains
             iptables -F "$IPT_CHAIN" 2>/dev/null || true
@@ -1910,6 +2522,7 @@ show_help() {
     echo_safe "  ${YELLOW}--unblock${NC} DOMAIN Remove a domain from block list"
     echo_safe "  ${YELLOW}--block-ip${NC} IP Add an IP to block list"
     echo_safe "  ${YELLOW}--unblock-ip${NC} IP Remove an IP from block list"
+    echo_safe "  ${YELLOW}--check-expired${NC} Check and remove expired rules"
     echo_safe "  ${YELLOW}--version${NC}    Show version"
     echo_safe "  ${YELLOW}--help${NC}       Show this help"
     echo_safe ""
@@ -1922,7 +2535,7 @@ show_help() {
     return 0
 }
 
-### 13) Main menu loop
+### 16) Main menu loop
 main_menu() {
     while true; do
         show_banner
@@ -1956,7 +2569,7 @@ main_menu() {
     done
 }
 
-### 14) Command line arguments handling
+### 17) Command line arguments handling
 handle_args() {
     case "$1" in
         --run)
@@ -2012,6 +2625,9 @@ handle_args() {
             echo_safe "${GREEN}IP added to unblock list:${NC} $2"
             log "INFO" "IP unblocked via CLI: $2" "verbose"
             ;;
+        --check-expired)
+            check_expired_domains
+            ;;
         --version)
             echo_safe "DNSniper version $VERSION"
             exit 0
@@ -2027,7 +2643,7 @@ handle_args() {
     return 0
 }
 
-### 15) Entry point
+### 18) Entry point
 main() {
     # Create log directory if needed
     if [[ ! -d "$(dirname "$LOG_FILE")" ]]; then
