@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 1.3.2
+# Version: 1.3.3
 # Strict error handling mode
 set -o errexit
 set -o pipefail
@@ -48,7 +48,7 @@ DEFAULT_LOGGING_ENABLED=0
 IPT_CHAIN="DNSniper"
 IPT6_CHAIN="DNSniper6"
 # Version
-VERSION="1.3.2"
+VERSION="1.3.3"
 # Dependencies
 DEPENDENCIES=(iptables ip6tables curl dig sqlite3 crontab)
 # Helper functions
@@ -161,76 +161,187 @@ exit_with_error() {
 }
 # Detect persistence mechanism and OS type
 detect_system() {
-    # Detect OS family
+    # Detect OS family with more comprehensive checks
     if [[ -f /etc/debian_version ]]; then
-        echo "debian"
+        # Check for Ubuntu specifically
+        if grep -qi ubuntu /etc/os-release 2>/dev/null; then
+            echo "ubuntu"
+        else
+            echo "debian"
+        fi
     elif [[ -f /etc/redhat-release ]]; then
-        echo "redhat"
+        # Check for CentOS or RHEL
+        if grep -qi "centos\|centos linux" /etc/redhat-release 2>/dev/null; then
+            echo "centos"
+        elif grep -qi "red hat\|redhat" /etc/redhat-release 2>/dev/null; then
+            echo "rhel"
+        else
+            echo "redhat" # Generic RedHat-based
+        fi
     elif [[ -f /etc/fedora-release ]]; then
         echo "fedora"
+    elif [[ -f /etc/os-release ]]; then
+        # Check /etc/os-release for more information
+        if grep -qi "debian" /etc/os-release; then
+            echo "debian"
+        elif grep -qi "ubuntu" /etc/os-release; then
+            echo "ubuntu"
+        elif grep -qi "centos" /etc/os-release; then
+            echo "centos"
+        elif grep -qi "fedora" /etc/os-release; then
+            echo "fedora"
+        elif grep -qi "red hat\|rhel" /etc/os-release; then
+            echo "rhel"
+        else
+            echo "unknown"
+        fi
     else
         echo "unknown"
     fi
 }
+
 # Make iptables rules persistent based on system type
 make_rules_persistent() {
     local os_type=$(detect_system)
     local success=0
+    
+    # Always save to our own directory as a backup
+    log "INFO" "Creating backup rules in $BASE_DIR" "verbose"
+    iptables-save > "$RULES_V4_FILE" 2>/dev/null || log "WARNING" "Failed to save rules to $RULES_V4_FILE"
+    ip6tables-save > "$RULES_V6_FILE" 2>/dev/null || log "WARNING" "Failed to save rules to $RULES_V6_FILE"
+    
     case "$os_type" in
-        debian)
+        debian|ubuntu)
             # For Debian/Ubuntu
             if command -v netfilter-persistent &>/dev/null; then
                 log "INFO" "Using netfilter-persistent for rule persistence" "verbose"
-                netfilter-persistent save &>/dev/null && success=1
-            elif [[ -d /etc/iptables ]]; then
-                log "INFO" "Saving rules to /etc/iptables/" "verbose"
-                iptables-save > /etc/iptables/rules.v4 2>/dev/null && \
-                ip6tables-save > /etc/iptables/rules.v6 2>/dev/null && \
-                success=1
-            else
-                log "INFO" "Creating persistence files in $BASE_DIR" "verbose"
-                # Save rules to our own directory
-                iptables-save > "$RULES_V4_FILE" 2>/dev/null && \
-                ip6tables-save > "$RULES_V6_FILE" 2>/dev/null && \
-                success=1
-                # Create systemd unit for loading rules at boot if not exists
-                if [[ ! -f /etc/systemd/system/dnsniper-firewall.service ]]; then
-                    create_systemd_service
+                if netfilter-persistent save &>/dev/null; then
+                    success=1
+                else
+                    log "WARNING" "netfilter-persistent failed, trying direct file write" "verbose"
+                fi
+            fi
+            
+            # If netfilter-persistent failed or not available, try direct file write
+            if [[ $success -eq 0 && -d /etc/iptables ]]; then
+                log "INFO" "Saving rules directly to /etc/iptables/" "verbose"
+                if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
+                    chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
+                    success=1
+                else
+                    log "WARNING" "Failed to write to /etc/iptables/ files" "verbose"
+                fi
+            fi
+            
+            # If direct file write failed or /etc/iptables/ doesn't exist, create it
+            if [[ $success -eq 0 ]]; then
+                log "INFO" "Creating /etc/iptables/ directory and files" "verbose"
+                mkdir -p /etc/iptables/ 2>/dev/null || true
+                if [[ -d /etc/iptables/ ]]; then
+                    if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
+                        chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
+                        success=1
+                    else
+                        log "WARNING" "Failed to create files in /etc/iptables/" "verbose"
+                    fi
                 fi
             fi
             ;;
-        redhat|fedora)
-            # For RHEL/CentOS/Fedora
-            if command -v service &>/dev/null && \
-               systemctl list-unit-files iptables.service &>/dev/null; then
-                log "INFO" "Using iptables service for rule persistence" "verbose"
-                service iptables save &>/dev/null && \
-                service ip6tables save &>/dev/null && \
+        centos|rhel|redhat)
+            # For RHEL/CentOS
+            if command -v service &>/dev/null && service iptables status &>/dev/null; then
+                log "INFO" "Using service iptables save for rule persistence" "verbose"
+                if service iptables save &>/dev/null && service ip6tables save &>/dev/null; then
+                    success=1
+                else
+                    log "WARNING" "service iptables save failed, trying alternative methods" "verbose"
+                fi
+            fi
+            
+            # Alternative: Save to /etc/sysconfig/iptables
+            if [[ $success -eq 0 && -d /etc/sysconfig ]]; then
+                log "INFO" "Saving rules to /etc/sysconfig/iptables" "verbose"
+                if iptables-save > /etc/sysconfig/iptables && ip6tables-save > /etc/sysconfig/ip6tables; then
+                    chmod 600 /etc/sysconfig/iptables /etc/sysconfig/ip6tables 2>/dev/null || true
+                    success=1
+                else
+                    log "WARNING" "Failed to save rules to /etc/sysconfig/iptables" "verbose"
+                fi
+            fi
+            
+            # If everything failed, try /etc/iptables/
+            if [[ $success -eq 0 ]]; then
+                log "INFO" "Creating /etc/iptables/ directory and files" "verbose"
+                mkdir -p /etc/iptables/ 2>/dev/null || true
+                if [[ -d /etc/iptables/ ]]; then
+                    if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
+                        chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
+                        success=1
+                    else
+                        log "WARNING" "Failed to create files in /etc/iptables/" "verbose"
+                    fi
+                fi
+            fi
+            ;;
+        fedora)
+            # For Fedora
+            if command -v firewall-cmd &>/dev/null; then
+                log "INFO" "Detected firewalld on Fedora, saving rules to direct configuration" "verbose"
+                # Create a systemd service that will load our rules
+                create_systemd_service
                 success=1
             else
-                log "INFO" "Creating persistence files in $BASE_DIR" "verbose"
-                # Save rules to our own directory
-                iptables-save > "$RULES_V4_FILE" 2>/dev/null && \
-                ip6tables-save > "$RULES_V6_FILE" 2>/dev/null && \
-                success=1
-                # Create systemd unit for loading rules at boot if not exists
-                if [[ ! -f /etc/systemd/system/dnsniper-firewall.service ]]; then
-                    create_systemd_service
+                # Try standard RHEL approach if firewalld is not used
+                if command -v service &>/dev/null && service iptables status &>/dev/null; then
+                    log "INFO" "Using service iptables save for rule persistence" "verbose"
+                    if service iptables save &>/dev/null && service ip6tables save &>/dev/null; then
+                        success=1
+                    else
+                        log "WARNING" "service iptables save failed, trying alternative methods" "verbose"
+                    fi
+                fi
+                
+                # Try /etc/sysconfig/iptables for standard iptables
+                if [[ $success -eq 0 && -d /etc/sysconfig ]]; then
+                    log "INFO" "Saving rules to /etc/sysconfig/iptables" "verbose"
+                    if iptables-save > /etc/sysconfig/iptables && ip6tables-save > /etc/sysconfig/ip6tables; then
+                        chmod 600 /etc/sysconfig/iptables /etc/sysconfig/ip6tables 2>/dev/null || true
+                        success=1
+                    else
+                        log "WARNING" "Failed to save rules to /etc/sysconfig/iptables" "verbose"
+                    fi
+                fi
+            fi
+            
+            # If everything failed, try /etc/iptables/
+            if [[ $success -eq 0 ]]; then
+                log "INFO" "Creating /etc/iptables/ directory and files" "verbose"
+                mkdir -p /etc/iptables/ 2>/dev/null || true
+                if [[ -d /etc/iptables/ ]]; then
+                    if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
+                        chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
+                        success=1
+                    else
+                        log "WARNING" "Failed to create files in /etc/iptables/" "verbose"
+                    fi
                 fi
             fi
             ;;
         *)
             # Generic method for other systems
-            log "INFO" "Creating persistence files in $BASE_DIR" "verbose"
-            iptables-save > "$RULES_V4_FILE" 2>/dev/null && \
-            ip6tables-save > "$RULES_V6_FILE" 2>/dev/null && \
-            success=1
-            # Create systemd unit for loading rules at boot if not exists
-            if [[ ! -f /etc/systemd/system/dnsniper-firewall.service ]]; then
-                create_systemd_service
+            log "INFO" "Creating /etc/iptables/ directory and files" "verbose"
+            mkdir -p /etc/iptables/ 2>/dev/null || true
+            if [[ -d /etc/iptables/ ]]; then
+                if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
+                    chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
+                    success=1
+                else
+                    log "WARNING" "Failed to create files in /etc/iptables/" "verbose"
+                fi
             fi
             ;;
     esac
+    
     if [[ $success -eq 1 ]]; then
         log "INFO" "Firewall rules have been made persistent" "verbose"
         return 0
@@ -240,6 +351,7 @@ make_rules_persistent() {
         return 1
     fi
 }
+
 # Create systemd service for loading rules at boot
 create_systemd_service() {
     log "INFO" "Creating systemd service for firewall rules persistence" "verbose"
@@ -259,6 +371,7 @@ EOF
     systemctl enable dnsniper-firewall.service &>/dev/null || true
     log "INFO" "DNSniper firewall systemd service enabled" "verbose"
 }
+
 # Initialize iptables chains
 initialize_chains() {
     # Create IPv4 chain if it doesn't exist
@@ -884,34 +997,142 @@ apply_rule_type_changes() {
     log "INFO" "Applying rule type changes" "verbose"
     echo_safe "${BLUE}Applying rule type changes...${NC}"
     
-    # Clear rules directly without prompting
-    echo_safe "${BLUE}Removing existing rules...${NC}"
-    iptables -F "$IPT_CHAIN" 2>/dev/null && ip6tables -F "$IPT6_CHAIN" 2>/dev/null
-    log "INFO" "All firewall rules cleared for rule type changes" "verbose"
-    
-    # If forward blocking is enabled/disabled, adjust chains
+    # Get current rule type settings
+    local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    if [[ "$block_forward" == "1" ]]; then
-        # Add our chains to FORWARD chains if not already there
-        if ! iptables -C FORWARD -j "$IPT_CHAIN" &>/dev/null; then
-            iptables -I FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
-        fi
-        if ! ip6tables -C FORWARD -j "$IPT6_CHAIN" &>/dev/null; then
-            ip6tables -I FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
-        fi
-    else
-        # Remove references to our chains from FORWARD
-        iptables -D FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
-        ip6tables -D FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
+    
+    # Validate settings, use defaults if invalid
+    [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
+    [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
+    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
+    
+    echo_safe "${BLUE}Removing existing rules and recreating chains...${NC}"
+    
+    # First, remove references to our chains from main chains
+    iptables -D INPUT -j "$IPT_CHAIN" 2>/dev/null || true
+    iptables -D OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
+    iptables -D FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
+    ip6tables -D INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+    ip6tables -D OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+    ip6tables -D FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
+    
+    # Flush our chains
+    iptables -F "$IPT_CHAIN" 2>/dev/null || true
+    ip6tables -F "$IPT6_CHAIN" 2>/dev/null || true
+    
+    # Delete our chains
+    iptables -X "$IPT_CHAIN" 2>/dev/null || true
+    ip6tables -X "$IPT6_CHAIN" 2>/dev/null || true
+    
+    # Recreate our chains
+    iptables -N "$IPT_CHAIN" 2>/dev/null || true
+    ip6tables -N "$IPT6_CHAIN" 2>/dev/null || true
+    
+    # Add references based on settings
+    # Always add INPUT and OUTPUT references if source or destination blocking is enabled
+    if [[ "$block_source" == "1" || "$block_destination" == "1" ]]; then
+        iptables -I INPUT -j "$IPT_CHAIN" 2>/dev/null || true
+        iptables -I OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
+        ip6tables -I INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+        ip6tables -I OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
     fi
     
-    # Make sure the changes to chain references are persistent
+    # Add FORWARD reference if forward blocking is enabled
+    if [[ "$block_forward" == "1" ]]; then
+        iptables -I FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
+        ip6tables -I FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
+    fi
+    
+    # Make sure the chain structure changes are persistent
+    echo_safe "${BLUE}Saving firewall chain structure...${NC}"
     make_rules_persistent
     
-    # Run a full resolve_block to rebuild the rules with new settings
-    resolve_block
+    # Now rebuild all the rules from our database
+    echo_safe "${BLUE}Rebuilding rules with new settings...${NC}"
+    
+    # First extract all domain-IP mappings from the history database
+    local domain_ips
+    domain_ips=$(sqlite3 "$DB_FILE" "SELECT domain, ips FROM history WHERE rowid IN (SELECT MAX(rowid) FROM history GROUP BY domain);" 2>/dev/null)
+    
+    # Process each domain-IPs pair
+    while IFS='|' read -r domain ips || [[ -n "$domain" ]]; do
+        # Skip empty lines
+        [[ -z "$domain" ]] && continue
+        
+        # Check if this domain should be blocked (not in removed list)
+        if ! grep -Fxq "$domain" "$REMOVE_FILE" 2>/dev/null; then
+            echo_safe "  ${GREEN}Rebuilding rules for domain:${NC} $domain"
+            
+            # Process IPs for this domain
+            IFS=',' read -ra ip_list <<< "$ips"
+            for ip in "${ip_list[@]}"; do
+                # Skip critical IPs
+                if is_critical_ip "$ip"; then
+                    continue
+                fi
+                
+                # Block IP with new settings
+                if block_ip "$ip" "DNSniper: $domain"; then
+                    echo_safe "    - ${RED}Blocked IP:${NC} $ip"
+                else
+                    echo_safe "    - ${RED}Error blocking IP:${NC} $ip"
+                fi
+            done
+        fi
+    done <<< "$domain_ips"
+    
+    # Also rebuild custom IP blocks
+    local custom_ips=()
+    mapfile -t custom_ips < <(get_custom_ips)
+    if [[ ${#custom_ips[@]} -gt 0 ]]; then
+        echo_safe "${BLUE}Rebuilding rules for custom IPs...${NC}"
+        for ip in "${custom_ips[@]}"; do
+            # Skip critical IPs
+            if is_critical_ip "$ip"; then
+                continue
+            fi
+            
+            # Block IP with new settings
+            if block_ip "$ip" "DNSniper: custom"; then
+                echo_safe "  - ${RED}Blocked custom IP:${NC} $ip"
+            else
+                echo_safe "  - ${RED}Error blocking custom IP:${NC} $ip"
+            fi
+        done
+    fi
+    
+    # Force direct save to /etc/iptables/ and other common locations
+    echo_safe "${BLUE}Ensuring rules are saved to persistent storage...${NC}"
+    
+    # Detect OS type for specific persistence method
+    local os_type=$(detect_system)
+    echo_safe "${BLUE}Detected OS type: $os_type${NC}"
+    
+    # For Debian/Ubuntu, specifically check that the rules.v4 file exists
+    if [[ "$os_type" == "debian" || "$os_type" == "ubuntu" ]]; then
+        if [[ ! -f /etc/iptables/rules.v4 ]]; then
+            echo_safe "${YELLOW}Creating direct rules files in /etc/iptables/...${NC}"
+            mkdir -p /etc/iptables/ 2>/dev/null
+            iptables-save > /etc/iptables/rules.v4 2>/dev/null
+            ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+            chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
+        fi
+    # For CentOS/RHEL, check /etc/sysconfig/iptables
+    elif [[ "$os_type" == "centos" || "$os_type" == "rhel" || "$os_type" == "redhat" ]]; then
+        if [[ ! -f /etc/sysconfig/iptables ]]; then
+            echo_safe "${YELLOW}Creating direct rules files in /etc/sysconfig/...${NC}"
+            iptables-save > /etc/sysconfig/iptables 2>/dev/null
+            ip6tables-save > /etc/sysconfig/ip6tables 2>/dev/null
+            chmod 600 /etc/sysconfig/iptables /etc/sysconfig/ip6tables 2>/dev/null || true
+        fi
+    fi
+    
+    # Call make_rules_persistent again to ensure all rules are saved
+    make_rules_persistent
     
     echo_safe "${GREEN}Rule type changes applied successfully.${NC}"
+    log "INFO" "Rule type changes successfully applied with new settings" "verbose"
 }
 ### 14) Resolve domains and apply iptables/ip6tables rules
 resolve_block() {
@@ -1036,8 +1257,28 @@ resolve_block() {
         echo_safe "${GREEN}Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked.${NC}"
         log "INFO" "Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked." "verbose"
     fi
-    # Make sure the rules are persistent
+    
+    # Make sure the rules are persistent - call multiple times to ensure all storage methods are tried
     make_rules_persistent
+    
+    # Detect OS type for specific persistence method
+    local os_type=$(detect_system)
+    
+    # For Debian/Ubuntu, specifically save to /etc/iptables/
+    if [[ "$os_type" == "debian" || "$os_type" == "ubuntu" ]]; then
+        mkdir -p /etc/iptables/ 2>/dev/null
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || log "WARNING" "Failed to save rules to /etc/iptables/rules.v4"
+        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || log "WARNING" "Failed to save rules to /etc/iptables/rules.v6"
+        chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
+    # For CentOS/RHEL, save to /etc/sysconfig/
+    elif [[ "$os_type" == "centos" || "$os_type" == "rhel" || "$os_type" == "redhat" ]]; then
+        if [[ -d /etc/sysconfig ]]; then
+            iptables-save > /etc/sysconfig/iptables 2>/dev/null || log "WARNING" "Failed to save rules to /etc/sysconfig/iptables"
+            ip6tables-save > /etc/sysconfig/ip6tables 2>/dev/null || log "WARNING" "Failed to save rules to /etc/sysconfig/ip6tables"
+            chmod 600 /etc/sysconfig/iptables /etc/sysconfig/ip6tables 2>/dev/null || true
+        fi
+    fi
+    
     return 0
 }
 ### 15) Interactive menu functions
@@ -1794,7 +2035,7 @@ unblock_domain() {
     if ! grep -Fxq "$domain_to_unblock" "$REMOVE_FILE" 2>/dev/null; then
         echo "$domain_to_unblock" >> "$REMOVE_FILE"
         echo_safe "${GREEN}Domain unblocked:${NC} $domain_to_unblock"
-        log "INFO" "Domain added to whitelist: $domain_to_unblock" "verbose"
+        log "INFO" "Domain added to unblock list: $domain_to_unblock" "verbose"
         # Ask if to remove firewall rules immediately
         read -rp "Remove firewall rules for this domain immediately? [y/N]: " unblock_now
         if [[ "$unblock_now" =~ ^[Yy] ]]; then
@@ -1900,7 +2141,7 @@ unblock_custom_ip() {
     if ! grep -Fxq "$ip_to_unblock" "$IP_REMOVE_FILE" 2>/dev/null; then
         echo "$ip_to_unblock" >> "$IP_REMOVE_FILE"
         echo_safe "${GREEN}IP unblocked:${NC} $ip_to_unblock"
-        log "INFO" "IP added to whitelist: $ip_to_unblock" "verbose"
+        log "INFO" "IP added to unblock list: $ip_to_unblock" "verbose"
         # Ask if to remove firewall rules immediately
         read -rp "Remove firewall rules for this IP immediately? [y/N]: " unblock_now
         if [[ "$unblock_now" =~ ^[Yy] ]]; then
@@ -2138,10 +2379,10 @@ uninstall() {
     read -rp "Are you sure you want to proceed? [y/N]: " confirm
     if [[ "$confirm" =~ ^[Yy] ]]; then
         echo_safe "${BLUE}Uninstalling DNSniper...${NC}"
-        # Ask about keeping rules
-        read -rp "Keep existing firewall rules? [y/N]: " keep_rules
-        if [[ ! "$keep_rules" =~ ^[Yy] ]]; then
-            echo_safe "${BLUE}Removing firewall rules...${NC}"
+        # Ask about removing DNSniper firewall rules
+        read -rp "Remove DNSniper firewall rules? [Y/n]: " remove_rules
+        if [[ ! "$remove_rules" =~ ^[Nn] ]]; then
+            echo_safe "${BLUE}Removing DNSniper firewall rules...${NC}"
             # Remove references to our chains
             iptables -D INPUT -j "$IPT_CHAIN" 2>/dev/null || true
             iptables -D OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
@@ -2157,6 +2398,8 @@ uninstall() {
             ip6tables -X "$IPT6_CHAIN" 2>/dev/null || true
             # Make changes persistent
             make_rules_persistent
+        else
+            echo_safe "${YELLOW}Keeping DNSniper firewall rules.${NC}"
         fi
         # Remove systemd service if we created one
         if [[ -f "/etc/systemd/system/dnsniper-firewall.service" ]]; then
