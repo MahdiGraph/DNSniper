@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 1.4.0
+# Version: 1.3.5
 # Strict error handling mode
 set -o errexit
 set -o pipefail
@@ -2114,12 +2114,11 @@ display_status() {
                     else
                         echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs ${CYAN}not blocked yet${NC})"
                     fi
-                } else {
+                else
                     # Database record exists but IPs field is empty
                     echo_safe "${GREEN}$dom${NC} (${RED}No IPs in database${NC})"
-                }
                 fi
-            else {
+            else
                 # No record in database, try to check if we can resolve and if any of those IPs are already blocked
                 local resolved_ips
                 resolved_ips=$(dig +short A "$dom" 2>/dev/null)
@@ -2138,17 +2137,14 @@ display_status() {
                     if [[ $blocked_ip_found -eq 1 ]]; then
                         # At least one resolved IP is already blocked
                         echo_safe "${GREEN}$dom${NC} (${YELLOW}IPs already blocked${NC})"
-                    else {
+                    else
                         # Domain can be resolved but not blocked yet
                         echo_safe "${GREEN}$dom${NC} (${YELLOW}Resolvable, run 'Run Now' to block${NC})"
-                    }
                     fi
-                else {
+                else
                     # Cannot resolve at all
                     echo_safe "${GREEN}$dom${NC} (${RED}No IPs resolved yet${NC})"
-                }
                 fi
-            }
             fi
             
             dom_count=$((dom_count + 1))
