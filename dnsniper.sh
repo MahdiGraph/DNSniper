@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 1.3.5
+# Version: 1.3.6
 # Strict error handling mode
 set -o errexit
 set -o pipefail
@@ -30,6 +30,9 @@ RULES_V4_FILE="$BASE_DIR/iptables.rules"
 RULES_V6_FILE="$BASE_DIR/ip6tables.rules"
 BIN_CMD="/usr/local/bin/dnsniper"
 LOG_FILE="$BASE_DIR/dnsniper.log"
+# IPSet definitions
+IPSET4="dnsniper-ipv4"
+IPSET6="dnsniper-ipv6"
 # Logging state
 LOGGING_ENABLED=0
 # Defaults
@@ -47,19 +50,17 @@ DEFAULT_LOGGING_ENABLED=0
 IPT_CHAIN="DNSniper"
 IPT6_CHAIN="DNSniper6"
 # Version
-VERSION="1.3.5"
+VERSION="1.3.6"
 # Dependencies
 DEPENDENCIES=(iptables ip6tables curl dig sqlite3 crontab)
 # Helper functions
 log() {
     local level="$1" message="$2" verbose="${3:-}"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
     # Only write to log file if logging is enabled
     if [[ $LOGGING_ENABLED -eq 1 ]]; then
         echo "[$timestamp] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
     fi
-    
     if [[ "$level" == "ERROR" ]]; then
         echo -e "${RED}Error:${NC} $message" >&2
     elif [[ "$level" == "WARNING" ]]; then
@@ -68,7 +69,6 @@ log() {
         echo -e "${BLUE}Info:${NC} $message"
     fi
 }
-
 # Initialize logging state
 initialize_logging() {
     # Read from config file
@@ -79,7 +79,6 @@ initialize_logging() {
         LOGGING_ENABLED=0
     fi
 }
-
 # Enhanced echo with error checking
 echo_safe() {
     echo -e "$1"
@@ -101,8 +100,9 @@ show_banner() {
 }
 # SQL escape
 sql_escape() {
-    local input="$1"
-    echo "${input//\'/\'\'}"  # Replace ' with ''
+    local s=$1
+    s=${s//\'/\'\'}
+    printf "%s" "$s"
 }
 # Check if IP is IPv6
 is_ipv6() {
@@ -198,159 +198,40 @@ detect_system() {
         echo "unknown"
     fi
 }
-
 # Make iptables rules persistent based on system type
 make_rules_persistent() {
     local os_type=$(detect_system)
-    local success=0
     
-    # Always save to our own directory as a backup
-    log "INFO" "Creating backup rules in $BASE_DIR" "verbose"
-    iptables-save > "$RULES_V4_FILE" 2>/dev/null || log "WARNING" "Failed to save rules to $RULES_V4_FILE"
-    ip6tables-save > "$RULES_V6_FILE" 2>/dev/null || log "WARNING" "Failed to save rules to $RULES_V6_FILE"
+    # Create necessary directories based on OS type
+    if [[ "$os_type" == "debian" || "$os_type" == "ubuntu" ]]; then
+        mkdir -p /etc/iptables/ 2>/dev/null || true
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+        chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
+    elif [[ "$os_type" == "centos" || "$os_type" == "rhel" || "$os_type" == "redhat" ]]; then
+        # CentOS/RHEL uses /etc/sysconfig
+        if [[ -d /etc/sysconfig ]]; then
+            iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
+            ip6tables-save > /etc/sysconfig/ip6tables 2>/dev/null || true
+            chmod 600 /etc/sysconfig/iptables /etc/sysconfig/ip6tables 2>/dev/null || true
+        fi
+    elif [[ "$os_type" == "fedora" ]]; then
+        # Fedora might use firewalld, but we'll save rules to same location as RHEL
+        if [[ -d /etc/sysconfig ]]; then
+            iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
+            ip6tables-save > /etc/sysconfig/ip6tables 2>/dev/null || true
+        fi
+    fi
     
-    case "$os_type" in
-        debian|ubuntu)
-            # For Debian/Ubuntu
-            if command -v netfilter-persistent &>/dev/null; then
-                log "INFO" "Using netfilter-persistent for rule persistence" "verbose"
-                if netfilter-persistent save &>/dev/null; then
-                    success=1
-                else
-                    log "WARNING" "netfilter-persistent failed, trying direct file write" "verbose"
-                fi
-            fi
-            
-            # If netfilter-persistent failed or not available, try direct file write
-            if [[ $success -eq 0 && -d /etc/iptables ]]; then
-                log "INFO" "Saving rules directly to /etc/iptables/" "verbose"
-                if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
-                    chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
-                    success=1
-                else
-                    log "WARNING" "Failed to write to /etc/iptables/ files" "verbose"
-                fi
-            fi
-            
-            # If direct file write failed or /etc/iptables/ doesn't exist, create it
-            if [[ $success -eq 0 ]]; then
-                log "INFO" "Creating /etc/iptables/ directory and files" "verbose"
-                mkdir -p /etc/iptables/ 2>/dev/null || true
-                if [[ -d /etc/iptables/ ]]; then
-                    if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
-                        chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
-                        success=1
-                    else
-                        log "WARNING" "Failed to create files in /etc/iptables/" "verbose"
-                    fi
-                fi
-            fi
-            ;;
-        centos|rhel|redhat)
-            # For RHEL/CentOS
-            if command -v service &>/dev/null && service iptables status &>/dev/null; then
-                log "INFO" "Using service iptables save for rule persistence" "verbose"
-                if service iptables save &>/dev/null && service ip6tables save &>/dev/null; then
-                    success=1
-                else
-                    log "WARNING" "service iptables save failed, trying alternative methods" "verbose"
-                fi
-            fi
-            
-            # Alternative: Save to /etc/sysconfig/iptables
-            if [[ $success -eq 0 && -d /etc/sysconfig ]]; then
-                log "INFO" "Saving rules to /etc/sysconfig/iptables" "verbose"
-                if iptables-save > /etc/sysconfig/iptables && ip6tables-save > /etc/sysconfig/ip6tables; then
-                    chmod 600 /etc/sysconfig/iptables /etc/sysconfig/ip6tables 2>/dev/null || true
-                    success=1
-                else
-                    log "WARNING" "Failed to save rules to /etc/sysconfig/iptables" "verbose"
-                fi
-            fi
-            
-            # If everything failed, try /etc/iptables/
-            if [[ $success -eq 0 ]]; then
-                log "INFO" "Creating /etc/iptables/ directory and files" "verbose"
-                mkdir -p /etc/iptables/ 2>/dev/null || true
-                if [[ -d /etc/iptables/ ]]; then
-                    if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
-                        chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
-                        success=1
-                    else
-                        log "WARNING" "Failed to create files in /etc/iptables/" "verbose"
-                    fi
-                fi
-            fi
-            ;;
-        fedora)
-            # For Fedora
-            if command -v firewall-cmd &>/dev/null; then
-                log "INFO" "Detected firewalld on Fedora, saving rules to direct configuration" "verbose"
-                # Create a systemd service that will load our rules
-                create_systemd_service
-                success=1
-            else
-                # Try standard RHEL approach if firewalld is not used
-                if command -v service &>/dev/null && service iptables status &>/dev/null; then
-                    log "INFO" "Using service iptables save for rule persistence" "verbose"
-                    if service iptables save &>/dev/null && service ip6tables save &>/dev/null; then
-                        success=1
-                    else
-                        log "WARNING" "service iptables save failed, trying alternative methods" "verbose"
-                    fi
-                fi
-                
-                # Try /etc/sysconfig/iptables for standard iptables
-                if [[ $success -eq 0 && -d /etc/sysconfig ]]; then
-                    log "INFO" "Saving rules to /etc/sysconfig/iptables" "verbose"
-                    if iptables-save > /etc/sysconfig/iptables && ip6tables-save > /etc/sysconfig/ip6tables; then
-                        chmod 600 /etc/sysconfig/iptables /etc/sysconfig/ip6tables 2>/dev/null || true
-                        success=1
-                    else
-                        log "WARNING" "Failed to save rules to /etc/sysconfig/iptables" "verbose"
-                    fi
-                fi
-            fi
-            
-            # If everything failed, try /etc/iptables/
-            if [[ $success -eq 0 ]]; then
-                log "INFO" "Creating /etc/iptables/ directory and files" "verbose"
-                mkdir -p /etc/iptables/ 2>/dev/null || true
-                if [[ -d /etc/iptables/ ]]; then
-                    if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
-                        chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
-                        success=1
-                    else
-                        log "WARNING" "Failed to create files in /etc/iptables/" "verbose"
-                    fi
-                fi
-            fi
-            ;;
-        *)
-            # Generic method for other systems
-            log "INFO" "Creating /etc/iptables/ directory and files" "verbose"
-            mkdir -p /etc/iptables/ 2>/dev/null || true
-            if [[ -d /etc/iptables/ ]]; then
-                if iptables-save > /etc/iptables/rules.v4 && ip6tables-save > /etc/iptables/rules.v6; then
-                    chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
-                    success=1
-                else
-                    log "WARNING" "Failed to create files in /etc/iptables/" "verbose"
-                fi
-            fi
-            ;;
-    esac
+    # Save to our local rules files too for backup
+    iptables-save > "$RULES_V4_FILE" 2>/dev/null || true
+    ip6tables-save > "$RULES_V6_FILE" 2>/dev/null || true
     
-    if [[ $success -eq 1 ]]; then
-        log "INFO" "Firewall rules have been made persistent" "verbose"
-        return 0
-    else
-        log "WARNING" "Could not make firewall rules persistent automatically."
-        log "WARNING" "You may need to install iptables-persistent package." "verbose"
-        return 1
+    # Save ipset if available (optional)
+    if command -v ipset &>/dev/null && ipset list ${IPSET4} >/dev/null 2>&1; then
+        ipset save > /etc/ipset.conf 2>/dev/null || true
     fi
 }
-
 # Create systemd service for loading rules at boot
 create_systemd_service() {
     log "INFO" "Creating systemd service for firewall rules persistence" "verbose"
@@ -370,7 +251,6 @@ EOF
     systemctl enable dnsniper-firewall.service &>/dev/null || true
     log "INFO" "DNSniper firewall systemd service enabled" "verbose"
 }
-
 # Initialize iptables chains
 initialize_chains() {
     # Create IPv4 chain if it doesn't exist
@@ -401,87 +281,74 @@ initialize_chains() {
 }
 ### 1) Prepare environment: dirs, files, DB, cron
 ensure_environment() {
-    log "INFO" "Setting up environment" "verbose"
     # Create base directory if it doesn't exist
-    if [[ ! -d "$BASE_DIR" ]]; then
-        if ! mkdir -p "$BASE_DIR" &>/dev/null; then
-            exit_with_error "Cannot create directory $BASE_DIR"
-        fi
+    mkdir -p "$BASE_DIR" 2>/dev/null || true
+    
+    # Create empty files if they don't exist
+    touch "$DEFAULT_FILE" "$ADD_FILE" "$REMOVE_FILE" "$IP_ADD_FILE" "$IP_REMOVE_FILE" 2>/dev/null || true
+    
+    # Create config file with defaults if it doesn't exist
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        cat > "$CONFIG_FILE" << EOF
+# DNSniper Configuration
+cron='$DEFAULT_CRON'
+max_ips=$DEFAULT_MAX_IPS
+timeout=$DEFAULT_TIMEOUT
+update_url='$DEFAULT_URL'
+auto_update=$DEFAULT_AUTO_UPDATE
+expire_enabled=$DEFAULT_EXPIRE_ENABLED
+expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
+block_source=$DEFAULT_BLOCK_SOURCE
+block_destination=$DEFAULT_BLOCK_DESTINATION
+logging_enabled=$DEFAULT_LOGGING_ENABLED
+EOF
     fi
-    # Create required files if they don't exist
-    for file in "$DEFAULT_FILE" "$ADD_FILE" "$REMOVE_FILE" "$IP_ADD_FILE" "$IP_REMOVE_FILE" "$CONFIG_FILE"; do
-        if [[ ! -f "$file" ]]; then
-            if ! touch "$file" &>/dev/null; then
-                exit_with_error "Cannot create file $file"
-            fi
+    
+    # Check for required commands
+    for cmd in ${DEPENDENCIES[@]}; do
+        if ! command -v $cmd >/dev/null 2>&1; then
+            echo "Warning: $cmd is not installed. Some features may not work." >&2
         fi
     done
-    # Set defaults in config file
-    if ! grep -q '^cron=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "cron='$DEFAULT_CRON'" >> "$CONFIG_FILE"
-    fi
-    if ! grep -q '^max_ips=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "max_ips=$DEFAULT_MAX_IPS" >> "$CONFIG_FILE"
-    fi
-    if ! grep -q '^timeout=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "timeout=$DEFAULT_TIMEOUT" >> "$CONFIG_FILE"
-    fi
-    if ! grep -q '^update_url=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "update_url='$DEFAULT_URL'" >> "$CONFIG_FILE"
-    fi
-    if ! grep -q '^auto_update=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "auto_update=$DEFAULT_AUTO_UPDATE" >> "$CONFIG_FILE"
-    fi
-    # Add new config options for domain expiration
-    if ! grep -q '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "expire_enabled=$DEFAULT_EXPIRE_ENABLED" >> "$CONFIG_FILE"
-    fi
-    if ! grep -q '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER" >> "$CONFIG_FILE"
-    fi
-    # Add new config options for block rule types
-    if ! grep -q '^block_source=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "block_source=$DEFAULT_BLOCK_SOURCE" >> "$CONFIG_FILE"
-    fi
-    if ! grep -q '^block_destination=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "block_destination=$DEFAULT_BLOCK_DESTINATION" >> "$CONFIG_FILE"
-    fi
-    # Add new config option for logging
-    if ! grep -q '^logging_enabled=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "logging_enabled=$DEFAULT_LOGGING_ENABLED" >> "$CONFIG_FILE"
-    fi
-    # Initialize SQLite history DB
-    if ! sqlite3 "$DB_FILE" <<SQL 2>/dev/null
+    
+    # Initialize SQLite DB: WAL mode, tables + index
+    if command -v sqlite3 >/dev/null 2>&1; then
+        sqlite3 "$DB_FILE" <<SQL
+PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS history(
-  domain TEXT,
-  ips TEXT,
-  ts DATETIME DEFAULT CURRENT_TIMESTAMP
+    domain TEXT,
+    ips    TEXT,
+    ts     INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_domain ON history(domain);
-CREATE INDEX IF NOT EXISTS idx_ts ON history(ts);
--- Table for tracking domains expiration
+CREATE INDEX IF NOT EXISTS idx_history_domain ON history(domain);
 CREATE TABLE IF NOT EXISTS expired_domains(
-  domain TEXT PRIMARY KEY,
-  last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-  source TEXT DEFAULT 'default'
+    domain TEXT PRIMARY KEY,
+    last_seen TEXT,
+    source TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_expired_domain ON expired_domains(domain);
-CREATE INDEX IF NOT EXISTS idx_last_seen ON expired_domains(last_seen);
 SQL
-    then
-        exit_with_error "Problem initializing SQLite database"
+    else
+        echo "Warning: sqlite3 not found, database functionality disabled." >&2
     fi
-    # Install or update cron job
-    local cron_expr=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
-    if [[ -n "$cron_expr" && "$cron_expr" != "# DNSniper disabled" ]]; then
-        if ! (crontab -l 2>/dev/null | grep -vF "$BIN_CMD" || true; echo "$cron_expr") | crontab -; then
-            log "WARNING" "Problem updating crontab"
-        else
-            log "INFO" "Cron job successfully updated" "verbose"
-        fi
-    fi
+    
     # Initialize iptables chains
     initialize_chains
+    
+    # Initialize ipset if available
+    if command -v ipset >/dev/null 2>&1; then
+        ipset create "$IPSET4" hash:ip family inet -exist 2>/dev/null || true
+        ipset create "$IPSET6" hash:ip family inet6 -exist 2>/dev/null || true
+    fi
+    
+    # Initialize logging
+    initialize_logging
+    
+    # Install cron job if defined in config
+    local cron_expr=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
+    if [[ -n "$cron_expr" && "$cron_expr" != "# DNSniper disabled" ]]; then
+        (crontab -l 2>/dev/null | grep -v "$BIN_CMD"; echo "$cron_expr") | crontab - 2>/dev/null || true
+    fi
+    
     return 0
 }
 ### 2) Check privileges and dependencies
@@ -646,108 +513,87 @@ check_expired_domains() {
     fi
 }
 ### 5) Merge default + added, minus removed domains
+# Performance optimized version of merge_domains
 merge_domains() {
     log "INFO" "Merging domain lists"
-    local merged_domains=()
-    local d
-    # Read from default file
+    
+    # Use temporary files for better performance with large lists
+    local tmpfile=$(mktemp)
+    
+    # Start with default domains, filtering comments and empty lines
     if [[ -f "$DEFAULT_FILE" ]]; then
-        while IFS= read -r d || [[ -n "$d" ]]; do
-            [[ -z "$d" || "$d" =~ ^[[:space:]]*# ]] && continue
-            d=$(echo "$d" | tr -d '\r' | tr -d '\n' | xargs)
-            [[ -z "$d" ]] && continue
-            merged_domains+=("$d")
-        done < "$DEFAULT_FILE"
+        grep -v '^[[:space:]]*#' "$DEFAULT_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$tmpfile" || true
     fi
-    # Read from add file
+    
+    # Add custom domains, filtering duplicates
     if [[ -f "$ADD_FILE" ]]; then
-        while IFS= read -r d || [[ -n "$d" ]]; do
-            [[ -z "$d" || "$d" =~ ^[[:space:]]*# ]] && continue
-            d=$(echo "$d" | tr -d '\r' | tr -d '\n' | xargs)
-            [[ -z "$d" ]] && continue
-            # Check if domain already exists in list
-            local found=0
-            for existing in "${merged_domains[@]}"; do
-                if [[ "$existing" == "$d" ]]; then
-                    found=1
-                    break
-                fi
-            done
-            [[ $found -eq 0 ]] && merged_domains+=("$d")
-        done < "$ADD_FILE"
-    fi
-    # Read from remove file for exceptions
-    local remove_domains=()
-    if [[ -f "$REMOVE_FILE" ]]; then
-        while IFS= read -r d || [[ -n "$d" ]]; do
-            [[ -z "$d" || "$d" =~ ^[[:space:]]*# ]] && continue
-            d=$(echo "$d" | tr -d '\r' | tr -d '\n' | xargs)
-            [[ -z "$d" ]] && continue
-            remove_domains+=("$d")
-        done < "$REMOVE_FILE"
-    fi
-    # Filter out domains in the remove list
-    local filtered_domains=()
-    for d in "${merged_domains[@]}"; do
-        local should_remove=0
-        for rd in "${remove_domains[@]}"; do
-            if [[ "$d" == "$rd" ]]; then
-                should_remove=1
-                break
+        grep -v '^[[:space:]]*#' "$ADD_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | while read -r domain; do
+            if ! grep -Fxq "$domain" "$tmpfile"; then
+                echo "$domain" >> "$tmpfile"
             fi
         done
-        [[ $should_remove -eq 0 ]] && filtered_domains+=("$d")
-    done
-    # Output each domain on separate line
-    for domain in "${filtered_domains[@]}"; do
-        echo "$domain"
-    done
+    fi
+    
+    # Apply removals by grep -v for each line in REMOVE_FILE
+    if [[ -f "$REMOVE_FILE" && -s "$tmpfile" ]]; then
+        local tmprm=$(mktemp)
+        cp "$tmpfile" "$tmprm"
+        grep -v '^[[:space:]]*#' "$REMOVE_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | while read -r domain; do
+            if [[ -n "$domain" ]]; then
+                grep -Fxv "$domain" "$tmprm" > "$tmpfile" || true
+                cp "$tmpfile" "$tmprm"
+            fi
+        done
+        rm -f "$tmprm"
+    fi
+    
+    # Output results
+    cat "$tmpfile"
+    
+    # Clean up
+    rm -f "$tmpfile"
 }
 ### 6) Get list of custom IPs to block
 get_custom_ips() {
     log "INFO" "Getting custom IP list"
-    local custom_ips=()
-    local ip
-    # Read from custom IP add file
+    
+    # Use temporary files for better performance with large lists
+    local tmpfile=$(mktemp)
+    
+    # Get custom IPs, filtering comments and empty lines
     if [[ -f "$IP_ADD_FILE" ]]; then
-        while IFS= read -r ip || [[ -n "$ip" ]]; do
-            [[ -z "$ip" || "$ip" =~ ^[[:space:]]*# ]] && continue
-            ip=$(echo "$ip" | tr -d '\r' | tr -d '\n' | xargs)
-            [[ -z "$ip" ]] && continue
-            # Validate IP format (very basic check)
+        grep -v '^[[:space:]]*#' "$IP_ADD_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$tmpfile" || true
+    fi
+    
+    # Apply removals
+    if [[ -f "$IP_REMOVE_FILE" && -s "$tmpfile" ]]; then
+        local tmprm=$(mktemp)
+        cp "$tmpfile" "$tmprm"
+        grep -v '^[[:space:]]*#' "$IP_REMOVE_FILE" 2>/dev/null | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | while read -r ip; do
+            if [[ -n "$ip" ]]; then
+                grep -Fxv "$ip" "$tmprm" > "$tmpfile" || true
+                cp "$tmpfile" "$tmprm"
+            fi
+        done
+        rm -f "$tmprm"
+    fi
+    
+    # Filter invalid IPs
+    if [[ -s "$tmpfile" ]]; then
+        local tmpvalid=$(mktemp)
+        while IFS= read -r ip; do
             if is_ipv6 "$ip" || is_valid_ipv4 "$ip"; then
-                custom_ips+=("$ip")
+                echo "$ip" >> "$tmpvalid"
             else
                 log "WARNING" "Invalid IP format ignored: $ip"
             fi
-        done < "$IP_ADD_FILE"
+        done < "$tmpfile"
+        cat "$tmpvalid"
+        rm -f "$tmpvalid"
     fi
-    # Read from custom IP remove file
-    local remove_ips=()
-    if [[ -f "$IP_REMOVE_FILE" ]]; then
-        while IFS= read -r ip || [[ -n "$ip" ]]; do
-            [[ -z "$ip" || "$ip" =~ ^[[:space:]]*# ]] && continue
-            ip=$(echo "$ip" | tr -d '\r' | tr -d '\n' | xargs)
-            [[ -z "$ip" ]] && continue
-            remove_ips+=("$ip")
-        done < "$IP_REMOVE_FILE"
-    fi
-    # Filter out IPs in the remove list
-    local filtered_ips=()
-    for ip in "${custom_ips[@]}"; do
-        local should_remove=0
-        for rip in "${remove_ips[@]}"; do
-            if [[ "$ip" == "$rip" ]]; then
-                should_remove=1
-                break
-            fi
-        done
-        [[ $should_remove -eq 0 ]] && filtered_ips+=("$ip")
-    done
-    # Output each IP on separate line
-    for ip in "${filtered_ips[@]}"; do
-        echo "$ip"
-    done
+    
+    # Clean up
+    rm -f "$tmpfile"
 }
 ### 7) Record history and trim to max_ips
 record_history() {
@@ -763,7 +609,7 @@ record_history() {
         max_ips=$DEFAULT_MAX_IPS
     fi
     if ! sqlite3 "$DB_FILE" <<SQL 2>/dev/null
-INSERT INTO history(domain,ips) VALUES('$domain','$ips_csv');
+INSERT INTO history(domain,ips,ts) VALUES('$domain','$ips_csv',strftime('%s','now'));
 DELETE FROM history
 WHERE rowid NOT IN (
    SELECT rowid FROM history
@@ -780,44 +626,82 @@ SQL
 }
 ### 8) Detect CDN by comparing last two resolves
 detect_cdn() {
+    # Get domains from args 
     local domains=("$@")
+    if [[ ${#domains[@]} -eq 0 ]]; then
+        return 0
+    fi
+    
     local warnings=()
     log "INFO" "Detecting CDN usage for ${#domains[@]} domains"
-    for dom in "${domains[@]}"; do
-        # Escape special characters for SQL
-        local esc_dom=$(sql_escape "$dom")
-        # Get the last two sets of IPs for this domain
-        local rows
-        rows=$(sqlite3 -separator '|' "$DB_FILE" \
-            "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 2;" 2>/dev/null)
-        # If not enough history, skip
-        [[ $(echo "$rows" | wc -l) -lt 2 ]] && continue
-        # Parse rows into arrays
-        local last prev
-        IFS='|' read -r last prev <<< "$rows"
-        # Convert CSV to arrays
-        local last_ips prev_ips
-        IFS=',' read -ra last_ips <<< "$last"
-        IFS=',' read -ra prev_ips <<< "$prev"
-        # Compare the IP sets
-        local changes=0
-        for ip in "${last_ips[@]}"; do
-            local found=0
-            for pip in "${prev_ips[@]}"; do
-                if [[ "$ip" == "$pip" ]]; then
-                    found=1
+    
+    # Process domains in smaller batches for better performance
+    local batch_size=50
+    local total_domains=${#domains[@]}
+    
+    for ((i=0; i<total_domains; i+=batch_size)); do
+        local end=$((i + batch_size))
+        [[ $end -gt $total_domains ]] && end=$total_domains
+        
+        # Process this batch
+        for ((j=i; j<end; j++)); do
+            local dom="${domains[j]}"
+            # Escape special characters for SQL
+            local esc_dom=$(sql_escape "$dom")
+            # Get the last two sets of IPs for this domain
+            local rows
+            rows=$(sqlite3 -separator '|' "$DB_FILE" \
+                "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 2;" 2>/dev/null)
+                
+            # Continue if we don't have enough history
+            if [[ -z "$rows" || $(echo "$rows" | wc -l) -lt 2 ]]; then
+                continue
+            fi
+            
+            # Parse rows into arrays
+            local last prev
+            IFS='|' read -r last prev <<< "$rows"
+            
+            # Skip if either is empty
+            [[ -z "$last" || -z "$prev" ]] && continue
+            
+            # Convert CSV to arrays
+            local last_ips prev_ips
+            IFS=',' read -ra last_ips <<< "$last"
+            IFS=',' read -ra prev_ips <<< "$prev"
+            
+            # Compare the IP sets
+            local changes=0
+            for ip in "${last_ips[@]}"; do
+                local found=0
+                for pip in "${prev_ips[@]}"; do
+                    if [[ "$ip" == "$pip" ]]; then
+                        found=1
+                        break
+                    fi
+                done
+                if [[ $found -eq 0 ]]; then
+                    changes=1
                     break
                 fi
             done
-            if [[ $found -eq 0 ]]; then
-                changes=1
-                break
-            fi
+            [[ $changes -eq 1 ]] && warnings+=("$dom")
         done
-        [[ $changes -eq 1 ]] && warnings+=("$dom")
     done
+    
     if [[ ${#warnings[@]} -gt 0 ]]; then
-        echo_safe "${YELLOW}${BOLD}[!] Domains likely using CDN:${NC} ${warnings[*]}"
+        echo_safe "${YELLOW}${BOLD}[!] Domains likely using CDN:${NC}"
+        # Display warnings in a more readable format for large lists
+        if [[ ${#warnings[@]} -le 10 ]]; then
+            # Show all if 10 or fewer
+            echo_safe "${YELLOW}${warnings[*]}${NC}"
+        else
+            # Show first 10 with count if more than 10
+            for ((i=0; i<10; i++)); do
+                echo_safe "${YELLOW}${warnings[i]}${NC}"
+            done
+            echo_safe "${YELLOW}...and $((${#warnings[@]} - 10)) more${NC}"
+        fi
         log "WARNING" "Potential CDN domains detected: ${warnings[*]}"
     fi
 }
@@ -834,11 +718,9 @@ block_ip() {
     # Get rule type settings
     local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    
     # Validate settings, use defaults if invalid
     [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
     [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
-    
     local rules_added=0
     # Block source IP in INPUT chain if enabled
     if [[ "$block_source" == "1" ]]; then
@@ -876,11 +758,9 @@ unblock_ip() {
     # Get rule type settings to know what to unblock
     local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    
     # Validate settings, use defaults if invalid
     [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
     [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
-    
     # Try to remove rule from chain (source)
     if [[ "$block_source" == "1" ]]; then
         while $tbl -C "$chain" -s "$ip" -j DROP -m comment --comment "$comment_pattern" &>/dev/null 2>&1; do
@@ -895,7 +775,6 @@ unblock_ip() {
             success=1
         done
     fi
-    
     # Make rules persistent if we made changes
     if [[ $success -eq 1 ]]; then
         make_rules_persistent
@@ -904,17 +783,13 @@ unblock_ip() {
 }
 ### 11) Count actual blocked IPs (not just rules)
 count_blocked_ips() {
-    local v4_rules v6_rules unique_ips
-    local ipv4_list ipv6_list
-    # Get unique IPs by extracting from actual rules
-    ipv4_list=$(iptables-save 2>/dev/null | grep -E "$IPT_CHAIN.*DROP" | grep -o -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u)
-    ipv6_list=$(ip6tables-save 2>/dev/null | grep -E "$IPT6_CHAIN.*DROP" | grep -o -E '([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}' | sort -u)
-    # Count unique IPs
-    v4_rules=$(echo "$ipv4_list" | wc -l)
-    v6_rules=$(echo "$ipv6_list" | wc -l)
-    # Return total (accounting for empty results)
-    if [[ -z "$ipv4_list" ]]; then v4_rules=0; fi
-    if [[ -z "$ipv6_list" ]]; then v6_rules=0; fi
+    local v4_rules v6_rules
+    # Use more efficient approach for large rule sets
+    # For IPv4 rules
+    v4_rules=$(iptables-save 2>/dev/null | grep -E "$IPT_CHAIN.*DROP" | grep -o -E '([0-9]{1,3}\.){3}[0-9]{1,3}' | sort -u | wc -l)
+    # For IPv6 rules
+    v6_rules=$(ip6tables-save 2>/dev/null | grep -E "$IPT6_CHAIN.*DROP" | grep -o -E '([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}' | sort -u | wc -l)
+    # Return total
     echo $((v4_rules + v6_rules))
 }
 ### 12) Check if a domain has active IP blocks
@@ -949,7 +824,7 @@ has_active_blocks() {
     done
     return 1  # No active blocks found
 }
-### 13) Resolve domains and apply iptables/ip6tables rules
+### 13) Resolve domains and apply iptables/ip6tables rules - Performance optimized
 resolve_block() {
     log "INFO" "Starting domain resolution and blocking" "verbose"
     # Check if we should auto-update
@@ -966,11 +841,15 @@ resolve_block() {
     echo_safe "${BLUE}Resolving domains...${NC}"
     # Get domains
     local domains=()
-    mapfile -t domains < <(merge_domains)
-    local total=${#domains[@]}
+    # Using temp file approach for better performance with large domain lists
+    local tmpdomains=$(mktemp)
+    merge_domains > "$tmpdomains"
+    # Count domains
+    local total=$(wc -l < "$tmpdomains")
     if [[ $total -eq 0 ]]; then
         echo_safe "${YELLOW}No domains to process.${NC}"
         log "INFO" "No domains to process" "verbose"
+        rm -f "$tmpdomains"
     else
         echo_safe "${BLUE}Processing ${total} domains...${NC}"
         # Get timeout from settings
@@ -981,8 +860,24 @@ resolve_block() {
         fi
         local success_count=0
         local ip_count=0
-        for dom in "${domains[@]}"; do
-            echo_safe "${BOLD}Domain:${NC} ${GREEN}$dom${NC}"
+        
+        # Process domains in batches for better performance
+        local batch_size=50
+        local progress=0
+        while IFS= read -r dom || [[ -n "$dom" ]]; do
+            progress=$((progress + 1))
+            # Show progress for large domain lists
+            if [[ $total -gt 100 && $((progress % 10)) -eq 0 ]]; then
+                echo_safe "${BLUE}Progress: $progress/$total domains ($(( (progress * 100) / total ))%)${NC}"
+            fi
+            
+            # Skip invalid domains
+            if ! is_valid_domain "$dom"; then
+                log "WARNING" "Invalid domain format: $dom"
+                continue
+            fi
+            
+            log "INFO" "Processing domain: $dom" "verbose"
             # Resolve IPv4 addresses with timeout
             local v4=()
             mapfile -t v4 < <(dig +short +time="$timeout" +tries=2 A "$dom" 2>/dev/null || echo "")
@@ -1003,7 +898,6 @@ resolve_block() {
                 # Check if it's a critical IP
                 if is_critical_ip "$ip"; then
                     log "WARNING" "Skipping critical IP: $ip for domain $dom" "verbose"
-                    echo_safe "  - ${YELLOW}Skipped critical IP${NC}: $ip"
                     continue
                 fi
                 # Check if already in unique array
@@ -1018,7 +912,6 @@ resolve_block() {
             done
             # If no valid IPs found
             if [[ ${#unique[@]} -eq 0 ]]; then
-                echo_safe "  ${YELLOW}No valid IP addresses found${NC}"
                 log "WARNING" "No valid IP addresses found for domain: $dom" "verbose"
                 continue
             fi
@@ -1031,68 +924,74 @@ resolve_block() {
             # Block each IP
             for ip in "${unique[@]}"; do
                 if block_ip "$ip" "DNSniper: $dom"; then
-                    echo_safe "  - ${RED}Blocked${NC}: $ip"
                     log "INFO" "Successfully blocked IP: $ip for domain: $dom"
                     ip_count=$((ip_count + 1))
                 else
-                    echo_safe "  - ${RED}Error blocking${NC}: $ip"
                     log "ERROR" "Error blocking IP: $ip for domain: $dom"
                 fi
             done
-            echo
-        done
+            
+            # Periodically make rules persistent for large domain lists
+            if [[ $total -gt 100 && $((progress % 50)) -eq 0 ]]; then
+                make_rules_persistent
+            fi
+        done < "$tmpdomains"
+        
+        # Clean up
+        rm -f "$tmpdomains"
+        
         echo_safe "${GREEN}Domain resolution complete. $success_count/$total domains processed, $ip_count new IPs blocked.${NC}"
         log "INFO" "Domain resolution complete. $success_count/$total domains processed, $ip_count new IPs blocked." "verbose"
-        # Run CDN detection
-        detect_cdn "${domains[@]}"
+        
+        # Run CDN detection only for interactive mode or if explicitly requested
+        if [[ -t 1 || "$1" == "force-cdn-check" ]]; then
+            # Get list of domains again for CDN detection
+            mapfile -t domains < <(merge_domains)
+            detect_cdn "${domains[@]}"
+        fi
     fi
+    
     # Also block custom IPs
     local custom_ips=()
-    mapfile -t custom_ips < <(get_custom_ips)
-    local custom_total=${#custom_ips[@]}
+    local tmpcustomips=$(mktemp)
+    get_custom_ips > "$tmpcustomips"
+    local custom_total=$(wc -l < "$tmpcustomips")
+    
     if [[ $custom_total -gt 0 ]]; then
         echo_safe "${BLUE}Processing ${custom_total} custom IPs...${NC}"
         local custom_blocked=0
-        for ip in "${custom_ips[@]}"; do
+        
+        while IFS= read -r ip || [[ -n "$ip" ]]; do
             # Skip critical IPs
             if is_critical_ip "$ip"; then
-                echo_safe "  - ${YELLOW}Skipped critical IP${NC}: $ip"
                 log "WARNING" "Skipping critical IP: $ip" "verbose"
                 continue
             fi
+            
             if block_ip "$ip" "DNSniper: custom"; then
-                echo_safe "  - ${RED}Blocked${NC}: $ip"
                 log "INFO" "Successfully blocked custom IP: $ip"
                 custom_blocked=$((custom_blocked + 1))
             else
-                echo_safe "  - ${RED}Error blocking${NC}: $ip"
                 log "ERROR" "Error blocking custom IP: $ip"
             fi
-        done
+            
+            # Periodically make rules persistent for large IP lists
+            if [[ $custom_total -gt 100 && $((custom_blocked % 50)) -eq 0 ]]; then
+                make_rules_persistent
+            fi
+        done < "$tmpcustomips"
+        
+        # Clean up
+        rm -f "$tmpcustomips"
+        
         echo_safe "${GREEN}Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked.${NC}"
         log "INFO" "Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked." "verbose"
+    else
+        rm -f "$tmpcustomips"
     fi
     
-    # Make sure the rules are persistent - call multiple times to ensure all storage methods are tried
+    # Make sure the rules are persistent
     make_rules_persistent
-    
-    # Detect OS type for specific persistence method
-    local os_type=$(detect_system)
-    
-    # For Debian/Ubuntu, specifically save to /etc/iptables/
-    if [[ "$os_type" == "debian" || "$os_type" == "ubuntu" ]]; then
-        mkdir -p /etc/iptables/ 2>/dev/null
-        iptables-save > /etc/iptables/rules.v4 2>/dev/null || log "WARNING" "Failed to save rules to /etc/iptables/rules.v4"
-        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || log "WARNING" "Failed to save rules to /etc/iptables/rules.v6"
-        chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
-    # For CentOS/RHEL, save to /etc/sysconfig/
-    elif [[ "$os_type" == "centos" || "$os_type" == "rhel" || "$os_type" == "redhat" ]]; then
-        if [[ -d /etc/sysconfig ]]; then
-            iptables-save > /etc/sysconfig/iptables 2>/dev/null || log "WARNING" "Failed to save rules to /etc/sysconfig/iptables"
-            ip6tables-save > /etc/sysconfig/ip6tables 2>/dev/null || log "WARNING" "Failed to save rules to /etc/sysconfig/ip6tables"
-            chmod 600 /etc/sysconfig/iptables /etc/sysconfig/ip6tables 2>/dev/null || true
-        fi
-    fi
     
     return 0
 }
@@ -1131,7 +1030,6 @@ settings_menu() {
         read -rp "Press Enter to continue..."
     done
 }
-
 # Toggle logging function
 toggle_logging() {
     echo_safe "${BOLD}=== Toggle Logging ===${NC}"
@@ -1161,7 +1059,6 @@ toggle_logging() {
         fi
     fi
 }
-
 # Rule expiration settings
 expiration_settings() {
     echo_safe "${BOLD}=== Rule Expiration Settings ===${NC}"
@@ -1281,18 +1178,14 @@ rule_types_settings() {
     # Get current settings
     local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    
     # Validate settings, use defaults if invalid
     [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
     [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
-    
     # Display current settings
     echo_safe "${BLUE}Current rule types:${NC}"
     echo_safe "  ${block_source:+${GREEN}✓${NC}}${block_source:=${RED}✗${NC}} Source IPs      (block traffic FROM malicious IPs)"
     echo_safe "  ${block_destination:+${GREEN}✓${NC}}${block_destination:=${RED}✗${NC}} Destination IPs (block traffic TO malicious IPs)"
-    
     echo_safe "\n${YELLOW}Note:${NC} Changing these settings will affect all existing and future blocking rules."
-    
     # Allow toggles
     read -rp "Toggle Source blocking? [y/N]: " toggle_source
     if [[ "$toggle_source" =~ ^[Yy] ]]; then
@@ -1305,7 +1198,6 @@ rule_types_settings() {
         fi
         need_apply=1
     fi
-    
     read -rp "Toggle Destination blocking? [y/N]: " toggle_dest
     if [[ "$toggle_dest" =~ ^[Yy] ]]; then
         block_destination=$((1 - block_destination))
@@ -1317,20 +1209,16 @@ rule_types_settings() {
         fi
         need_apply=1
     fi
-    
     # If changes were made, apply them immediately
     if [[ $need_apply -eq 1 ]]; then
         echo_safe "\n${YELLOW}Applying changes...${NC}"
-        
         # Clear all rules
         echo_safe "${BLUE}Clearing existing rules...${NC}"
         iptables -F "$IPT_CHAIN" 2>/dev/null && ip6tables -F "$IPT6_CHAIN" 2>/dev/null
         log "INFO" "Cleared rules for rule type changes" "verbose"
-        
         # Run a full resolve_block to rebuild the rules with new settings
         echo_safe "${BLUE}Rebuilding rules with new settings...${NC}"
         resolve_block
-        
         echo_safe "${GREEN}Rule type changes applied successfully.${NC}"
     else
         echo_safe "${YELLOW}No changes made.${NC}"
@@ -1360,7 +1248,8 @@ set_schedule() {
                 expr="0 */$hours * * * $BIN_CMD --run >/dev/null 2>&1"
             fi
             sed -i "s|^cron=.*|cron='$expr'|" "$CONFIG_FILE"
-            ensure_environment
+            # Update crontab
+            (crontab -l 2>/dev/null | grep -v "$BIN_CMD"; echo "$expr") | crontab - 2>/dev/null || true
             echo_safe "${GREEN}Scheduled to run every $m minutes.${NC}"
             log "INFO" "Schedule updated to run every $m minutes" "verbose"
         fi
@@ -1480,253 +1369,450 @@ import_export_menu() {
 import_domains() {
     echo_safe "${BOLD}=== Import Domains ===${NC}"
     read -rp "Enter path to domains file: " file
-    if [[ -f "$file" ]]; then
-        local count=0
-        while IFS= read -r domain || [[ -n "$domain" ]]; do
-            # Skip empty lines and comments
-            [[ -z "$domain" || "$domain" =~ ^[[:space:]]*# ]] && continue
-            domain=$(echo "$domain" | tr -d '\r' | tr -d '\n' | xargs)
-            # Validate domain format
-            if is_valid_domain "$domain"; then
-                # Check if domain already exists in add file
-                if ! grep -Fxq "$domain" "$ADD_FILE" 2>/dev/null; then
-                    echo "$domain" >> "$ADD_FILE"
-                    count=$((count + 1))
-                fi
-            fi
-        done < "$file"
-        echo_safe "${GREEN}Imported $count new domains.${NC}"
-        log "INFO" "Imported $count domains from file: $file" "verbose"
-    else
+    
+    # Validate file exists
+    if [[ ! -f "$file" ]]; then
         echo_safe "${RED}File not found: $file${NC}"
+        return 1
     fi
+    
+    # Validate file is readable
+    if [[ ! -r "$file" ]]; then
+        echo_safe "${RED}Cannot read file: $file (permission denied)${NC}"
+        return 1
+    fi
+    
+    # Performance optimized import for large files
+    local tmpfile=$(mktemp)
+    local count=0
+    
+    # Filter valid domains in one pass
+    grep -v '^[[:space:]]*#' "$file" | \
+    grep -v '^[[:space:]]*$' | \
+    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$tmpfile"
+    
+    # Get existing domains to avoid duplicates
+    local existing_domains=$(mktemp)
+    if [[ -f "$ADD_FILE" ]]; then
+        grep -v '^[[:space:]]*#' "$ADD_FILE" | \
+        grep -v '^[[:space:]]*$' | \
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$existing_domains"
+    else
+        touch "$existing_domains"
+    fi
+    
+    # Process the filtered domains
+    while IFS= read -r domain || [[ -n "$domain" ]]; do
+        # Validate domain format
+        if is_valid_domain "$domain"; then
+            # Check if domain already exists
+            if ! grep -Fxq "$domain" "$existing_domains"; then
+                echo "$domain" >> "$ADD_FILE"
+                count=$((count + 1))
+            fi
+        fi
+    done < "$tmpfile"
+    
+    # Clean up
+    rm -f "$tmpfile" "$existing_domains"
+    
+    echo_safe "${GREEN}Imported $count new domains.${NC}"
+    log "INFO" "Imported $count domains from file: $file" "verbose"
+    return 0
 }
 # Export domains
 export_domains() {
     echo_safe "${BOLD}=== Export Domains ===${NC}"
     read -rp "Enter export path: " file
-    if [[ -n "$file" ]]; then
-        local domains=()
-        mapfile -t domains < <(merge_domains)
-        if [[ ${#domains[@]} -gt 0 ]]; then
-            # Create export file with header
-            {
-                echo "# DNSniper Domains Export"
-                echo "# Date: $(date)"
-                echo "# Total: ${#domains[@]} domains"
-                echo ""
-                printf "%s\n" "${domains[@]}"
-            } > "$file"
-            echo_safe "${GREEN}Exported ${#domains[@]} domains to $file.${NC}"
-            log "INFO" "Exported ${#domains[@]} domains to file: $file" "verbose"
-        else
-            echo_safe "${YELLOW}No domains to export.${NC}"
-        fi
-    else
+    
+    if [[ -z "$file" ]]; then
         echo_safe "${RED}Invalid export path.${NC}"
+        return 1
     fi
+    
+    # Check if directory exists
+    local dir=$(dirname "$file")
+    if [[ ! -d "$dir" ]]; then
+        echo_safe "${RED}Directory does not exist: $dir${NC}"
+        return 1
+    fi
+    
+    # Check if directory is writable
+    if [[ ! -w "$dir" ]]; then
+        echo_safe "${RED}Cannot write to directory: $dir (permission denied)${NC}"
+        return 1
+    fi
+    
+    # Export domains
+    local tmpfile=$(mktemp)
+    merge_domains > "$tmpfile"
+    local count=$(wc -l < "$tmpfile")
+    
+    if [[ $count -gt 0 ]]; then
+        # Create export file with header
+        {
+            echo "# DNSniper Domains Export"
+            echo "# Date: $(date)"
+            echo "# Total: $count domains"
+            echo ""
+            cat "$tmpfile"
+        } > "$file"
+        
+        echo_safe "${GREEN}Exported $count domains to $file.${NC}"
+        log "INFO" "Exported $count domains to file: $file" "verbose"
+    else
+        echo_safe "${YELLOW}No domains to export.${NC}"
+    fi
+    
+    # Clean up
+    rm -f "$tmpfile"
+    return 0
 }
 # Import IPs
 import_ips() {
     echo_safe "${BOLD}=== Import IP Addresses ===${NC}"
     read -rp "Enter path to IP list file: " file
-    if [[ -f "$file" ]]; then
-        local count=0
-        while IFS= read -r ip || [[ -n "$ip" ]]; do
-            # Skip empty lines and comments
-            [[ -z "$ip" || "$ip" =~ ^[[:space:]]*# ]] && continue
-            ip=$(echo "$ip" | tr -d '\r' | tr -d '\n' | xargs)
-            # Validate IP format
-            if is_ipv6 "$ip" || is_valid_ipv4 "$ip"; then
-                # Check if IP is critical
-                if ! is_critical_ip "$ip"; then
-                    # Check if IP already exists in add file
-                    if ! grep -Fxq "$ip" "$IP_ADD_FILE" 2>/dev/null; then
-                        echo "$ip" >> "$IP_ADD_FILE"
-                        count=$((count + 1))
-                    fi
-                else
-                    echo_safe "${YELLOW}Skipped critical IP:${NC} $ip"
-                    log "WARNING" "Skipped critical IP during import: $ip" "verbose"
+    
+    # Validate file exists
+    if [[ ! -f "$file" ]]; then
+        echo_safe "${RED}File not found: $file${NC}"
+        return 1
+    fi
+    
+    # Validate file is readable
+    if [[ ! -r "$file" ]]; then
+        echo_safe "${RED}Cannot read file: $file (permission denied)${NC}"
+        return 1
+    fi
+    
+    # Performance optimized import for large files
+    local tmpfile=$(mktemp)
+    local validips=$(mktemp)
+    local count=0
+    
+    # Filter comments and empty lines
+    grep -v '^[[:space:]]*#' "$file" | \
+    grep -v '^[[:space:]]*$' | \
+    sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$tmpfile"
+    
+    # Get existing IPs to avoid duplicates
+    local existing_ips=$(mktemp)
+    if [[ -f "$IP_ADD_FILE" ]]; then
+        grep -v '^[[:space:]]*#' "$IP_ADD_FILE" | \
+        grep -v '^[[:space:]]*$' | \
+        sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$existing_ips"
+    else
+        touch "$existing_ips"
+    fi
+    
+    # Process and validate IPs
+    while IFS= read -r ip || [[ -n "$ip" ]]; do
+        # Validate IP format
+        if is_ipv6 "$ip" || is_valid_ipv4 "$ip"; then
+            # Check if IP is critical
+            if ! is_critical_ip "$ip"; then
+                # Check if IP already exists
+                if ! grep -Fxq "$ip" "$existing_ips"; then
+                    echo "$ip" >> "$validips"
+                    count=$((count + 1))
                 fi
             else
-                echo_safe "${YELLOW}Skipped invalid IP:${NC} $ip"
+                echo_safe "${YELLOW}Skipped critical IP:${NC} $ip"
+                log "WARNING" "Skipped critical IP during import: $ip" "verbose"
             fi
-        done < "$file"
-        echo_safe "${GREEN}Imported $count new IPs.${NC}"
-        log "INFO" "Imported $count IPs from file: $file" "verbose"
-    else
-        echo_safe "${RED}File not found: $file${NC}"
+        else
+            echo_safe "${YELLOW}Skipped invalid IP:${NC} $ip"
+        fi
+    done < "$tmpfile"
+    
+    # Append valid IPs to the add file
+    if [[ -s "$validips" ]]; then
+        cat "$validips" >> "$IP_ADD_FILE"
     fi
+    
+    # Clean up
+    rm -f "$tmpfile" "$validips" "$existing_ips"
+    
+    echo_safe "${GREEN}Imported $count new IPs.${NC}"
+    log "INFO" "Imported $count IPs from file: $file" "verbose"
+    return 0
 }
 # Export IPs
 export_ips() {
     echo_safe "${BOLD}=== Export IP Addresses ===${NC}"
     read -rp "Enter export path: " file
-    if [[ -n "$file" ]]; then
-        local custom_ips=()
-        mapfile -t custom_ips < <(get_custom_ips)
-        if [[ ${#custom_ips[@]} -gt 0 ]]; then
-            # Create export file with header
-            {
-                echo "# DNSniper IPs Export"
-                echo "# Date: $(date)"
-                echo "# Total: ${#custom_ips[@]} IPs"
-                echo ""
-                printf "%s\n" "${custom_ips[@]}"
-            } > "$file"
-            echo_safe "${GREEN}Exported ${#custom_ips[@]} IPs to $file.${NC}"
-            log "INFO" "Exported ${#custom_ips[@]} IPs to file: $file" "verbose"
-        else
-            echo_safe "${YELLOW}No custom IPs to export.${NC}"
-        fi
-    else
+    
+    if [[ -z "$file" ]]; then
         echo_safe "${RED}Invalid export path.${NC}"
+        return 1
     fi
+    
+    # Check if directory exists
+    local dir=$(dirname "$file")
+    if [[ ! -d "$dir" ]]; then
+        echo_safe "${RED}Directory does not exist: $dir${NC}"
+        return 1
+    fi
+    
+    # Check if directory is writable
+    if [[ ! -w "$dir" ]]; then
+        echo_safe "${RED}Cannot write to directory: $dir (permission denied)${NC}"
+        return 1
+    fi
+    
+    # Export IPs
+    local tmpfile=$(mktemp)
+    get_custom_ips > "$tmpfile"
+    local count=$(wc -l < "$tmpfile")
+    
+    if [[ $count -gt 0 ]]; then
+        # Create export file with header
+        {
+            echo "# DNSniper IPs Export"
+            echo "# Date: $(date)"
+            echo "# Total: $count IPs"
+            echo ""
+            cat "$tmpfile"
+        } > "$file"
+        
+        echo_safe "${GREEN}Exported $count IPs to $file.${NC}"
+        log "INFO" "Exported $count IPs to file: $file" "verbose"
+    else
+        echo_safe "${YELLOW}No custom IPs to export.${NC}"
+    fi
+    
+    # Clean up
+    rm -f "$tmpfile"
+    return 0
 }
 # Export config
 export_config() {
     echo_safe "${BOLD}=== Export Configuration ===${NC}"
     read -rp "Enter export path: " file
-    if [[ -n "$file" ]]; then
-        # Export config file with header
-        {
-            echo "# DNSniper Configuration Export"
-            echo "# Date: $(date)"
-            echo ""
-            cat "$CONFIG_FILE"
-        } > "$file"
-        echo_safe "${GREEN}Configuration exported to $file.${NC}"
-        log "INFO" "Configuration exported to file: $file" "verbose"
-    else
+    
+    if [[ -z "$file" ]]; then
         echo_safe "${RED}Invalid export path.${NC}"
+        return 1
     fi
+    
+    # Check if directory exists
+    local dir=$(dirname "$file")
+    if [[ ! -d "$dir" ]]; then
+        echo_safe "${RED}Directory does not exist: $dir${NC}"
+        return 1
+    fi
+    
+    # Check if directory is writable
+    if [[ ! -w "$dir" ]]; then
+        echo_safe "${RED}Cannot write to directory: $dir (permission denied)${NC}"
+        return 1
+    fi
+    
+    # Export config file with header
+    {
+        echo "# DNSniper Configuration Export"
+        echo "# Date: $(date)"
+        echo ""
+        cat "$CONFIG_FILE"
+    } > "$file"
+    
+    echo_safe "${GREEN}Configuration exported to $file.${NC}"
+    log "INFO" "Configuration exported to file: $file" "verbose"
+    return 0
 }
 # Export firewall rules
 export_firewall_rules() {
     echo_safe "${BOLD}=== Export Firewall Rules ===${NC}"
     read -rp "Enter directory path for export: " dir
-    if [[ -n "$dir" && -d "$dir" ]]; then
-        local ipv4_rules="${dir}/dnsniper-ipv4-rules.txt"
-        local ipv6_rules="${dir}/dnsniper-ipv6-rules.txt"
-        # Export current rules
-        iptables-save | grep -E "(^*|^:|^-A $IPT_CHAIN)" > "$ipv4_rules" 2>/dev/null
-        ip6tables-save | grep -E "(^*|^:|^-A $IPT6_CHAIN)" > "$ipv6_rules" 2>/dev/null
-        echo_safe "${GREEN}Exported IPv4 rules to:${NC} $ipv4_rules"
-        echo_safe "${GREEN}Exported IPv6 rules to:${NC} $ipv6_rules"
-        log "INFO" "Exported firewall rules to: $dir" "verbose"
-    else
-        echo_safe "${RED}Invalid directory.${NC}"
+    
+    if [[ -z "$dir" ]]; then
+        echo_safe "${RED}Invalid directory path.${NC}"
+        return 1
     fi
+    
+    # Check if directory exists
+    if [[ ! -d "$dir" ]]; then
+        echo_safe "${RED}Directory does not exist: $dir${NC}"
+        return 1
+    fi
+    
+    # Check if directory is writable
+    if [[ ! -w "$dir" ]]; then
+        echo_safe "${RED}Cannot write to directory: $dir (permission denied)${NC}"
+        return 1
+    fi
+    
+    local ipv4_rules="${dir}/dnsniper-ipv4-rules.txt"
+    local ipv6_rules="${dir}/dnsniper-ipv6-rules.txt"
+    
+    # Export current rules
+    iptables-save | grep -E "(^*|^:|^-A $IPT_CHAIN)" > "$ipv4_rules" 2>/dev/null
+    ip6tables-save | grep -E "(^*|^:|^-A $IPT6_CHAIN)" > "$ipv6_rules" 2>/dev/null
+    
+    echo_safe "${GREEN}Exported IPv4 rules to:${NC} $ipv4_rules"
+    echo_safe "${GREEN}Exported IPv6 rules to:${NC} $ipv6_rules"
+    log "INFO" "Exported firewall rules to: $dir" "verbose"
+    return 0
 }
 # Import all (complete backup)
 import_all() {
     echo_safe "${BOLD}=== Import Complete Backup ===${NC}"
     read -rp "Enter backup directory: " dir
-    if [[ -n "$dir" && -d "$dir" ]]; then
-        # Check if backup files exist
-        if [[ -f "$dir/domains.txt" || -f "$dir/ips.txt" || -f "$dir/config.conf" ]]; then
-            # Import domains if exists
-            if [[ -f "$dir/domains.txt" ]]; then
-                cp "$dir/domains.txt" "$ADD_FILE.tmp"
-                mv "$ADD_FILE.tmp" "$ADD_FILE"
-                echo_safe "${GREEN}Imported domains from backup.${NC}"
-            fi
-            # Import IPs if exists
-            if [[ -f "$dir/ips.txt" ]]; then
-                cp "$dir/ips.txt" "$IP_ADD_FILE.tmp"
-                mv "$IP_ADD_FILE.tmp" "$IP_ADD_FILE"
-                echo_safe "${GREEN}Imported IPs from backup.${NC}"
-            fi
-            # Import config if exists
-            if [[ -f "$dir/config.conf" ]]; then
-                cp "$dir/config.conf" "$CONFIG_FILE.tmp"
-                mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
-                echo_safe "${GREEN}Imported configuration from backup.${NC}"
-            fi
-            # Import database if exists
-            if [[ -f "$dir/history.db" ]]; then
-                cp "$dir/history.db" "$DB_FILE.tmp"
-                mv "$DB_FILE.tmp" "$DB_FILE"
-                echo_safe "${GREEN}Imported history database from backup.${NC}"
-            fi
-            # Re-initialize environment with imported settings
-            ensure_environment
-            echo_safe "${GREEN}Import complete!${NC}"
-            log "INFO" "Imported complete backup from: $dir" "verbose"
-        else
-            echo_safe "${RED}No valid backup files found in directory.${NC}"
-        fi
-    else
-        echo_safe "${RED}Invalid directory.${NC}"
+    
+    if [[ -z "$dir" ]]; then
+        echo_safe "${RED}Invalid directory path.${NC}"
+        return 1
     fi
+    
+    # Check if directory exists
+    if [[ ! -d "$dir" ]]; then
+        echo_safe "${RED}Directory does not exist: $dir${NC}"
+        return 1
+    fi
+    
+    # Check if directory is readable
+    if [[ ! -r "$dir" ]]; then
+        echo_safe "${RED}Cannot read from directory: $dir (permission denied)${NC}"
+        return 1
+    fi
+    
+    # Check if backup files exist
+    if [[ -f "$dir/domains.txt" || -f "$dir/ips.txt" || -f "$dir/config.conf" || -f "$dir/history.db" ]]; then
+        # Import domains if exists
+        if [[ -f "$dir/domains.txt" && -r "$dir/domains.txt" ]]; then
+            cp "$dir/domains.txt" "$ADD_FILE.tmp"
+            mv "$ADD_FILE.tmp" "$ADD_FILE"
+            echo_safe "${GREEN}Imported domains from backup.${NC}"
+        fi
+        
+        # Import IPs if exists
+        if [[ -f "$dir/ips.txt" && -r "$dir/ips.txt" ]]; then
+            cp "$dir/ips.txt" "$IP_ADD_FILE.tmp"
+            mv "$IP_ADD_FILE.tmp" "$IP_ADD_FILE"
+            echo_safe "${GREEN}Imported IPs from backup.${NC}"
+        fi
+        
+        # Import config if exists
+        if [[ -f "$dir/config.conf" && -r "$dir/config.conf" ]]; then
+            cp "$dir/config.conf" "$CONFIG_FILE.tmp"
+            mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+            echo_safe "${GREEN}Imported configuration from backup.${NC}"
+        fi
+        
+        # Import database if exists
+        if [[ -f "$dir/history.db" && -r "$dir/history.db" ]]; then
+            cp "$dir/history.db" "$DB_FILE.tmp"
+            mv "$DB_FILE.tmp" "$DB_FILE"
+            echo_safe "${GREEN}Imported history database from backup.${NC}"
+        fi
+        
+        # Re-initialize environment with imported settings
+        ensure_environment
+        echo_safe "${GREEN}Import complete!${NC}"
+        log "INFO" "Imported complete backup from: $dir" "verbose"
+    else
+        echo_safe "${RED}No valid backup files found in directory.${NC}"
+    fi
+    
+    return 0
 }
 # Export all (complete backup)
 export_all() {
     echo_safe "${BOLD}=== Export Complete Backup ===${NC}"
     read -rp "Enter export directory: " dir
-    if [[ -n "$dir" && -d "$dir" ]]; then
-        # Export directory confirmed
-        local export_dir="${dir%/}/dnsniper-backup-$(date +%Y%m%d-%H%M%S)"
-        if ! mkdir -p "$export_dir"; then
-            echo_safe "${RED}Cannot create export directory.${NC}"
-            return 1
-        fi
-        # Export domains
-        local domains=()
-        mapfile -t domains < <(merge_domains)
-        if [[ ${#domains[@]} -gt 0 ]]; then
-            {
-                echo "# DNSniper Domains Export"
-                echo "# Date: $(date)"
-                echo "# Total: ${#domains[@]} domains"
-                echo ""
-                printf "%s\n" "${domains[@]}"
-            } > "$export_dir/domains.txt"
-        fi
-        # Export custom IPs
-        local custom_ips=()
-        mapfile -t custom_ips < <(get_custom_ips)
-        if [[ ${#custom_ips[@]} -gt 0 ]]; then
-            {
-                echo "# DNSniper IPs Export"
-                echo "# Date: $(date)"
-                echo "# Total: ${#custom_ips[@]} IPs"
-                echo ""
-                printf "%s\n" "${custom_ips[@]}"
-            } > "$export_dir/ips.txt"
-        fi
-        # Export config
-        cp "$CONFIG_FILE" "$export_dir/config.conf" 2>/dev/null || true
-        # Export current iptables rules
-        if command -v iptables-save &>/dev/null; then
-            iptables-save | grep -E "(^*|^:|^-A $IPT_CHAIN)" > "$export_dir/iptables-rules.txt" 2>/dev/null || true
-            ip6tables-save | grep -E "(^*|^:|^-A $IPT6_CHAIN)" > "$export_dir/ip6tables-rules.txt" 2>/dev/null || true
-        fi
-        # Export database if available
-        if [[ -f "$DB_FILE" ]]; then
+    
+    if [[ -z "$dir" ]]; then
+        echo_safe "${RED}Invalid directory path.${NC}"
+        return 1
+    fi
+    
+    # Check if directory exists
+    if [[ ! -d "$dir" ]]; then
+        echo_safe "${RED}Directory does not exist: $dir${NC}"
+        return 1
+    fi
+    
+    # Check if directory is writable
+    if [[ ! -w "$dir" ]]; then
+        echo_safe "${RED}Cannot write to directory: $dir (permission denied)${NC}"
+        return 1
+    fi
+    
+    # Export directory confirmed
+    local export_dir="${dir%/}/dnsniper-backup-$(date +%Y%m%d-%H%M%S)"
+    if ! mkdir -p "$export_dir"; then
+        echo_safe "${RED}Cannot create export directory.${NC}"
+        return 1
+    fi
+    
+    # Export domains
+    local tmpdomains=$(mktemp)
+    merge_domains > "$tmpdomains"
+    if [[ -s "$tmpdomains" ]]; then
+        {
+            echo "# DNSniper Domains Export"
+            echo "# Date: $(date)"
+            echo "# Total: $(wc -l < "$tmpdomains") domains"
+            echo ""
+            cat "$tmpdomains"
+        } > "$export_dir/domains.txt"
+    fi
+    rm -f "$tmpdomains"
+    
+    # Export custom IPs
+    local tmpips=$(mktemp)
+    get_custom_ips > "$tmpips"
+    if [[ -s "$tmpips" ]]; then
+        {
+            echo "# DNSniper IPs Export"
+            echo "# Date: $(date)"
+            echo "# Total: $(wc -l < "$tmpips") IPs"
+            echo ""
+            cat "$tmpips"
+        } > "$export_dir/ips.txt"
+    fi
+    rm -f "$tmpips"
+    
+    # Export config
+    cp "$CONFIG_FILE" "$export_dir/config.conf" 2>/dev/null || true
+    
+    # Export current iptables rules
+    if command -v iptables-save &>/dev/null; then
+        iptables-save | grep -E "(^*|^:|^-A $IPT_CHAIN)" > "$export_dir/iptables-rules.txt" 2>/dev/null || true
+        ip6tables-save | grep -E "(^*|^:|^-A $IPT6_CHAIN)" > "$export_dir/ip6tables-rules.txt" 2>/dev/null || true
+    fi
+    
+    # Export database if available
+    if [[ -f "$DB_FILE" ]]; then
+        # Use a more reliable approach for SQLite DB copying
+        if command -v sqlite3 &>/dev/null; then
+            # Create a backup of the database
+            sqlite3 "$DB_FILE" ".backup '$export_dir/history.db'" 2>/dev/null || cp "$DB_FILE" "$export_dir/history.db" 2>/dev/null || true
+        else
+            # Fallback to direct copy if sqlite3 is not available
             cp "$DB_FILE" "$export_dir/history.db" 2>/dev/null || true
         fi
-        # Create README
-        {
-            echo "DNSniper Backup"
-            echo "Date: $(date)"
-            echo "Version: $VERSION"
-            echo ""
-            echo "This backup contains:"
-            echo "- Blocked domains"
-            echo "- Blocked IP addresses"
-            echo "- Configuration settings"
-            echo "- Firewall rules"
-            echo "- History database"
-            echo ""
-            echo "To restore, use the 'Import Complete Backup' feature in DNSniper."
-        } > "$export_dir/README.txt"
-        echo_safe "${GREEN}Complete backup exported to: $export_dir${NC}"
-        log "INFO" "Complete backup exported to: $export_dir" "verbose"
-    else
-        echo_safe "${RED}Invalid directory.${NC}"
     fi
+    
+    # Create README
+    {
+        echo "DNSniper Backup"
+        echo "Date: $(date)"
+        echo "Version: $VERSION"
+        echo ""
+        echo "This backup contains:"
+        echo "- Blocked domains"
+        echo "- Blocked IP addresses"
+        echo "- Configuration settings"
+        echo "- Firewall rules"
+        echo "- History database"
+        echo ""
+        echo "To restore, use the 'Import Complete Backup' feature in DNSniper."
+    } > "$export_dir/README.txt"
+    
+    echo_safe "${GREEN}Complete backup exported to: $export_dir${NC}"
+    log "INFO" "Complete backup exported to: $export_dir" "verbose"
+    
     return 0
 }
 # --- Block/Unblock Domain/IP Functions ---
@@ -1734,24 +1820,29 @@ export_all() {
 block_domain() {
     echo_safe "${BOLD}=== Block Domain ===${NC}"
     read -rp "Domain to block: " domain
+    
     if [[ -z "$domain" ]]; then
         echo_safe "${RED}Domain cannot be empty.${NC}"
         return 1
     fi
+    
     # Validate domain format
     if ! is_valid_domain "$domain"; then
         echo_safe "${RED}Invalid domain format.${NC}"
         return 1
     fi
+    
     # Check if domain already exists in block list
     if grep -Fxq "$domain" "$ADD_FILE" 2>/dev/null; then
         echo_safe "${YELLOW}Domain already in block list.${NC}"
         return 0
     fi
+    
     # Add to custom domains file
     echo "$domain" >> "$ADD_FILE"
     echo_safe "${GREEN}Domain added to block list:${NC} $domain"
     log "INFO" "Domain added to block list: $domain" "verbose"
+    
     # Ask if to block immediately
     read -rp "Block this domain immediately? [y/N]: " block_now
     if [[ "$block_now" =~ ^[Yy] ]]; then
@@ -1760,25 +1851,32 @@ block_domain() {
         if [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]]; then
             timeout=$DEFAULT_TIMEOUT
         fi
+        
         # Resolve IPv4 addresses with timeout
         local v4=()
         mapfile -t v4 < <(dig +short +time="$timeout" +tries=2 A "$domain" 2>/dev/null || echo "")
+        
         # Resolve IPv6 addresses with timeout
         local v6=()
         mapfile -t v6 < <(dig +short +time="$timeout" +tries=2 AAAA "$domain" 2>/dev/null || echo "")
+        
         # Combine and deduplicate
         local all=("${v4[@]}" "${v6[@]}")
         local unique=()
+        
         for ip in "${all[@]}"; do
             [[ -z "$ip" ]] && continue
+            
             if ! [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! is_ipv6 "$ip"; then
                 continue
             fi
+            
             # Check if critical IP
             if is_critical_ip "$ip"; then
                 echo_safe "  - ${YELLOW}Skipped critical IP${NC}: $ip"
                 continue
             fi
+            
             local found=0
             for u in "${unique[@]}"; do
                 if [[ "$u" == "$ip" ]]; then
@@ -1786,16 +1884,21 @@ block_domain() {
                     break
                 fi
             done
+            
             [[ $found -eq 0 ]] && unique+=("$ip")
         done
+        
         if [[ ${#unique[@]} -eq 0 ]]; then
             echo_safe "  ${YELLOW}No valid IP addresses found${NC}"
             return 0
         fi
+        
         # Convert array to CSV for storage
         local ips_csv=$(IFS=,; echo "${unique[*]}")
+        
         # Record in history
         record_history "$domain" "$ips_csv"
+        
         # Block each IP
         for ip in "${unique[@]}"; do
             if block_ip "$ip" "DNSniper: $domain"; then
@@ -1804,53 +1907,81 @@ block_domain() {
                 echo_safe "  - ${RED}Error blocking${NC}: $ip"
             fi
         done
+        
         # Make rules persistent
         make_rules_persistent
     fi
+    
     return 0
 }
 # Unblock domain
 unblock_domain() {
     echo_safe "${BOLD}=== Unblock Domain ===${NC}"
+    
     # Get all active domains
-    local domains=()
-    mapfile -t domains < <(merge_domains)
-    if [[ ${#domains[@]} -eq 0 ]]; then
+    local tmpdomains=$(mktemp)
+    merge_domains > "$tmpdomains"
+    local total=$(wc -l < "$tmpdomains")
+    
+    if [[ $total -eq 0 ]]; then
         echo_safe "${YELLOW}No active domains to unblock.${NC}"
+        rm -f "$tmpdomains"
         return 0
     fi
-    # Display numbered list of domains
+    
+    # Display domains in a paginated way for large lists
     echo_safe "${BLUE}Current blocked domains:${NC}"
-    local i=1
-    for d in "${domains[@]}"; do
-        printf "%3d) %s\n" $i "$d"
-        i=$((i+1))
-    done
+    
+    if [[ $total -gt 20 ]]; then
+        echo_safe "${YELLOW}Too many domains to display ($total). Please enter domain name directly.${NC}"
+    else
+        # Small enough to display all
+        local i=1
+        while IFS= read -r d || [[ -n "$d" ]]; do
+            printf "%3d) %s\n" $i "$d"
+            i=$((i+1))
+        done < "$tmpdomains"
+    fi
+    
     read -rp "Enter domain number or domain name to unblock: " choice
     local domain_to_unblock=""
-    # Check if choice is a number
-    if [[ "$choice" =~ ^[0-9]+$ && $choice -ge 1 && $choice -le ${#domains[@]} ]]; then
-        domain_to_unblock="${domains[$((choice-1))]}"
+    
+    # Check if choice is a number and within range
+    if [[ "$choice" =~ ^[0-9]+$ && $choice -ge 1 && $choice -le $total ]]; then
+        domain_to_unblock=$(sed -n "${choice}p" "$tmpdomains")
     else
         domain_to_unblock="$choice"
     fi
+    
+    rm -f "$tmpdomains"
+    
     if [[ -z "$domain_to_unblock" ]]; then
         echo_safe "${RED}Invalid selection.${NC}"
         return 1
     fi
+    
+    # Validate domain format
+    if ! is_valid_domain "$domain_to_unblock"; then
+        echo_safe "${RED}Invalid domain format: $domain_to_unblock${NC}"
+        return 1
+    fi
+    
     # Add to remove file if not already there
     if ! grep -Fxq "$domain_to_unblock" "$REMOVE_FILE" 2>/dev/null; then
         echo "$domain_to_unblock" >> "$REMOVE_FILE"
         echo_safe "${GREEN}Domain unblocked:${NC} $domain_to_unblock"
         log "INFO" "Domain added to unblock list: $domain_to_unblock" "verbose"
+        
         # Ask if to remove firewall rules immediately
         read -rp "Remove firewall rules for this domain immediately? [y/N]: " unblock_now
         if [[ "$unblock_now" =~ ^[Yy] ]]; then
             echo_safe "${BLUE}Removing firewall rules for $domain_to_unblock...${NC}"
+            
             # Get IPs from history
             local esc_dom=$(sql_escape "$domain_to_unblock")
             local ips
             ips=$(sqlite3 "$DB_FILE" "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
+            
             if [[ -n "$ips" ]]; then
                 IFS=',' read -ra ip_list <<< "$ips"
                 for ip in "${ip_list[@]}"; do
@@ -1858,6 +1989,7 @@ unblock_domain() {
                         echo_safe "  - ${GREEN}Unblocked${NC}: $ip"
                     fi
                 done
+                
                 # Make rules persistent
                 make_rules_persistent
             else
@@ -1867,36 +1999,43 @@ unblock_domain() {
     else
         echo_safe "${YELLOW}Domain already in unblock list.${NC}"
     fi
+    
     return 0
 }
 # Block IP
 block_custom_ip() {
     echo_safe "${BOLD}=== Block IP Address ===${NC}"
     read -rp "IP address to block: " ip
+    
     if [[ -z "$ip" ]]; then
         echo_safe "${RED}IP cannot be empty.${NC}"
         return 1
     fi
+    
     # Validate IP format
     if ! is_ipv6 "$ip" && ! is_valid_ipv4 "$ip"; then
         echo_safe "${RED}Invalid IP format.${NC}"
         return 1
     fi
+    
     # Check if it's a critical IP
     if is_critical_ip "$ip"; then
         echo_safe "${RED}Cannot block critical IP address: $ip${NC}"
         log "WARNING" "Attempted to block critical IP: $ip" "verbose"
         return 1
     fi
+    
     # Check if IP already exists in block list
     if grep -Fxq "$ip" "$IP_ADD_FILE" 2>/dev/null; then
         echo_safe "${YELLOW}IP already in block list.${NC}"
         return 0
     fi
+    
     # Add to custom IPs file
     echo "$ip" >> "$IP_ADD_FILE"
     echo_safe "${GREEN}IP added to block list:${NC} $ip"
     log "INFO" "IP added to block list: $ip" "verbose"
+    
     # Ask if to block immediately
     read -rp "Block this IP immediately? [y/N]: " block_now
     if [[ "$block_now" =~ ^[Yy] ]]; then
@@ -1908,47 +2047,67 @@ block_custom_ip() {
             echo_safe "${RED}Error blocking IP:${NC} $ip"
         fi
     fi
+    
     return 0
 }
 # Unblock IP
 unblock_custom_ip() {
     echo_safe "${BOLD}=== Unblock IP Address ===${NC}"
+    
     # Get all custom IPs
-    local custom_ips=()
-    mapfile -t custom_ips < <(get_custom_ips)
-    if [[ ${#custom_ips[@]} -eq 0 ]]; then
+    local tmpips=$(mktemp)
+    get_custom_ips > "$tmpips"
+    local total=$(wc -l < "$tmpips")
+    
+    if [[ $total -eq 0 ]]; then
         echo_safe "${YELLOW}No custom IPs to unblock.${NC}"
+        rm -f "$tmpips"
         return 0
     fi
-    # Display numbered list of IPs
+    
+    # Display IPs in a paginated way for large lists
     echo_safe "${BLUE}Current blocked IPs:${NC}"
-    local i=1
-    for ip in "${custom_ips[@]}"; do
-        printf "%3d) %s\n" $i "$ip"
-        i=$((i+1))
-    done
+    
+    if [[ $total -gt 20 ]]; then
+        echo_safe "${YELLOW}Too many IPs to display ($total). Please enter IP address directly.${NC}"
+    else
+        # Small enough to display all
+        local i=1
+        while IFS= read -r ip || [[ -n "$ip" ]]; do
+            printf "%3d) %s\n" $i "$ip"
+            i=$((i+1))
+        done < "$tmpips"
+    fi
+    
     read -rp "Enter IP number or IP address to unblock: " choice
     local ip_to_unblock=""
-    # Check if choice is a number
-    if [[ "$choice" =~ ^[0-9]+$ && $choice -ge 1 && $choice -le ${#custom_ips[@]} ]]; then
-        ip_to_unblock="${custom_ips[$((choice-1))]}"
+    
+    # Check if choice is a number and within range
+    if [[ "$choice" =~ ^[0-9]+$ && $choice -ge 1 && $choice -le $total ]]; then
+        ip_to_unblock=$(sed -n "${choice}p" "$tmpips")
     else
         ip_to_unblock="$choice"
     fi
+    
+    rm -f "$tmpips"
+    
     if [[ -z "$ip_to_unblock" ]]; then
         echo_safe "${RED}Invalid selection.${NC}"
         return 1
     fi
+    
     # Validate IP format
     if ! is_ipv6 "$ip_to_unblock" && ! is_valid_ipv4 "$ip_to_unblock"; then
         echo_safe "${RED}Invalid IP format.${NC}"
         return 1
     fi
+    
     # Add to remove file if not already there
     if ! grep -Fxq "$ip_to_unblock" "$IP_REMOVE_FILE" 2>/dev/null; then
         echo "$ip_to_unblock" >> "$IP_REMOVE_FILE"
         echo_safe "${GREEN}IP unblocked:${NC} $ip_to_unblock"
         log "INFO" "IP added to unblock list: $ip_to_unblock" "verbose"
+        
         # Ask if to remove firewall rules immediately
         read -rp "Remove firewall rules for this IP immediately? [y/N]: " unblock_now
         if [[ "$unblock_now" =~ ^[Yy] ]]; then
@@ -1963,213 +2122,224 @@ unblock_custom_ip() {
     else
         echo_safe "${YELLOW}IP already in unblock list.${NC}"
     fi
+    
     return 0
 }
-# Show status
+# Show status - Performance optimized
 display_status() {
+    # Start processing in background for better UI responsiveness
     clear
-    show_banner
-    # Get domains and IPs
-    local domains=()
-    mapfile -t domains < <(merge_domains)
-    local custom_ips=()
-    mapfile -t custom_ips < <(get_custom_ips)
-    # Get config values
-    local max_ips=$(grep '^max_ips=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local sched=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
-    local update_url=$(grep '^update_url=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
-    local auto_update=$(grep '^auto_update=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local expire_enabled=$(grep '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local expire_multiplier=$(grep '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local logging_enabled=$(grep '^logging_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    # Apply defaults if missing or invalid
-    [[ -z "$max_ips" || ! "$max_ips" =~ ^[0-9]+$ ]] && max_ips=$DEFAULT_MAX_IPS
-    [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]] && timeout=$DEFAULT_TIMEOUT
-    [[ -z "$update_url" ]] && update_url=$DEFAULT_URL
-    [[ -z "$auto_update" || ! "$auto_update" =~ ^[01]$ ]] && auto_update=$DEFAULT_AUTO_UPDATE
-    [[ -z "$expire_enabled" || ! "$expire_enabled" =~ ^[01]$ ]] && expire_enabled=$DEFAULT_EXPIRE_ENABLED
-    [[ -z "$expire_multiplier" || ! "$expire_multiplier" =~ ^[0-9]+$ ]] && expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
-    [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
-    [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
-    [[ -z "$logging_enabled" || ! "$logging_enabled" =~ ^[01]$ ]] && logging_enabled=$DEFAULT_LOGGING_ENABLED
-    # Format auto-update text
-    local auto_update_text="${RED}Disabled${NC}"
-    [[ "$auto_update" == "1" ]] && auto_update_text="${GREEN}Enabled${NC}"
-    # Format expiration text
-    local expire_text="${RED}Disabled${NC}"
-    [[ "$expire_enabled" == "1" ]] && expire_text="${GREEN}Enabled (${expire_multiplier}x)${NC}"
-    # Format schedule text
-    local schedule_text="$sched"
-    [[ "$sched" == "# DNSniper disabled" ]] && schedule_text="${RED}Disabled${NC}"
-    # Format rule types text
-    local rule_types=""
-    [[ "$block_source" == "1" ]] && rule_types+="Source, "
-    [[ "$block_destination" == "1" ]] && rule_types+="Destination"
-    rule_types=${rule_types%, }
-    [[ -z "$rule_types" ]] && rule_types="${RED}None${NC}"
-    # Format logging text
-    local logging_text="${RED}Disabled${NC}"
-    [[ "$logging_enabled" == "1" ]] && logging_text="${GREEN}Enabled${NC}"
-    # Count actual blocked IPs
-    local actual_blocked_ips=$(count_blocked_ips)
-    # Count expired domains pending cleanup
-    local expired_count=0
-    if [[ "$expire_enabled" == "1" ]]; then
-        local cron_expr=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
-        local update_minutes=60 # Default to hourly if can't determine
-        if [[ "$cron_expr" == "# DNSniper disabled" ]]; then
-            update_minutes=60
-        elif [[ "$cron_expr" =~ \*/([0-9]+)[[:space:]] ]]; then
-            update_minutes="${BASH_REMATCH[1]}"
-        elif [[ "$cron_expr" =~ ^[0-9]+[[:space:]]+\*/([0-9]+) ]]; then
-            update_minutes=$((${BASH_REMATCH[1]} * 60))
+    echo_safe "${BLUE}Loading DNSniper status, please wait...${NC}"
+    
+    # Create a temp file for processing
+    local tmpout=$(mktemp)
+    
+    # Run analysis and data gathering in background
+    (
+        show_banner > "$tmpout"
+        
+        # Get domains and IPs in a more efficient way
+        local domain_count=$(merge_domains | wc -l)
+        local blocked_ips=$(count_blocked_ips)
+        local custom_ip_count=$(get_custom_ips | wc -l)
+        
+        # Get config values
+        local max_ips=$(grep '^max_ips=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+        local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+        local sched=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
+        local update_url=$(grep '^update_url=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
+        local auto_update=$(grep '^auto_update=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+        local expire_enabled=$(grep '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+        local expire_multiplier=$(grep '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+        local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+        local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+        local logging_enabled=$(grep '^logging_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+        
+        # Apply defaults if missing or invalid
+        [[ -z "$max_ips" || ! "$max_ips" =~ ^[0-9]+$ ]] && max_ips=$DEFAULT_MAX_IPS
+        [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]] && timeout=$DEFAULT_TIMEOUT
+        [[ -z "$update_url" ]] && update_url=$DEFAULT_URL
+        [[ -z "$auto_update" || ! "$auto_update" =~ ^[01]$ ]] && auto_update=$DEFAULT_AUTO_UPDATE
+        [[ -z "$expire_enabled" || ! "$expire_enabled" =~ ^[01]$ ]] && expire_enabled=$DEFAULT_EXPIRE_ENABLED
+        [[ -z "$expire_multiplier" || ! "$expire_multiplier" =~ ^[0-9]+$ ]] && expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
+        [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
+        [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
+        [[ -z "$logging_enabled" || ! "$logging_enabled" =~ ^[01]$ ]] && logging_enabled=$DEFAULT_LOGGING_ENABLED
+        
+        # Format auto-update text
+        local auto_update_text="${RED}Disabled${NC}"
+        [[ "$auto_update" == "1" ]] && auto_update_text="${GREEN}Enabled${NC}"
+        
+        # Format expiration text
+        local expire_text="${RED}Disabled${NC}"
+        [[ "$expire_enabled" == "1" ]] && expire_text="${GREEN}Enabled (${expire_multiplier}x)${NC}"
+        
+        # Format schedule text
+        local schedule_text="$sched"
+        [[ "$sched" == "# DNSniper disabled" ]] && schedule_text="${RED}Disabled${NC}"
+        
+        # Format rule types text
+        local rule_types=""
+        [[ "$block_source" == "1" ]] && rule_types+="Source, "
+        [[ "$block_destination" == "1" ]] && rule_types+="Destination"
+        rule_types=${rule_types%, }
+        [[ -z "$rule_types" ]] && rule_types="${RED}None${NC}"
+        
+        # Format logging text
+        local logging_text="${RED}Disabled${NC}"
+        [[ "$logging_enabled" == "1" ]] && logging_text="${GREEN}Enabled${NC}"
+        
+        # Count expired domains pending cleanup - only if feature is enabled
+        local expired_count=0
+        if [[ "$expire_enabled" == "1" ]]; then
+            local cron_expr=$(grep '^cron=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
+            local update_minutes=60 # Default to hourly if can't determine
+            if [[ "$cron_expr" == "# DNSniper disabled" ]]; then
+                update_minutes=60
+            elif [[ "$cron_expr" =~ \*/([0-9]+)[[:space:]] ]]; then
+                update_minutes="${BASH_REMATCH[1]}"
+            elif [[ "$cron_expr" =~ ^[0-9]+[[:space:]]+\*/([0-9]+) ]]; then
+                update_minutes=$((${BASH_REMATCH[1]} * 60))
+            fi
+            local expire_minutes=$((update_minutes * expire_multiplier))
+            expired_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM expired_domains
+                                              WHERE source='default' AND
+                                              datetime(last_seen, '+$expire_minutes minutes') < datetime('now');" 2>/dev/null || echo 0)
         fi
-        local expire_minutes=$((update_minutes * expire_multiplier))
-        expired_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM expired_domains
-                                          WHERE source='default' AND
-                                          datetime(last_seen, '+$expire_minutes minutes') < datetime('now');" 2>/dev/null || echo 0)
-    fi
-    # Display summary counts
-    echo_safe "${CYAN}${BOLD}SYSTEM STATUS${NC}"
-    echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-    echo_safe "${BOLD}Blocked Domains:${NC}      ${GREEN}${#domains[@]}${NC}"
-    echo_safe "${BOLD}Blocked IPs:${NC}          ${RED}$actual_blocked_ips${NC}"
-    echo_safe "${BOLD}Custom IPs:${NC}           ${YELLOW}${#custom_ips[@]}${NC}"
-    if [[ $expired_count -gt 0 && "$expire_enabled" == "1" ]]; then
-        echo_safe "${BOLD}Pending Expirations:${NC}  ${YELLOW}$expired_count${NC}"
-    fi
-    # Config section
-    echo_safe ""
-    echo_safe "${CYAN}${BOLD}CONFIGURATION${NC}"
-    echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-    echo_safe "${BOLD}Schedule:${NC}           $schedule_text"
-    echo_safe "${BOLD}Max IPs/domain:${NC}     ${YELLOW}$max_ips${NC}"
-    echo_safe "${BOLD}Timeout:${NC}            ${YELLOW}$timeout seconds${NC}"
-    echo_safe "${BOLD}Auto-update:${NC}        $auto_update_text"
-    echo_safe "${BOLD}Rule Expiration:${NC}    $expire_text"
-    echo_safe "${BOLD}Rule Types:${NC}         $rule_types"
-    echo_safe "${BOLD}Logging:${NC}            $logging_text"
-    # Firewall information
-    echo_safe ""
-    echo_safe "${CYAN}${BOLD}FIREWALL${NC}"
-    echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-    echo_safe "${BOLD}IPv4 Chain:${NC}         ${YELLOW}$IPT_CHAIN${NC}"
-    echo_safe "${BOLD}IPv6 Chain:${NC}         ${YELLOW}$IPT6_CHAIN${NC}"
-    echo_safe "${BOLD}Persistence:${NC}        ${GREEN}$(detect_system)${NC}"
-    # System information
-    echo_safe ""
-    echo_safe "${CYAN}${BOLD}SYSTEM INFO${NC}"
-    echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-    local last_run
-    if [[ -f "$LOG_FILE" ]]; then
-        last_run=$(stat -c %y "$LOG_FILE" 2>/dev/null || echo "Never")
-    else
-        last_run="Never"
-    fi
-    echo_safe "${BOLD}Last Run:${NC}           ${BLUE}$last_run${NC}"
-    echo_safe "${BOLD}Version:${NC}            ${GREEN}$VERSION${NC}"
-    # Domains section if exists
-    if [[ ${#domains[@]} -gt 0 ]]; then
-        echo_safe ""
-        echo_safe "${CYAN}${BOLD}BLOCKED DOMAINS (TOP 10 OF ${#domains[@]})${NC}"
-        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-        local dom_count=0
-        for dom in "${domains[@]}"; do
-            # Get most recent IP list - Fixed approach
-            local esc_dom=$(sql_escape "$dom")
-            # Check if there are records for this domain
-            local record_count
-            record_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM history WHERE domain='$esc_dom';" 2>/dev/null || echo "0")
-            if [[ "$record_count" -gt 0 ]]; then
-                # Records exist, get the IPs
-                local ips
-                ips=$(sqlite3 "$DB_FILE" "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null || echo "")
-                if [[ -n "$ips" ]]; then
-                    local ip_count
-                    # Count the commas and add 1
-                    ip_count=$(echo "$ips" | tr -cd ',' | wc -c)
-                    ip_count=$((ip_count + 1))
-                    
-                    # Check each IP in iptables rules to see if any are blocked
-                    local active_blocks=0
-                    IFS=',' read -ra ip_list <<< "$ips"
-                    for ip in "${ip_list[@]}"; do
-                        local tbl="iptables"
-                        if is_ipv6 "$ip"; then
-                            tbl="ip6tables"
-                        fi
-                        
-                        # Better check for presence of IP in iptables rules (look for IP followed by DROP)
-                        if $tbl-save 2>/dev/null | grep -E "\s$ip\s.*DROP" >/dev/null; then
-                            active_blocks=1
-                            break
-                        fi
-                    done
-                    
-                    if [[ $active_blocks -eq 1 ]]; then
-                        echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs${NC})"
-                    else
-                        echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs ${CYAN}not blocked yet${NC})"
-                    fi
-                else
-                    # Database record exists but IPs field is empty
-                    echo_safe "${GREEN}$dom${NC} (${RED}No IPs in database${NC})"
-                fi
-            else
-                # No record in database, try to check if we can resolve and if any of those IPs are already blocked
-                local resolved_ips
-                resolved_ips=$(dig +short A "$dom" 2>/dev/null)
-                if [[ -n "$resolved_ips" ]]; then
-                    # Check if any of these IPs are already blocked in iptables
-                    local blocked_ip_found=0
-                    while read -r ip; do
-                        if [[ -n "$ip" ]]; then
-                            if iptables-save 2>/dev/null | grep -E "\s$ip\s.*DROP" >/dev/null; then
-                                blocked_ip_found=1
-                                break
-                            fi
-                        fi
-                    done <<< "$resolved_ips"
-                    
-                    if [[ $blocked_ip_found -eq 1 ]]; then
-                        # At least one resolved IP is already blocked
-                        echo_safe "${GREEN}$dom${NC} (${YELLOW}IPs already blocked${NC})"
-                    else
-                        # Domain can be resolved but not blocked yet
-                        echo_safe "${GREEN}$dom${NC} (${YELLOW}Resolvable, run 'Run Now' to block${NC})"
-                    fi
-                else
-                    # Cannot resolve at all
-                    echo_safe "${GREEN}$dom${NC} (${RED}No IPs resolved yet${NC})"
-                fi
+        
+        # Display summary counts
+        {
+            echo_safe "${CYAN}${BOLD}SYSTEM STATUS${NC}"
+            echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+            echo_safe "${BOLD}Blocked Domains:${NC}      ${GREEN}${domain_count}${NC}"
+            echo_safe "${BOLD}Blocked IPs:${NC}          ${RED}${blocked_ips}${NC}"
+            echo_safe "${BOLD}Custom IPs:${NC}           ${YELLOW}${custom_ip_count}${NC}"
+            
+            if [[ $expired_count -gt 0 && "$expire_enabled" == "1" ]]; then
+                echo_safe "${BOLD}Pending Expirations:${NC}  ${YELLOW}$expired_count${NC}"
             fi
             
-            dom_count=$((dom_count + 1))
-            [[ $dom_count -ge 10 && ${#domains[@]} -gt 10 ]] && {
-                echo_safe "${YELLOW}... and $((${#domains[@]} - 10)) more domains${NC}";
-                break;
-            }
-        done
-    fi
-    # Custom IPs section if exists
-    if [[ ${#custom_ips[@]} -gt 0 ]]; then
-        echo_safe ""
-        echo_safe "${CYAN}${BOLD}BLOCKED IPs (TOP 10 OF ${#custom_ips[@]})${NC}"
-        echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-        local ip_count=0
-        for ip in "${custom_ips[@]}"; do
-            echo_safe "${GREEN}$ip${NC}"
-            ip_count=$((ip_count + 1))
-            [[ $ip_count -ge 10 && ${#custom_ips[@]} -gt 10 ]] && {
-                echo_safe "${YELLOW}... and $((${#custom_ips[@]} - 10)) more IPs${NC}";
-                break;
-            }
-        done
-    fi
-    echo_safe ""
+            # Config section
+            echo_safe ""
+            echo_safe "${CYAN}${BOLD}CONFIGURATION${NC}"
+            echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+            echo_safe "${BOLD}Schedule:${NC}           $schedule_text"
+            echo_safe "${BOLD}Max IPs/domain:${NC}     ${YELLOW}$max_ips${NC}"
+            echo_safe "${BOLD}Timeout:${NC}            ${YELLOW}$timeout seconds${NC}"
+            echo_safe "${BOLD}Auto-update:${NC}        $auto_update_text"
+            echo_safe "${BOLD}Rule Expiration:${NC}    $expire_text"
+            echo_safe "${BOLD}Rule Types:${NC}         $rule_types"
+            echo_safe "${BOLD}Logging:${NC}            $logging_text"
+            
+            # Firewall information
+            echo_safe ""
+            echo_safe "${CYAN}${BOLD}FIREWALL${NC}"
+            echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+            echo_safe "${BOLD}IPv4 Chain:${NC}         ${YELLOW}$IPT_CHAIN${NC}"
+            echo_safe "${BOLD}IPv6 Chain:${NC}         ${YELLOW}$IPT6_CHAIN${NC}"
+            echo_safe "${BOLD}Persistence:${NC}        ${GREEN}$(detect_system)${NC}"
+            
+            # System information
+            echo_safe ""
+            echo_safe "${CYAN}${BOLD}SYSTEM INFO${NC}"
+            echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+            
+            local last_run
+            if [[ -f "$LOG_FILE" ]]; then
+                last_run=$(stat -c %y "$LOG_FILE" 2>/dev/null || echo "Never")
+            else
+                last_run="Never"
+            fi
+            
+            echo_safe "${BOLD}Last Run:${NC}           ${BLUE}$last_run${NC}"
+            echo_safe "${BOLD}Version:${NC}            ${GREEN}$VERSION${NC}"
+            
+            # Domain and IP sections only for moderate list sizes
+            if [[ $domain_count -gt 0 && $domain_count -le 500 ]]; then
+                echo_safe ""
+                echo_safe "${CYAN}${BOLD}BLOCKED DOMAINS (TOP 10 OF ${domain_count})${NC}"
+                echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+                
+                # Only process top 10 domains for performance
+                local tmpdomain=$(mktemp)
+                merge_domains | head -10 > "$tmpdomain"
+                
+                local dom_count=0
+                while IFS= read -r dom || [[ -n "$dom" ]]; do
+                    # Check if there are records for this domain
+                    local esc_dom=$(sql_escape "$dom")
+                    local record_count
+                    record_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM history WHERE domain='$esc_dom';" 2>/dev/null || echo "0")
+                    
+                    if [[ "$record_count" -gt 0 ]]; then
+                        # Records exist, get IP count
+                        local ip_count
+                        ip_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(distinct ip) FROM (
+                                  SELECT value as ip FROM history 
+                                  JOIN json_each('['||(SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1)||']') 
+                                  WHERE domain='$esc_dom'
+                                  );" 2>/dev/null || echo "0")
+                        
+                        echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs${NC})"
+                    else
+                        # No record in database
+                        echo_safe "${GREEN}$dom${NC} (${RED}Not resolved yet${NC})"
+                    fi
+                    
+                    dom_count=$((dom_count + 1))
+                done < "$tmpdomain"
+                
+                if [[ $domain_count -gt 10 ]]; then
+                    echo_safe "${YELLOW}... and $((domain_count - 10)) more domains${NC}"
+                fi
+                
+                rm -f "$tmpdomain"
+            elif [[ $domain_count -gt 500 ]]; then
+                echo_safe ""
+                echo_safe "${CYAN}${BOLD}BLOCKED DOMAINS (SUMMARY)${NC}"
+                echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+                echo_safe "${YELLOW}Large domain list detected ($domain_count domains)${NC}"
+                echo_safe "${YELLOW}For performance reasons, detailed domain info is hidden.${NC}"
+                echo_safe "${YELLOW}Use export features to view complete domain list.${NC}"
+            fi
+            
+            # Custom IPs section if exists and not too large
+            if [[ $custom_ip_count -gt 0 && $custom_ip_count -le 500 ]]; then
+                echo_safe ""
+                echo_safe "${CYAN}${BOLD}BLOCKED IPs (TOP 10 OF ${custom_ip_count})${NC}"
+                echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+                
+                # Only process top 10 IPs for performance
+                get_custom_ips | head -10 | while read -r ip; do
+                    echo_safe "${GREEN}$ip${NC}"
+                done
+                
+                if [[ $custom_ip_count -gt 10 ]]; then
+                    echo_safe "${YELLOW}... and $((custom_ip_count - 10)) more IPs${NC}"
+                fi
+            elif [[ $custom_ip_count -gt 500 ]]; then
+                echo_safe ""
+                echo_safe "${CYAN}${BOLD}BLOCKED IPs (SUMMARY)${NC}"
+                echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+                echo_safe "${YELLOW}Large IP list detected ($custom_ip_count IPs)${NC}"
+                echo_safe "${YELLOW}For performance reasons, detailed IP info is hidden.${NC}"
+                echo_safe "${YELLOW}Use export features to view complete IP list.${NC}"
+            fi
+            
+            echo_safe ""
+        } >> "$tmpout"
+    ) &
+    
+    # Wait for analysis to complete
+    wait
+    
+    # Display the output
+    clear
+    cat "$tmpout"
+    
+    # Clean up
+    rm -f "$tmpout"
+    
     return 0
 }
 # Clear rules
@@ -2219,6 +2389,11 @@ uninstall() {
             # Delete our chains
             iptables -X "$IPT_CHAIN" 2>/dev/null || true
             ip6tables -X "$IPT6_CHAIN" 2>/dev/null || true
+            # Remove ipsets if they exist
+            if command -v ipset &>/dev/null; then
+                ipset destroy "$IPSET4" 2>/dev/null || true
+                ipset destroy "$IPSET6" 2>/dev/null || true
+            fi
             # Make changes persistent
             make_rules_persistent
         else
@@ -2297,7 +2472,6 @@ main_menu() {
         esac
     done
 }
-### 17) Command line arguments handling
 handle_args() {
     case "$1" in
         --run)
@@ -2370,37 +2544,31 @@ handle_args() {
     esac
     return 0
 }
+
 ### 18) Entry point
 main() {
-    # Create log directory if needed
-    if [[ ! -d "$(dirname "$LOG_FILE")" ]]; then
-        mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
-    fi
-    touch "$LOG_FILE" 2>/dev/null || true
+    # Check if running as root
+    check_root
     
-    # Initialize logging state
+    # Check for dependencies
+    check_dependencies
+    
+    # Ensure environment is prepared
+    ensure_environment
+    
+    # Initialize logging
     initialize_logging
     
-    # Check running as root
-    check_root
-    # Check dependencies
-    check_dependencies
-    # Prepare environment
-    ensure_environment
-    # Handle arguments if provided
+    # Handle command line arguments if provided
     if [[ $# -gt 0 ]]; then
         if handle_args "$@"; then
             exit 0
         fi
     fi
-    # Interactive or non-interactive mode
-    if [[ -t 0 && -t 1 ]]; then
-        main_menu
-    else
-        # When run via cron, we should do domain resolution
-        resolve_block
-    fi
-    exit 0
+    
+    # No valid arguments provided, start interactive menu
+    main_menu
 }
-# Start the application
+
+# Execute main function with all arguments
 main "$@"
