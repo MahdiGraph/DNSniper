@@ -17,12 +17,12 @@ NC='\e[0m'
 # Display banner
 echo -e "${BLUE}${BOLD}"
 echo -e "    ____  _   _ ____       _                 "
-echo -e "   |  _ \\| \\ | / ___|_ __ (_)_ __   ___ _ __ "
-echo -e "   | | | |  \\| \\___ \\ '_ \\| | '_ \\ / _ \\ '__|"
+echo -e "   |   _\\| \\ | /_ __|_ __ (_)_ __   ___ _ __ "
+echo -e "   | | | |  \\| \\___ \\ '_ \\| | '_ \\ / _\\ '__|"
 echo -e "   | |_| | |\\  |___) | | | | | |_) |  __/ |  "
 echo -e "   |____/|_| \\_|____/|_| |_|_| .__/ \\___|_|  "
 echo -e "                             |_|              "
-echo -e "${GREEN}${BOLD} Domain-based Network Threat Mitigation v1.3.0 ${NC}"
+echo -e "${GREEN}${BOLD} Domain-based Network Threat Mitigation v1.3.7 ${NC}"
 echo -e ""
 
 # Paths
@@ -59,13 +59,11 @@ else
     echo -e "${YELLOW}${BOLD}Warning:${NC} Unsupported package manager."
     echo -e "You'll need to manually install these dependencies:"
     echo -e "- iptables\n- ip6tables\n- curl\n- bind-utils/dnsutils (for dig)\n- sqlite3\n- cron/crontabs"
-    
     read -rp "Continue anyway? [y/N]: " response
     if [[ ! "$response" =~ ^[Yy]$ ]]; then
         echo -e "${RED}Installation cancelled.${NC}"
         exit 1
     fi
-    
     PKG_MANAGER="manual"
 fi
 
@@ -78,7 +76,6 @@ if [[ "$PKG_MANAGER" != "manual" ]]; then
     echo -e "${MAGENTA}───────────────────────────────────────${NC}"
     echo -e "${YELLOW}Updating package lists...${NC}"
     $PKG_UPDATE
-    
     echo -e "${YELLOW}Installing required packages:${NC} ${DEPS}"
     if ! $PKG_INSTALL $DEPS; then
         echo -e "${RED}${BOLD}Error:${NC} Failed to install dependencies."
@@ -97,7 +94,6 @@ else
             missing+=("$cmd")
         fi
     done
-    
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo -e "${RED}${BOLD}Missing dependencies:${NC} ${missing[*]}"
         echo -e "${YELLOW}Please install these dependencies and run the installer again.${NC}"
@@ -117,7 +113,6 @@ echo -e "${GREEN}Directory created: $BASE_DIR${NC}"
 echo -e ""
 echo -e "${CYAN}${BOLD}FIREWALL PERSISTENCE${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
-
 # Detect OS type
 if [[ -f /etc/debian_version ]]; then
     OS_TYPE="debian"
@@ -145,23 +140,19 @@ elif [[ -f /etc/fedora-release ]]; then
 else
     OS_TYPE="unknown"
     echo -e "${YELLOW}Unknown OS, will create systemd service for persistence${NC}"
-    
     # Create systemd unit for loading rules at boot
     cat > /etc/systemd/system/dnsniper-firewall.service << EOF
 [Unit]
 Description=DNSniper Firewall Rules
 After=network.target
-
 [Service]
 Type=oneshot
 ExecStart=/sbin/iptables-restore $BASE_DIR/iptables.rules
 ExecStart=/sbin/ip6tables-restore $BASE_DIR/ip6tables.rules
 RemainAfterExit=yes
-
 [Install]
 WantedBy=multi-user.target
 EOF
-    
     systemctl daemon-reload &>/dev/null || true
     systemctl enable dnsniper-firewall.service &>/dev/null || true
 fi
@@ -176,23 +167,18 @@ if curl -sfL --connect-timeout 10 --max-time 30 "https://raw.githubusercontent.c
         echo -e "${RED}${BOLD}Error:${NC} Downloaded script is empty."
         exit 1
     fi
-    
     # Make sure script is executable
     chmod +x "$TMP_SCRIPT"
-    
     # Test the script with a simple command
     if ! "$TMP_SCRIPT" --version &>/dev/null; then
         echo -e "${RED}${BOLD}Warning:${NC} Script test failed. Installing anyway, but there might be issues."
     fi
-    
     # Move script to final location
     cp "$TMP_SCRIPT" "$BASE_DIR/dnsniper.sh"
     ln -sf "$BASE_DIR/dnsniper.sh" "$BIN_PATH"
     chmod +x "$BASE_DIR/dnsniper.sh" "$BIN_PATH"
-    
     # Clean up
     rm -f "$TMP_SCRIPT"
-    
     echo -e "${GREEN}DNSniper script installed to: $BIN_PATH${NC}"
 else
     echo -e "${RED}${BOLD}Error:${NC} Failed to download DNSniper script."
@@ -205,7 +191,6 @@ echo -e "${CYAN}${BOLD}INITIALIZATION${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 if "$BIN_PATH" --version &>/dev/null; then
     echo -e "${GREEN}DNSniper successfully initialized.${NC}"
-    
     # Add default empty block list file if not exists
     if [[ ! -s "$BASE_DIR/domains-default.txt" ]]; then
         echo "# Default domains to block" > "$BASE_DIR/domains-default.txt"
@@ -225,7 +210,7 @@ echo -e "${YELLOW}To start using DNSniper:${NC}"
 echo -e "  ${BOLD}Command:${NC} sudo dnsniper"
 echo -e ""
 echo -e "${YELLOW}To view help:${NC}"
-echo -e "  ${BOLD}Command:${NC} sudo dnsniper --help" 
+echo -e "  ${BOLD}Command:${NC} sudo dnsniper --help"
 echo -e ""
 echo -e "${BLUE}${BOLD}Protect your servers against malicious domains with DNSniper!${NC}"
 echo -e ""
