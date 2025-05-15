@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 1.3.3
+# Version: 1.4.0
 # Strict error handling mode
 set -o errexit
 set -o pipefail
@@ -42,13 +42,12 @@ DEFAULT_EXPIRE_ENABLED=1
 DEFAULT_EXPIRE_MULTIPLIER=5
 DEFAULT_BLOCK_SOURCE=1
 DEFAULT_BLOCK_DESTINATION=1
-DEFAULT_BLOCK_FORWARD=0
 DEFAULT_LOGGING_ENABLED=0
 # Chain names
 IPT_CHAIN="DNSniper"
 IPT6_CHAIN="DNSniper6"
 # Version
-VERSION="1.3.3"
+VERSION="1.3.5"
 # Dependencies
 DEPENDENCIES=(iptables ip6tables curl dig sqlite3 crontab)
 # Helper functions
@@ -391,24 +390,11 @@ initialize_chains() {
     if ! iptables -C OUTPUT -j "$IPT_CHAIN" &>/dev/null; then
         iptables -I OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
     fi
-    # Add FORWARD chain if block_forward is enabled
-    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    if [[ "$block_forward" == "1" ]]; then
-        if ! iptables -C FORWARD -j "$IPT_CHAIN" &>/dev/null; then
-            iptables -I FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
-        fi
-    fi
     if ! ip6tables -C INPUT -j "$IPT6_CHAIN" &>/dev/null; then
         ip6tables -I INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
     fi
     if ! ip6tables -C OUTPUT -j "$IPT6_CHAIN" &>/dev/null; then
         ip6tables -I OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
-    fi
-    # Add FORWARD chain for IPv6 if block_forward is enabled
-    if [[ "$block_forward" == "1" ]]; then
-        if ! ip6tables -C FORWARD -j "$IPT6_CHAIN" &>/dev/null; then
-            ip6tables -I FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
-        fi
     fi
     # Make the rules persistent
     make_rules_persistent
@@ -459,9 +445,6 @@ ensure_environment() {
     fi
     if ! grep -q '^block_destination=' "$CONFIG_FILE" 2>/dev/null; then
         echo "block_destination=$DEFAULT_BLOCK_DESTINATION" >> "$CONFIG_FILE"
-    fi
-    if ! grep -q '^block_forward=' "$CONFIG_FILE" 2>/dev/null; then
-        echo "block_forward=$DEFAULT_BLOCK_FORWARD" >> "$CONFIG_FILE"
     fi
     # Add new config option for logging
     if ! grep -q '^logging_enabled=' "$CONFIG_FILE" 2>/dev/null; then
@@ -851,11 +834,11 @@ block_ip() {
     # Get rule type settings
     local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
     # Validate settings, use defaults if invalid
     [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
     [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
-    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
+    
     local rules_added=0
     # Block source IP in INPUT chain if enabled
     if [[ "$block_source" == "1" ]]; then
@@ -867,7 +850,7 @@ block_ip() {
             fi
         fi
     fi
-    # Block destination IP in INPUT and OUTPUT chains if enabled
+    # Block destination IP in OUTPUT chain if enabled
     if [[ "$block_destination" == "1" ]]; then
         if ! $tbl -C "$chain" -d "$ip" -j DROP -m comment --comment "$comment" &>/dev/null; then
             if $tbl -A "$chain" -d "$ip" -j DROP -m comment --comment "$comment"; then
@@ -875,22 +858,6 @@ block_ip() {
             else
                 log "ERROR" "Failed to add destination rule for $ip" "verbose"
             fi
-        fi
-    fi
-    # Block in FORWARD chain if enabled
-    if [[ "$block_forward" == "1" ]]; then
-        # Ensure our chain is referenced in FORWARD
-        if ! $tbl -C FORWARD -j "$chain" &>/dev/null; then
-            $tbl -I FORWARD -j "$chain" 2>/dev/null || true
-        fi
-        # Add specific FORWARD rules
-        if ! $tbl -C "$chain" -s "$ip" -m comment --comment "$comment" -j DROP &>/dev/null; then
-            $tbl -A "$chain" -s "$ip" -m comment --comment "$comment" -j DROP
-            rules_added=1
-        fi
-        if ! $tbl -C "$chain" -d "$ip" -m comment --comment "$comment" -j DROP &>/dev/null; then
-            $tbl -A "$chain" -d "$ip" -m comment --comment "$comment" -j DROP
-            rules_added=1
         fi
     fi
     return $((1 - rules_added))
@@ -909,11 +876,11 @@ unblock_ip() {
     # Get rule type settings to know what to unblock
     local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
     # Validate settings, use defaults if invalid
     [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
     [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
-    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
+    
     # Try to remove rule from chain (source)
     if [[ "$block_source" == "1" ]]; then
         while $tbl -C "$chain" -s "$ip" -j DROP -m comment --comment "$comment_pattern" &>/dev/null 2>&1; do
@@ -928,17 +895,7 @@ unblock_ip() {
             success=1
         done
     fi
-    # Try to remove from FORWARD chain
-    if [[ "$block_forward" == "1" ]]; then
-        while $tbl -C "$chain" -s "$ip" -m comment --comment "$comment_pattern" -j DROP &>/dev/null 2>&1; do
-            $tbl -D "$chain" -s "$ip" -m comment --comment "$comment_pattern" -j DROP
-            success=1
-        done
-        while $tbl -C "$chain" -d "$ip" -m comment --comment "$comment_pattern" -j DROP &>/dev/null 2>&1; do
-            $tbl -D "$chain" -d "$ip" -m comment --comment "$comment_pattern" -j DROP
-            success=1
-        done
-    fi
+    
     # Make rules persistent if we made changes
     if [[ $success -eq 1 ]]; then
         make_rules_persistent
@@ -992,149 +949,7 @@ has_active_blocks() {
     done
     return 1  # No active blocks found
 }
-### 13) Apply block rule type changes
-apply_rule_type_changes() {
-    log "INFO" "Applying rule type changes" "verbose"
-    echo_safe "${BLUE}Applying rule type changes...${NC}"
-    
-    # Get current rule type settings
-    local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    
-    # Validate settings, use defaults if invalid
-    [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
-    [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
-    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
-    
-    echo_safe "${BLUE}Removing existing rules and recreating chains...${NC}"
-    
-    # First, remove references to our chains from main chains
-    iptables -D INPUT -j "$IPT_CHAIN" 2>/dev/null || true
-    iptables -D OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
-    iptables -D FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
-    ip6tables -D INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
-    ip6tables -D OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
-    ip6tables -D FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
-    
-    # Flush our chains
-    iptables -F "$IPT_CHAIN" 2>/dev/null || true
-    ip6tables -F "$IPT6_CHAIN" 2>/dev/null || true
-    
-    # Delete our chains
-    iptables -X "$IPT_CHAIN" 2>/dev/null || true
-    ip6tables -X "$IPT6_CHAIN" 2>/dev/null || true
-    
-    # Recreate our chains
-    iptables -N "$IPT_CHAIN" 2>/dev/null || true
-    ip6tables -N "$IPT6_CHAIN" 2>/dev/null || true
-    
-    # Add references based on settings
-    # Always add INPUT and OUTPUT references if source or destination blocking is enabled
-    if [[ "$block_source" == "1" || "$block_destination" == "1" ]]; then
-        iptables -I INPUT -j "$IPT_CHAIN" 2>/dev/null || true
-        iptables -I OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
-        ip6tables -I INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
-        ip6tables -I OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
-    fi
-    
-    # Add FORWARD reference if forward blocking is enabled
-    if [[ "$block_forward" == "1" ]]; then
-        iptables -I FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
-        ip6tables -I FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
-    fi
-    
-    # Make sure the chain structure changes are persistent
-    echo_safe "${BLUE}Saving firewall chain structure...${NC}"
-    make_rules_persistent
-    
-    # Now rebuild all the rules from our database
-    echo_safe "${BLUE}Rebuilding rules with new settings...${NC}"
-    
-    # First extract all domain-IP mappings from the history database
-    local domain_ips
-    domain_ips=$(sqlite3 "$DB_FILE" "SELECT domain, ips FROM history WHERE rowid IN (SELECT MAX(rowid) FROM history GROUP BY domain);" 2>/dev/null)
-    
-    # Process each domain-IPs pair
-    while IFS='|' read -r domain ips || [[ -n "$domain" ]]; do
-        # Skip empty lines
-        [[ -z "$domain" ]] && continue
-        
-        # Check if this domain should be blocked (not in removed list)
-        if ! grep -Fxq "$domain" "$REMOVE_FILE" 2>/dev/null; then
-            echo_safe "  ${GREEN}Rebuilding rules for domain:${NC} $domain"
-            
-            # Process IPs for this domain
-            IFS=',' read -ra ip_list <<< "$ips"
-            for ip in "${ip_list[@]}"; do
-                # Skip critical IPs
-                if is_critical_ip "$ip"; then
-                    continue
-                fi
-                
-                # Block IP with new settings
-                if block_ip "$ip" "DNSniper: $domain"; then
-                    echo_safe "    - ${RED}Blocked IP:${NC} $ip"
-                else
-                    echo_safe "    - ${RED}Error blocking IP:${NC} $ip"
-                fi
-            done
-        fi
-    done <<< "$domain_ips"
-    
-    # Also rebuild custom IP blocks
-    local custom_ips=()
-    mapfile -t custom_ips < <(get_custom_ips)
-    if [[ ${#custom_ips[@]} -gt 0 ]]; then
-        echo_safe "${BLUE}Rebuilding rules for custom IPs...${NC}"
-        for ip in "${custom_ips[@]}"; do
-            # Skip critical IPs
-            if is_critical_ip "$ip"; then
-                continue
-            fi
-            
-            # Block IP with new settings
-            if block_ip "$ip" "DNSniper: custom"; then
-                echo_safe "  - ${RED}Blocked custom IP:${NC} $ip"
-            else
-                echo_safe "  - ${RED}Error blocking custom IP:${NC} $ip"
-            fi
-        done
-    fi
-    
-    # Force direct save to /etc/iptables/ and other common locations
-    echo_safe "${BLUE}Ensuring rules are saved to persistent storage...${NC}"
-    
-    # Detect OS type for specific persistence method
-    local os_type=$(detect_system)
-    echo_safe "${BLUE}Detected OS type: $os_type${NC}"
-    
-    # For Debian/Ubuntu, specifically check that the rules.v4 file exists
-    if [[ "$os_type" == "debian" || "$os_type" == "ubuntu" ]]; then
-        if [[ ! -f /etc/iptables/rules.v4 ]]; then
-            echo_safe "${YELLOW}Creating direct rules files in /etc/iptables/...${NC}"
-            mkdir -p /etc/iptables/ 2>/dev/null
-            iptables-save > /etc/iptables/rules.v4 2>/dev/null
-            ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
-            chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
-        fi
-    # For CentOS/RHEL, check /etc/sysconfig/iptables
-    elif [[ "$os_type" == "centos" || "$os_type" == "rhel" || "$os_type" == "redhat" ]]; then
-        if [[ ! -f /etc/sysconfig/iptables ]]; then
-            echo_safe "${YELLOW}Creating direct rules files in /etc/sysconfig/...${NC}"
-            iptables-save > /etc/sysconfig/iptables 2>/dev/null
-            ip6tables-save > /etc/sysconfig/ip6tables 2>/dev/null
-            chmod 600 /etc/sysconfig/iptables /etc/sysconfig/ip6tables 2>/dev/null || true
-        fi
-    fi
-    
-    # Call make_rules_persistent again to ensure all rules are saved
-    make_rules_persistent
-    
-    echo_safe "${GREEN}Rule type changes applied successfully.${NC}"
-    log "INFO" "Rule type changes successfully applied with new settings" "verbose"
-}
-### 14) Resolve domains and apply iptables/ip6tables rules
+### 13) Resolve domains and apply iptables/ip6tables rules
 resolve_block() {
     log "INFO" "Starting domain resolution and blocking" "verbose"
     # Check if we should auto-update
@@ -1281,7 +1096,7 @@ resolve_block() {
     
     return 0
 }
-### 15) Interactive menu functions
+### 14) Interactive menu functions
 # --- Settings submenu ---
 settings_menu() {
     while true; do
@@ -1466,21 +1281,18 @@ rule_types_settings() {
     # Get current settings
     local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
     # Validate settings, use defaults if invalid
     [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
     [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
-    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
-    # Store original values for comparison
-    local orig_source=$block_source
-    local orig_destination=$block_destination
-    local orig_forward=$block_forward
+    
     # Display current settings
     echo_safe "${BLUE}Current rule types:${NC}"
     echo_safe "  ${block_source:+${GREEN}✓${NC}}${block_source:=${RED}✗${NC}} Source IPs      (block traffic FROM malicious IPs)"
     echo_safe "  ${block_destination:+${GREEN}✓${NC}}${block_destination:=${RED}✗${NC}} Destination IPs (block traffic TO malicious IPs)"
-    echo_safe "  ${block_forward:+${GREEN}✓${NC}}${block_forward:=${RED}✗${NC}} Forward        (block forwarded traffic through this server)"
+    
     echo_safe "\n${YELLOW}Note:${NC} Changing these settings will affect all existing and future blocking rules."
+    
     # Allow toggles
     read -rp "Toggle Source blocking? [y/N]: " toggle_source
     if [[ "$toggle_source" =~ ^[Yy] ]]; then
@@ -1493,6 +1305,7 @@ rule_types_settings() {
         fi
         need_apply=1
     fi
+    
     read -rp "Toggle Destination blocking? [y/N]: " toggle_dest
     if [[ "$toggle_dest" =~ ^[Yy] ]]; then
         block_destination=$((1 - block_destination))
@@ -1504,27 +1317,21 @@ rule_types_settings() {
         fi
         need_apply=1
     fi
-    read -rp "Toggle Forward blocking? [y/N]: " toggle_forward
-    if [[ "$toggle_forward" =~ ^[Yy] ]]; then
-        block_forward=$((1 - block_forward))
-        sed -i "s|^block_forward=.*|block_forward=$block_forward|" "$CONFIG_FILE"
-        if [[ $block_forward -eq 1 ]]; then
-            echo_safe "${GREEN}Forward traffic blocking enabled.${NC}"
-        else
-            echo_safe "${RED}Forward traffic blocking disabled.${NC}"
-        fi
-        need_apply=1
-    fi
-    # If changes were made, ask to apply them now
+    
+    # If changes were made, apply them immediately
     if [[ $need_apply -eq 1 ]]; then
-        echo_safe "\n${YELLOW}Warning:${NC} Rule type changes have been saved but require rule reconfiguration to take effect."
-        read -rp "Apply changes now? (Recommended) [Y/n]: " apply_now
-        if [[ ! "$apply_now" =~ ^[Nn] ]]; then
-            apply_rule_type_changes
-        else
-            echo_safe "${YELLOW}Changes will take effect on next 'Run Now' or cron job execution.${NC}"
-            log "WARNING" "Rule type changes deferred until next run" "verbose"
-        fi
+        echo_safe "\n${YELLOW}Applying changes...${NC}"
+        
+        # Clear all rules
+        echo_safe "${BLUE}Clearing existing rules...${NC}"
+        iptables -F "$IPT_CHAIN" 2>/dev/null && ip6tables -F "$IPT6_CHAIN" 2>/dev/null
+        log "INFO" "Cleared rules for rule type changes" "verbose"
+        
+        # Run a full resolve_block to rebuild the rules with new settings
+        echo_safe "${BLUE}Rebuilding rules with new settings...${NC}"
+        resolve_block
+        
+        echo_safe "${GREEN}Rule type changes applied successfully.${NC}"
     else
         echo_safe "${YELLOW}No changes made.${NC}"
     fi
@@ -2177,7 +1984,6 @@ display_status() {
     local expire_multiplier=$(grep '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    local block_forward=$(grep '^block_forward=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local logging_enabled=$(grep '^logging_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     # Apply defaults if missing or invalid
     [[ -z "$max_ips" || ! "$max_ips" =~ ^[0-9]+$ ]] && max_ips=$DEFAULT_MAX_IPS
@@ -2188,7 +1994,6 @@ display_status() {
     [[ -z "$expire_multiplier" || ! "$expire_multiplier" =~ ^[0-9]+$ ]] && expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
     [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
     [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
-    [[ -z "$block_forward" || ! "$block_forward" =~ ^[01]$ ]] && block_forward=$DEFAULT_BLOCK_FORWARD
     [[ -z "$logging_enabled" || ! "$logging_enabled" =~ ^[01]$ ]] && logging_enabled=$DEFAULT_LOGGING_ENABLED
     # Format auto-update text
     local auto_update_text="${RED}Disabled${NC}"
@@ -2202,8 +2007,7 @@ display_status() {
     # Format rule types text
     local rule_types=""
     [[ "$block_source" == "1" ]] && rule_types+="Source, "
-    [[ "$block_destination" == "1" ]] && rule_types+="Destination, "
-    [[ "$block_forward" == "1" ]] && rule_types+="Forward, "
+    [[ "$block_destination" == "1" ]] && rule_types+="Destination"
     rule_types=${rule_types%, }
     [[ -z "$rule_types" ]] && rule_types="${RED}None${NC}"
     # Format logging text
@@ -2288,7 +2092,8 @@ display_status() {
                     # Count the commas and add 1
                     ip_count=$(echo "$ips" | tr -cd ',' | wc -c)
                     ip_count=$((ip_count + 1))
-                    # Check if any IPs are actively blocked
+                    
+                    # Check each IP in iptables rules to see if any are blocked
                     local active_blocks=0
                     IFS=',' read -ra ip_list <<< "$ips"
                     for ip in "${ip_list[@]}"; do
@@ -2296,32 +2101,56 @@ display_status() {
                         if is_ipv6 "$ip"; then
                             tbl="ip6tables"
                         fi
-                        if $tbl-save 2>/dev/null | grep -q "$ip.*$dom"; then
+                        
+                        # Better check for presence of IP in iptables rules (look for IP followed by DROP)
+                        if $tbl-save 2>/dev/null | grep -E "\s$ip\s.*DROP" >/dev/null; then
                             active_blocks=1
                             break
                         fi
                     done
+                    
                     if [[ $active_blocks -eq 1 ]]; then
                         echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs${NC})"
                     else
                         echo_safe "${GREEN}$dom${NC} (${YELLOW}$ip_count IPs ${CYAN}not blocked yet${NC})"
                     fi
-                else
+                } else {
                     # Database record exists but IPs field is empty
                     echo_safe "${GREEN}$dom${NC} (${RED}No IPs in database${NC})"
+                }
                 fi
-            else
-                # Try to resolve now to show up-to-date info
-                local resolved_now
-                resolved_now=$(dig +short A "$dom" 2>/dev/null)
-                if [[ -n "$resolved_now" ]]; then
-                    # We can resolve it, but it's not in the DB yet
-                    echo_safe "${GREEN}$dom${NC} (${YELLOW}Resolvable, run 'Run Now' to block${NC})"
-                else
+            else {
+                # No record in database, try to check if we can resolve and if any of those IPs are already blocked
+                local resolved_ips
+                resolved_ips=$(dig +short A "$dom" 2>/dev/null)
+                if [[ -n "$resolved_ips" ]]; then
+                    # Check if any of these IPs are already blocked in iptables
+                    local blocked_ip_found=0
+                    while read -r ip; do
+                        if [[ -n "$ip" ]]; then
+                            if iptables-save 2>/dev/null | grep -E "\s$ip\s.*DROP" >/dev/null; then
+                                blocked_ip_found=1
+                                break
+                            fi
+                        fi
+                    done <<< "$resolved_ips"
+                    
+                    if [[ $blocked_ip_found -eq 1 ]]; then
+                        # At least one resolved IP is already blocked
+                        echo_safe "${GREEN}$dom${NC} (${YELLOW}IPs already blocked${NC})"
+                    else {
+                        # Domain can be resolved but not blocked yet
+                        echo_safe "${GREEN}$dom${NC} (${YELLOW}Resolvable, run 'Run Now' to block${NC})"
+                    }
+                    fi
+                else {
                     # Cannot resolve at all
                     echo_safe "${GREEN}$dom${NC} (${RED}No IPs resolved yet${NC})"
+                }
                 fi
+            }
             fi
+            
             dom_count=$((dom_count + 1))
             [[ $dom_count -ge 10 && ${#domains[@]} -gt 10 ]] && {
                 echo_safe "${YELLOW}... and $((${#domains[@]} - 10)) more domains${NC}";
@@ -2386,10 +2215,8 @@ uninstall() {
             # Remove references to our chains
             iptables -D INPUT -j "$IPT_CHAIN" 2>/dev/null || true
             iptables -D OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
-            iptables -D FORWARD -j "$IPT_CHAIN" 2>/dev/null || true
             ip6tables -D INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
             ip6tables -D OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
-            ip6tables -D FORWARD -j "$IPT6_CHAIN" 2>/dev/null || true
             # Flush our chains
             iptables -F "$IPT_CHAIN" 2>/dev/null || true
             ip6tables -F "$IPT6_CHAIN" 2>/dev/null || true
