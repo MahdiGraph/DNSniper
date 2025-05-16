@@ -813,7 +813,7 @@ detect_cdn() {
             if [[ $is_known_cdn -eq 1 ]]; then
                 cdn_domains+=("$dom")
                 continue
-            }
+            fi
             
             # Check history file for IP changes
             local history_file="$HISTORY_DIR/${safe_dom}.txt"
