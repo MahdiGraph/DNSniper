@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# DNSniper Complete Installer 
+# DNSniper Installer
 # Version: 2.0.0
+
+# Check for tmp directory
+if [ ! -d "/tmp" ]; then
+    mkdir -p /tmp || { echo "Cannot create /tmp directory. Aborting."; exit 1; }
+fi
 
 # ANSI color codes
 RED='\e[31m'
@@ -49,6 +54,15 @@ handle_error() {
     exit 1
 }
 
+# Check if crontab is available
+check_crontab() {
+    if ! command -v crontab &>/dev/null; then
+        echo -e "${YELLOW}Warning: crontab not found. Cron scheduling will be skipped.${NC}"
+        return 1
+    fi
+    return 0
+}
+
 echo -e "${CYAN}${BOLD}CHECKING PREVIOUS INSTALLATION${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 
@@ -82,7 +96,9 @@ if [[ -f "$BIN_PATH" || -d "$BASE_DIR" ]]; then
             pkill -f "dnsniper" 2>/dev/null || true
             
             # Remove cron jobs (from old installations)
-            crontab -l 2>/dev/null | grep -v "dnsniper" | crontab - 2>/dev/null || true
+            if check_crontab; then
+                (crontab -l 2>/dev/null | grep -v "dnsniper" | crontab -) 2>/dev/null || true
+            fi
             
             # Backup configuration
             if [[ -d "$BASE_DIR" ]]; then
@@ -112,7 +128,9 @@ if [[ -f "$BIN_PATH" || -d "$BASE_DIR" ]]; then
             pkill -f "dnsniper" 2>/dev/null || true
             
             # Remove cron jobs (from old installations)
-            crontab -l 2>/dev/null | grep -v "dnsniper" | crontab - 2>/dev/null || true
+            if check_crontab; then
+                (crontab -l 2>/dev/null | grep -v "dnsniper" | crontab -) 2>/dev/null || true
+            fi
             
             # Clean up firewall rules if DNSniper binary exists
             if [[ -f "$BIN_PATH" ]]; then
@@ -315,11 +333,13 @@ EOF
         systemctl start dnsniper.timer
         
         echo -e "${GREEN}DNSniper scheduled with systemd timer (runs hourly)${NC}"
-    else
-        # Fallback to cron
+    elif check_crontab; then
+        # Use cron if systemd isn't available but crontab is
         echo -e "${YELLOW}Systemd not available, using cron instead...${NC}"
         (crontab -l 2>/dev/null | grep -v "$BIN_PATH"; echo "0 * * * * $DAEMON_PATH > /dev/null 2>&1") | crontab -
         echo -e "${GREEN}DNSniper scheduled with cron (runs hourly)${NC}"
+    else
+        echo -e "${YELLOW}Neither systemd nor crontab available. You'll need to set up scheduling manually.${NC}"
     fi
 fi
 
