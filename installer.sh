@@ -374,35 +374,34 @@ bash -c "source '$DAEMON_SCRIPT' && create_systemd_service" || true
 # FIXED SECTION: Enable and start services - but don't hang waiting for startup
 if [[ "$scheduler_enabled" -eq 1 ]]; then
     echo -e "${GREEN}Enabling and starting DNSniper services...${NC}"
-    
     # Enable services first (this is quick and shouldn't hang)
     systemctl enable dnsniper-firewall.service &>/dev/null || true
-    systemctl enable dnsniper.service &>/dev/null || true 
+    systemctl enable dnsniper.service &>/dev/null || true
     systemctl enable dnsniper.timer &>/dev/null || true
-    
     # Start services in background to avoid hanging the installer
     echo -e "${YELLOW}Starting services in background...${NC}"
     (systemctl start dnsniper-firewall.service &>/dev/null || true) &
     (systemctl start dnsniper.timer &>/dev/null || true) &
-    
     # Brief pause to allow services to begin startup
     sleep 2
-    
     echo -e "${GREEN}Services enabled and started in background.${NC}"
     echo -e "${BLUE}Tip: Check service status with: sudo dnsniper --status${NC}"
 fi
 
-# Make sure everything is initialized
-if "$BIN_PATH" --version &>/dev/null; then
+# FIXED SECTION: Make sure initialization check doesn't hang
+# Use timeout to prevent indefinite waiting on version check
+if timeout 10 "$BIN_PATH" --version &>/dev/null; then
     echo -e "${GREEN}DNSniper successfully initialized.${NC}"
     if [[ "$installation_type" != "upgrade" ]]; then
-        echo -e "${YELLOW}Running initial domains update...${NC}"
-        "$BIN_PATH" --update
+        echo -e "${YELLOW}Running initial domains update in background...${NC}"
+        # Run update in background to avoid hanging the installer
+        ("$BIN_PATH" --update &>/dev/null || echo "Domain update still running...") &
     fi
 else
     echo -e "${RED}${BOLD}Warning:${NC} There might be issues with initialization."
     echo -e "${YELLOW}Please check by running: sudo dnsniper --status${NC}"
 fi
+
 # Final instructions
 echo -e ""
 echo -e "${CYAN}${BOLD}INSTALLATION COMPLETE!${NC}"
