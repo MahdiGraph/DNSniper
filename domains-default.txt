@@ -1,3 +1,10 @@
+# DNSniper Default Domain Block List
+# Format: One domain per line
+# Examples:
+# malware-domain.com
+# phishing-site.org
+# Lines starting with # are comments and will be ignored
+# Add your domains below:
 appclick.co
 pushnotificationws.com
 123.ywxww.net
