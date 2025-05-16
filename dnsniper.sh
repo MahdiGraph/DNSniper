@@ -1539,7 +1539,7 @@ display_status() {
             
             if [[ $cdn_count -gt 0 ]]; then
                 echo -e "${BOLD}Detected CDN Domains:${NC} ${YELLOW}$cdn_count${NC}"
-            }
+            fi
             
             # Config section
             echo -e ""
