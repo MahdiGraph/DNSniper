@@ -121,18 +121,119 @@ EOF
     # Enable and start timer
     systemctl daemon-reload
     systemctl enable dnsniper.timer
-    echo "Systemd timer enabled"
-else
-    echo "Using cron for scheduling..."
-    (crontab -l 2>/dev/null | grep -v "$BIN_PATH"; echo "0 * * * * $BIN_PATH --run > /dev/null 2>&1") | crontab -
-    echo "Cron job created"
+    systemctl start dnsniper.timer
+    echo -e "${GREEN}DNSniper scheduled with systemd timer (runs hourly)${NC}"
+    
+    # Update config to reflect enabled status
+    if [[ -f "$BASE_DIR/config.conf" ]]; then
+        sed -i '/^automatic_execution=/d' "$BASE_DIR/config.conf" 2>/dev/null || true
+    else
+        touch "$BASE_DIR/config.conf"
+    fi
+    echo "automatic_execution=1" >> "$BASE_DIR/config.conf"
 fi
 
-echo -e "${YELLOW}Step 6: Running initial setup${NC}"
-# Run initial setup
-echo "Running DNSniper for initial setup..."
-"$BIN_PATH" --run &
-echo "DNSniper is now running in the background"
+# Initialize database
+echo -e ""
+echo -e "${CYAN}${BOLD}INITIALIZING DATABASE${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 
-echo -e "${GREEN}Installation completed successfully!${NC}"
-echo "You can now use 'sudo dnsniper' to manage DNSniper."
+# Create default config if it doesn't exist
+if [[ ! -f "$BASE_DIR/config.conf" ]]; then
+    cat > "$BASE_DIR/config.conf" << EOF
+# DNSniper Configuration
+max_ips=10
+timeout=30
+update_url='https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt'
+auto_update=1
+expire_enabled=1
+expire_multiplier=5
+block_source=1
+block_destination=1
+logging_enabled=1
+log_max_size=10
+log_rotate_count=5
+automatic_execution=$([[ "$sched_choice" == "1" ]] && echo "1" || echo "0")
+EOF
+fi
+
+# Initialize database
+if command -v sqlite3 &>/dev/null; then
+    sqlite3 "$BASE_DIR/history.db" <<EOF
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS history(
+    domain TEXT,
+    ips    TEXT,
+    ts     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_history_domain ON history(domain);
+CREATE TABLE IF NOT EXISTS expired_domains(
+    domain TEXT PRIMARY KEY,
+    last_seen TEXT,
+    source TEXT
+);
+EOF
+    echo -e "${GREEN}Database initialized successfully${NC}"
+else
+    echo -e "${YELLOW}Warning: sqlite3 not found, database functionality will be limited${NC}"
+fi
+
+# Set initial status
+echo "READY" > "$BASE_DIR/status.txt"
+
+# Ask about running initial update
+echo -e ""
+echo -e "${CYAN}${BOLD}INITIAL SETUP${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+echo -e "${YELLOW}Do you want to run an initial update and domain blocking now?${NC}"
+echo -e "1) Yes - Run in background now"
+echo -e "2) No - I'll do it later"
+read -rp "Choose an option [1-2]: " run_choice
+
+# Wait for valid input
+while [[ ! "$run_choice" =~ ^[1-2]$ ]]; do
+    echo -e "${RED}Invalid selection. Please enter 1 or 2${NC}"
+    read -rp "Choose an option [1-2]: " run_choice
+done
+
+if [[ "$run_choice" == "1" ]]; then
+    echo -e "${YELLOW}Starting initial domain update and blocking (runs in background)...${NC}"
+    
+    # Run the service once manually
+    systemctl start dnsniper.service
+    
+    echo -e "${GREEN}Initial setup triggered. It will run in the background.${NC}"
+    echo -e "${YELLOW}You can check status with:${NC} sudo dnsniper --status"
+else
+    echo -e "${YELLOW}Skipping initial setup. You can run it later with:${NC}"
+    echo -e "  ${GREEN}sudo systemctl start dnsniper.service${NC}"
+    echo -e "  or"
+    echo -e "  ${GREEN}sudo dnsniper --run${NC}"
+fi
+
+# Final instructions
+echo -e ""
+echo -e "${CYAN}${BOLD}INSTALLATION COMPLETE!${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+echo -e "${YELLOW}DNSniper is now installed.${NC}"
+echo -e ""
+echo -e "${YELLOW}Commands:${NC}"
+echo -e "  ${GREEN}sudo dnsniper${NC}           - Open the interactive menu"
+echo -e "  ${GREEN}sudo dnsniper --status${NC}  - Check current status"
+echo -e "  ${GREEN}sudo dnsniper --help${NC}    - Show all available commands"
+echo -e ""
+
+if [[ "$sched_choice" == "1" ]]; then
+    echo -e "${YELLOW}The service will automatically update and run in the background.${NC}"
+    echo -e "${YELLOW}You don't need to manually run it unless you want to make changes.${NC}"
+else
+    echo -e "${YELLOW}Automatic scheduling is disabled. Use these commands to run manually:${NC}"
+    echo -e "  ${GREEN}sudo systemctl start dnsniper.service${NC}"
+    echo -e "  or"
+    echo -e "  ${GREEN}sudo dnsniper --run${NC}"
+fi
+
+echo -e ""
+echo -e "${BLUE}${BOLD}Protect your servers against malicious domains with DNSniper!${NC}"
+echo -e ""
+echo -e "${YELLOW}Installation log saved to: $LOG_FILE${NC}"
