@@ -379,18 +379,21 @@ bash -c "source '$DAEMON_SCRIPT' && create_systemd_service" || true
 if [[ "$scheduler_enabled" -eq 1 ]]; then
     echo -e "${GREEN}Enabling and starting DNSniper services...${NC}"
     
-    # Enable and start firewall service
+    # Enable services first (this is quick and shouldn't hang)
     systemctl enable dnsniper-firewall.service &>/dev/null || true
-    systemctl start dnsniper-firewall.service &>/dev/null || true
-    
-    # Enable and start main service
     systemctl enable dnsniper.service &>/dev/null || true
-    
-    # Enable and start timer
     systemctl enable dnsniper.timer &>/dev/null || true
-    systemctl start dnsniper.timer &>/dev/null || true
     
-    echo -e "${GREEN}Services enabled and started successfully.${NC}"
+    # Start services in background to avoid hanging the installer
+    echo -e "${YELLOW}Starting services in background...${NC}"
+    (systemctl start dnsniper-firewall.service &>/dev/null || true) &
+    (systemctl start dnsniper.timer &>/dev/null || true) &
+    
+    # Brief pause to allow services to begin startup
+    sleep 2
+    
+    echo -e "${GREEN}Services enabled and started in background.${NC}"
+    echo -e "${BLUE}Tip: Check service status with: sudo dnsniper --status${NC}"
 fi
 
 # Make sure everything is initialized
