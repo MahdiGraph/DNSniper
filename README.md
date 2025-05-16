@@ -46,7 +46,7 @@ DNSniper is a lightweight Bash script designed to mitigate DNS-based threats by:
 ### 🚀 Quick Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/installer.sh | bash
+curl -sSL -o installer.sh https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/installer.sh && chmod +x installer.sh && sudo ./installer.sh
 ```
 
 ### 💻 Usage
