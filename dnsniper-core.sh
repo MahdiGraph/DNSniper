@@ -301,27 +301,20 @@ EOF
             echo "Warning: $cmd is not installed. Some features may not work." >&2
         fi
     done
-    
-    # Initialize SQLite DB with improved transaction and lock handling
+
+    # Initialize SQLite DB with a more conservative approach
     if command -v sqlite3 >/dev/null 2>&1; then
-        # Check if database file is locked
-        if [ -f "$DB_FILE-wal" ] || [ -f "$DB_FILE-shm" ]; then
-            echo_safe "${YELLOW}Warning: Database appears to be locked, attempting to recover...${NC}"
-            # Try to recover using sqlite3 recovery commands
-            sqlite3 "$DB_FILE" "PRAGMA wal_checkpoint(FULL);" 2>/dev/null || true
-            # Remove WAL and SHM files if they still exist
-            rm -f "$DB_FILE-wal" "$DB_FILE-shm" 2>/dev/null || true
-        fi
-
-        # Optimize database settings for better concurrency
+        # Remove any WAL files if they exist (force journal mode to DELETE)
+        rm -f "$DB_FILE-wal" "$DB_FILE-shm" 2>/dev/null || true
+        
+        # Create or update database with safer settings
         sqlite3 "$DB_FILE" <<SQL
-PRAGMA busy_timeout = 5000;       -- Increase timeout to 5 seconds
-PRAGMA journal_mode = WAL;        -- Use Write-Ahead Logging for better concurrency
-PRAGMA synchronous = NORMAL;      -- Balance between safety and performance
-PRAGMA cache_size = 5000;         -- Increase cache size for better performance
-PRAGMA temp_store = MEMORY;       -- Store temp tables in memory
+PRAGMA journal_mode = DELETE;         -- Use DELETE instead of WAL for stability
+PRAGMA synchronous = FULL;            -- Prioritize data integrity over speed
+PRAGMA busy_timeout = 10000;          -- Much longer timeout (10 seconds)
+PRAGMA locking_mode = NORMAL;         -- Standard file locking
 
-BEGIN TRANSACTION;
+BEGIN IMMEDIATE TRANSACTION;          -- Use IMMEDIATE to acquire write lock from the start
 
 CREATE TABLE IF NOT EXISTS history(
     domain TEXT,
@@ -343,8 +336,40 @@ CREATE TABLE IF NOT EXISTS cdn_domains(
 
 COMMIT;
 SQL
-        # مطمئن شوید پایگاه داده به درستی بسته شده
-        sqlite3 "$DB_FILE" "PRAGMA optimize;" 2>/dev/null || true
+        
+        # Add this function to better handle database operations
+        db_query() {
+            local query="$1"
+            local retries=3
+            local attempt=1
+            local result
+            
+            while [ $attempt -le $retries ]; do
+                result=$(sqlite3 -init /dev/null "$DB_FILE" "$query" 2>&1)
+                if [ $? -eq 0 ]; then
+                    echo "$result"
+                    return 0
+                else
+                    log "WARNING" "Database error on attempt $attempt: $result" "verbose"
+                    sleep 1
+                    attempt=$((attempt + 1))
+                fi
+            done
+            
+            log "ERROR" "Database operation failed after $retries attempts: $query"
+            return 1
+        }
+        
+        # Make sure database is usable
+        if ! db_query "PRAGMA quick_check;" &>/dev/null; then
+            log "WARNING" "Database integrity check failed. Attempting repair..." "verbose"
+            # Try to recover
+            sqlite3 "$DB_FILE" "PRAGMA integrity_check;" &>/dev/null || {
+                log "ERROR" "Database corrupt. Creating new database..." "verbose"
+                mv "$DB_FILE" "$DB_FILE.corrupted.$(date +%s)" 2>/dev/null
+                # The next run will recreate the database
+            }
+        fi
     else
         echo "Warning: sqlite3 not found, database functionality disabled." >&2
     fi
@@ -708,20 +733,20 @@ record_history() {
         max_ips=$DEFAULT_MAX_IPS
     fi
     
-    # Use transaction for better reliability
-    if ! sqlite3 "$DB_FILE" <<SQL 2>/dev/null
-BEGIN TRANSACTION;
-INSERT INTO history(domain,ips,ts) VALUES('$domain','$ips_csv',strftime('%s','now'));
-DELETE FROM history
-WHERE rowid NOT IN (
-   SELECT rowid FROM history
-   WHERE domain='$domain'
-   ORDER BY ts DESC
-   LIMIT $max_ips
-);
-COMMIT;
-SQL
-    then
+    # Use db_query for better error handling
+    db_query "BEGIN TRANSACTION;
+              INSERT INTO history(domain,ips,ts) VALUES('$domain','$ips_csv',strftime('%s','now'));
+              DELETE FROM history
+              WHERE rowid NOT IN (
+                SELECT rowid FROM history
+                WHERE domain='$domain'
+                ORDER BY ts DESC
+                LIMIT $max_ips
+              );
+              COMMIT;" >/dev/null
+    
+    local status=$?
+    if [[ $status -ne 0 ]]; then
         log "ERROR" "Error recording history for domain: $domain"
         return 1
     fi
