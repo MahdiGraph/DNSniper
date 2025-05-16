@@ -1043,7 +1043,7 @@ resolve_block() {
     if [[ $auto_update -eq 1 ]]; then
         echo_safe "${BLUE}Auto-updating domain lists...${NC}"
         update_default
-    }
+    fi
     # Check for expired domains
     update_status "running" "Checking for expired domains" "10" "0"
     check_expired_domains
