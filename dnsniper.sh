@@ -2,7 +2,6 @@
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
 # Version: 2.1.0
-
 # Source the core and daemon functionality
 if [[ -f /etc/dnsniper/dnsniper-core.sh ]]; then
     source /etc/dnsniper/dnsniper-core.sh
@@ -10,14 +9,12 @@ else
     echo "Error: Core DNSniper functionality not found" >&2
     exit 1
 fi
-
 if [[ -f /etc/dnsniper/dnsniper-daemon.sh ]]; then
     source /etc/dnsniper/dnsniper-daemon.sh
 else
     echo "Error: DNSniper daemon functionality not found" >&2
     exit 1
 fi
-
 # Display banner
 show_banner() {
     if [[ -t 1 ]]; then  # Only show banner in interactive terminal
@@ -33,7 +30,6 @@ show_banner() {
         echo -e ""
     fi
 }
-
 ### Interactive menu functions
 # --- Settings submenu ---
 settings_menu() {
@@ -69,7 +65,6 @@ settings_menu() {
         read -rp "Press Enter to continue..."
     done
 }
-
 # Toggle logging function
 toggle_logging() {
     echo -e "${BOLD}=== Toggle Logging ===${NC}"
@@ -99,7 +94,6 @@ toggle_logging() {
         fi
     fi
 }
-
 # Rule expiration settings
 expiration_settings() {
     echo -e "${BOLD}=== Rule Expiration Settings ===${NC}"
@@ -109,11 +103,9 @@ expiration_settings() {
     # Validate settings, use defaults if invalid
     [[ -z "$expire_enabled" || ! "$expire_enabled" =~ ^[01]$ ]] && expire_enabled=$DEFAULT_EXPIRE_ENABLED
     [[ -z "$expire_multiplier" || ! "$expire_multiplier" =~ ^[0-9]+$ ]] && expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
-    
     # Get schedule to determine update frequency
     local schedule_minutes=$(grep '^schedule_minutes=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]] && schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
-    
     # Calculate actual expiration time
     local expire_minutes=$((schedule_minutes * expire_multiplier))
     local expire_hours=$((expire_minutes / 60))
@@ -126,7 +118,6 @@ expiration_settings() {
     else
         expire_display="$expire_minutes minutes"
     fi
-    
     # Display current settings
     if [[ "$expire_enabled" == "1" ]]; then
         echo -e "${BLUE}Rule expiration:${NC} ${GREEN}Enabled${NC}"
@@ -205,7 +196,6 @@ expiration_settings() {
         fi
     fi
 }
-
 # Rule types settings
 rule_types_settings() {
     local need_apply=0
@@ -259,19 +249,15 @@ rule_types_settings() {
         echo -e "${YELLOW}No changes made.${NC}"
     fi
 }
-
 # Set schedule
 set_schedule() {
     echo -e "${BOLD}=== Set Schedule ===${NC}"
-    
     # Get current settings
     local scheduler_enabled=$(grep '^scheduler_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     local schedule_minutes=$(grep '^schedule_minutes=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    
     # Validate settings, use defaults if invalid
     [[ -z "$scheduler_enabled" || ! "$scheduler_enabled" =~ ^[01]$ ]] && scheduler_enabled=$DEFAULT_SCHEDULER_ENABLED
     [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]] && schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
-    
     # Display current status
     if [[ "$scheduler_enabled" == "1" ]]; then
         echo -e "${BLUE}Scheduler is currently:${NC} ${GREEN}Enabled${NC}"
@@ -280,14 +266,12 @@ set_schedule() {
         echo -e "${BLUE}Scheduler is currently:${NC} ${RED}Disabled${NC}"
         echo -e "${BLUE}Default schedule:${NC} Every ${YELLOW}$schedule_minutes${NC} minutes (inactive)"
     fi
-    
     # Ask what to change
     echo -e "\n${YELLOW}What would you like to change?${NC}"
     echo -e "1. ${BOLD}Enable/Disable${NC} scheduler"
     echo -e "2. Change ${BOLD}schedule interval${NC}"
     echo -e "3. ${BOLD}Back${NC} without changes"
     read -rp "Choice (1-3): " schedule_choice
-    
     case "$schedule_choice" in
         1)
             # Toggle scheduler state
@@ -333,7 +317,6 @@ set_schedule() {
             ;;
     esac
 }
-
 # Set max IPs
 set_max_ips() {
     echo -e "${BOLD}=== Set Max IPs Per Domain ===${NC}"
@@ -348,7 +331,6 @@ set_max_ips() {
         echo -e "${RED}Invalid input. Please enter a number between 5 and 50.${NC}"
     fi
 }
-
 # Set timeout
 set_timeout() {
     echo -e "${BOLD}=== Set Timeout ===${NC}"
@@ -363,7 +345,6 @@ set_timeout() {
         echo -e "${RED}Invalid input. Please enter a number between 5 and 60.${NC}"
     fi
 }
-
 # Set update URL
 set_update_url() {
     echo -e "${BOLD}=== Set Update URL ===${NC}"
@@ -383,7 +364,6 @@ set_update_url() {
         echo -e "${YELLOW}No change.${NC}"
     fi
 }
-
 # Toggle auto-update
 toggle_auto_update() {
     echo -e "${BOLD}=== Toggle Auto-Update ===${NC}"
@@ -413,7 +393,6 @@ toggle_auto_update() {
         fi
     fi
 }
-
 # --- Import/Export submenu ---
 import_export_menu() {
     while true; do
@@ -446,7 +425,6 @@ import_export_menu() {
         read -rp "Press Enter to continue..."
     done
 }
-
 # Import domains
 import_domains() {
     echo -e "${BOLD}=== Import Domains ===${NC}"
@@ -494,7 +472,6 @@ import_domains() {
     log "INFO" "Imported $count domains from file: $file" "verbose"
     return 0
 }
-
 # Export domains
 export_domains() {
     echo -e "${BOLD}=== Export Domains ===${NC}"
@@ -536,7 +513,6 @@ export_domains() {
     rm -f "$tmpfile"
     return 0
 }
-
 # Import IPs
 import_ips() {
     echo -e "${BOLD}=== Import IP Addresses ===${NC}"
@@ -597,7 +573,6 @@ import_ips() {
     log "INFO" "Imported $count IPs from file: $file" "verbose"
     return 0
 }
-
 # Export IPs
 export_ips() {
     echo -e "${BOLD}=== Export IP Addresses ===${NC}"
@@ -639,7 +614,6 @@ export_ips() {
     rm -f "$tmpfile"
     return 0
 }
-
 # Export config
 export_config() {
     echo -e "${BOLD}=== Export Configuration ===${NC}"
@@ -670,7 +644,6 @@ export_config() {
     log "INFO" "Configuration exported to file: $file" "verbose"
     return 0
 }
-
 # Export firewall rules
 export_firewall_rules() {
     echo -e "${BOLD}=== Export Firewall Rules ===${NC}"
@@ -699,7 +672,6 @@ export_firewall_rules() {
     log "INFO" "Exported firewall rules to: $dir" "verbose"
     return 0
 }
-
 # Import all (complete backup)
 import_all() {
     echo -e "${BOLD}=== Import Complete Backup ===${NC}"
@@ -753,7 +725,6 @@ import_all() {
     fi
     return 0
 }
-
 # Export all (complete backup)
 export_all() {
     echo -e "${BOLD}=== Export Complete Backup ===${NC}"
@@ -842,7 +813,7 @@ export_all() {
     return 0
 }
 
-# --- Block/Unblock Domain/IP Functions ---
+# --- Block/Whitelist Domain/IP Functions ---
 # Block domain
 block_domain() {
     echo -e "${BOLD}=== Block Domain ===${NC}"
@@ -873,65 +844,52 @@ block_domain() {
         if [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]]; then
             timeout=$DEFAULT_TIMEOUT
         fi
-        # Resolve IPv4 addresses with timeout
-        local v4=()
-        mapfile -t v4 < <(dig +short +time="$timeout" +tries=2 A "$domain" 2>/dev/null || echo "")
-        # Resolve IPv6 addresses with timeout
-        local v6=()
-        mapfile -t v6 < <(dig +short +time="$timeout" +tries=2 AAAA "$domain" 2>/dev/null || echo "")
-        # Combine and deduplicate
-        local all=("${v4[@]}" "${v6[@]}")
+        
+        # Use improved resolve_domain function
         local unique=()
-        for ip in "${all[@]}"; do
-            [[ -z "$ip" ]] && continue
-            if ! [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! is_ipv6 "$ip"; then
-                continue
-            fi
-            # Check if critical IP
-            if is_critical_ip "$ip"; then
-                echo -e "  - ${YELLOW}Skipped critical IP${NC}: $ip"
-                continue
-            fi
-            local found=0
-            for u in "${unique[@]}"; do
-                if [[ "$u" == "$ip" ]]; then
-                    found=1
-                    break
-                fi
-            done
-            [[ $found -eq 0 ]] && unique+=("$ip")
-        done
+        mapfile -t unique < <(resolve_domain "$domain" "$timeout")
+            
         if [[ ${#unique[@]} -eq 0 ]]; then
             echo -e "  ${YELLOW}No valid IP addresses found${NC}"
             return 0
         fi
+        
         # Convert array to CSV for storage
         local ips_csv=$(IFS=,; echo "${unique[*]}")
+        
         # Record in history
         record_history "$domain" "$ips_csv"
+        
         # Block each IP
         for ip in "${unique[@]}"; do
+            # Skip critical IPs
+            if is_critical_ip "$ip"; then
+                echo -e "  - ${YELLOW}Skipped critical IP${NC}: $ip"
+                continue
+            }
+            
             if block_ip "$ip" "DNSniper: $domain"; then
                 echo -e "  - ${RED}Blocked${NC}: $ip"
             else
                 echo -e "  - ${RED}Error blocking${NC}: $ip"
             fi
         done
+        
         # Make rules persistent
         make_rules_persistent
     fi
     return 0
 }
 
-# Unblock domain
-unblock_domain() {
-    echo -e "${BOLD}=== Unblock Domain ===${NC}"
+# Whitelist domain (renamed from unblock_domain for clarity)
+whitelist_domain() {
+    echo -e "${BOLD}=== Add Domain to Whitelist ===${NC}"
     # Get all active domains
     local tmpdomains=$(mktemp)
     merge_domains > "$tmpdomains"
     local total=$(wc -l < "$tmpdomains")
     if [[ $total -eq 0 ]]; then
-        echo -e "${YELLOW}No active domains to unblock.${NC}"
+        echo -e "${YELLOW}No active domains to whitelist.${NC}"
         rm -f "$tmpdomains"
         return 0
     fi
@@ -947,42 +905,42 @@ unblock_domain() {
             i=$((i+1))
         done < "$tmpdomains"
     fi
-    read -rp "Enter domain number or domain name to unblock: " choice
-    local domain_to_unblock=""
+    read -rp "Enter domain number or domain name to add to whitelist: " choice
+    local domain_to_whitelist=""
     # Check if choice is a number and within range
     if [[ "$choice" =~ ^[0-9]+$ && $choice -ge 1 && $choice -le $total ]]; then
-        domain_to_unblock=$(sed -n "${choice}p" "$tmpdomains")
+        domain_to_whitelist=$(sed -n "${choice}p" "$tmpdomains")
     else
-        domain_to_unblock="$choice"
+        domain_to_whitelist="$choice"
     fi
     rm -f "$tmpdomains"
-    if [[ -z "$domain_to_unblock" ]]; then
+    if [[ -z "$domain_to_whitelist" ]]; then
         echo -e "${RED}Invalid selection.${NC}"
         return 1
     fi
     # Validate domain format
-    if ! is_valid_domain "$domain_to_unblock"; then
-        echo -e "${RED}Invalid domain format: $domain_to_unblock${NC}"
+    if ! is_valid_domain "$domain_to_whitelist"; then
+        echo -e "${RED}Invalid domain format: $domain_to_whitelist${NC}"
         return 1
     fi
     # Add to remove file if not already there
-    if ! grep -Fxq "$domain_to_unblock" "$REMOVE_FILE" 2>/dev/null; then
-        echo "$domain_to_unblock" >> "$REMOVE_FILE"
-        echo -e "${GREEN}Domain unblocked:${NC} $domain_to_unblock"
-        log "INFO" "Domain added to unblock list: $domain_to_unblock" "verbose"
+    if ! grep -Fxq "$domain_to_whitelist" "$REMOVE_FILE" 2>/dev/null; then
+        echo "$domain_to_whitelist" >> "$REMOVE_FILE"
+        echo -e "${GREEN}Domain added to whitelist:${NC} $domain_to_whitelist"
+        log "INFO" "Domain added to whitelist: $domain_to_whitelist" "verbose"
         # Ask if to remove firewall rules immediately
-        read -rp "Remove firewall rules for this domain immediately? [y/N]: " unblock_now
-        if [[ "$unblock_now" =~ ^[Yy] ]]; then
-            echo -e "${BLUE}Removing firewall rules for $domain_to_unblock...${NC}"
+        read -rp "Remove firewall rules for this domain immediately? [y/N]: " whitelist_now
+        if [[ "$whitelist_now" =~ ^[Yy] ]]; then
+            echo -e "${BLUE}Removing firewall rules for $domain_to_whitelist...${NC}"
             # Get IPs from history
-            local esc_dom=$(sql_escape "$domain_to_unblock")
+            local esc_dom=$(sql_escape "$domain_to_whitelist")
             local ips
             ips=$(sqlite3 "$DB_FILE" "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
             if [[ -n "$ips" ]]; then
                 IFS=',' read -ra ip_list <<< "$ips"
                 for ip in "${ip_list[@]}"; do
-                    if unblock_ip "$ip" "DNSniper: $domain_to_unblock"; then
-                        echo -e "  - ${GREEN}Unblocked${NC}: $ip"
+                    if whitelist_ip "$ip" "DNSniper: $domain_to_whitelist"; then
+                        echo -e "  - ${GREEN}Added to whitelist:${NC} $ip"
                     fi
                 done
                 # Make rules persistent
@@ -992,7 +950,7 @@ unblock_domain() {
             fi
         fi
     else
-        echo -e "${YELLOW}Domain already in unblock list.${NC}"
+        echo -e "${YELLOW}Domain already in whitelist.${NC}"
     fi
     return 0
 }
@@ -1039,15 +997,15 @@ block_custom_ip() {
     return 0
 }
 
-# Unblock IP
-unblock_custom_ip() {
-    echo -e "${BOLD}=== Unblock IP Address ===${NC}"
+# Whitelist IP (renamed from unblock_custom_ip for clarity)
+whitelist_custom_ip() {
+    echo -e "${BOLD}=== Add IP Address to Whitelist ===${NC}"
     # Get all custom IPs
     local tmpips=$(mktemp)
     get_custom_ips > "$tmpips"
     local total=$(wc -l < "$tmpips")
     if [[ $total -eq 0 ]]; then
-        echo -e "${YELLOW}No custom IPs to unblock.${NC}"
+        echo -e "${YELLOW}No custom IPs to whitelist.${NC}"
         rm -f "$tmpips"
         return 0
     fi
@@ -1063,42 +1021,42 @@ unblock_custom_ip() {
             i=$((i+1))
         done < "$tmpips"
     fi
-    read -rp "Enter IP number or IP address to unblock: " choice
-    local ip_to_unblock=""
+    read -rp "Enter IP number or IP address to add to whitelist: " choice
+    local ip_to_whitelist=""
     # Check if choice is a number and within range
     if [[ "$choice" =~ ^[0-9]+$ && $choice -ge 1 && $choice -le $total ]]; then
-        ip_to_unblock=$(sed -n "${choice}p" "$tmpips")
+        ip_to_whitelist=$(sed -n "${choice}p" "$tmpips")
     else
-        ip_to_unblock="$choice"
+        ip_to_whitelist="$choice"
     fi
     rm -f "$tmpips"
-    if [[ -z "$ip_to_unblock" ]]; then
+    if [[ -z "$ip_to_whitelist" ]]; then
         echo -e "${RED}Invalid selection.${NC}"
         return 1
     fi
     # Validate IP format
-    if ! is_ipv6 "$ip_to_unblock" && ! is_valid_ipv4 "$ip_to_unblock"; then
+    if ! is_ipv6 "$ip_to_whitelist" && ! is_valid_ipv4 "$ip_to_whitelist"; then
         echo -e "${RED}Invalid IP format.${NC}"
         return 1
     fi
     # Add to remove file if not already there
-    if ! grep -Fxq "$ip_to_unblock" "$IP_REMOVE_FILE" 2>/dev/null; then
-        echo "$ip_to_unblock" >> "$IP_REMOVE_FILE"
-        echo -e "${GREEN}IP unblocked:${NC} $ip_to_unblock"
-        log "INFO" "IP added to unblock list: $ip_to_unblock" "verbose"
+    if ! grep -Fxq "$ip_to_whitelist" "$IP_REMOVE_FILE" 2>/dev/null; then
+        echo "$ip_to_whitelist" >> "$IP_REMOVE_FILE"
+        echo -e "${GREEN}IP added to whitelist:${NC} $ip_to_whitelist"
+        log "INFO" "IP added to whitelist: $ip_to_whitelist" "verbose"
         # Ask if to remove firewall rules immediately
-        read -rp "Remove firewall rules for this IP immediately? [y/N]: " unblock_now
-        if [[ "$unblock_now" =~ ^[Yy] ]]; then
-            if unblock_ip "$ip_to_unblock" "DNSniper: custom"; then
-                echo -e "${GREEN}Successfully unblocked IP:${NC} $ip_to_unblock"
+        read -rp "Remove firewall rules for this IP immediately? [y/N]: " whitelist_now
+        if [[ "$whitelist_now" =~ ^[Yy] ]]; then
+            if whitelist_ip "$ip_to_whitelist" "DNSniper: custom"; then
+                echo -e "${GREEN}Successfully added IP to whitelist:${NC} $ip_to_whitelist"
                 # Make rules persistent
                 make_rules_persistent
             else
-                echo -e "${RED}Error unblocking IP:${NC} $ip_to_unblock"
+                echo -e "${RED}Error adding IP to whitelist:${NC} $ip_to_whitelist"
             fi
         fi
     else
-        echo -e "${YELLOW}IP already in unblock list.${NC}"
+        echo -e "${YELLOW}IP already in whitelist.${NC}"
     fi
     return 0
 }
@@ -1117,7 +1075,6 @@ display_status() {
         local domain_count=$(merge_domains | wc -l)
         local blocked_ips=$(count_blocked_ips)
         local custom_ip_count=$(get_custom_ips | wc -l)
-        
         # Get config values
         local scheduler_enabled=$(grep '^scheduler_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
         local schedule_minutes=$(grep '^schedule_minutes=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
@@ -1130,7 +1087,6 @@ display_status() {
         local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
         local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
         local logging_enabled=$(grep '^logging_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-        
         # Apply defaults if missing or invalid
         [[ -z "$scheduler_enabled" || ! "$scheduler_enabled" =~ ^[01]$ ]] && scheduler_enabled=$DEFAULT_SCHEDULER_ENABLED
         [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]] && schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
@@ -1143,35 +1099,28 @@ display_status() {
         [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
         [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
         [[ -z "$logging_enabled" || ! "$logging_enabled" =~ ^[01]$ ]] && logging_enabled=$DEFAULT_LOGGING_ENABLED
-        
         # Format auto-update text
         local auto_update_text="${RED}Disabled${NC}"
         [[ "$auto_update" == "1" ]] && auto_update_text="${GREEN}Enabled${NC}"
-        
         # Format expiration text
         local expire_text="${RED}Disabled${NC}"
         [[ "$expire_enabled" == "1" ]] && expire_text="${GREEN}Enabled (${expire_multiplier}x)${NC}"
-        
         # Format scheduler text
         local scheduler_text="${RED}Disabled${NC}"
         if [[ "$scheduler_enabled" == "1" ]]; then
             scheduler_text="${GREEN}Enabled${NC} (Every ${YELLOW}$schedule_minutes${NC} minutes)"
         fi
-        
         # Format rule types text
         local rule_types=""
         [[ "$block_source" == "1" ]] && rule_types+="Source, "
         [[ "$block_destination" == "1" ]] && rule_types+="Destination"
         rule_types=${rule_types%, }
         [[ -z "$rule_types" ]] && rule_types="${RED}None${NC}"
-        
         # Format logging text
         local logging_text="${RED}Disabled${NC}"
         [[ "$logging_enabled" == "1" ]] && logging_text="${GREEN}Enabled${NC}"
-        
         # Get service status
         local service_status=$(get_service_status)
-        
         # Count expired domains pending cleanup - only if feature is enabled
         local expired_count=0
         if [[ "$expire_enabled" == "1" ]]; then
@@ -1180,7 +1129,6 @@ display_status() {
                                               WHERE source='default' AND
                                               datetime(last_seen, '+$expire_minutes minutes') < datetime('now');" 2>/dev/null || echo 0)
         fi
-        
         # Display summary counts
         {
             echo -e "${CYAN}${BOLD}SYSTEM STATUS${NC}"
@@ -1191,7 +1139,6 @@ display_status() {
             if [[ $expired_count -gt 0 && "$expire_enabled" == "1" ]]; then
                 echo -e "${BOLD}Pending Expirations:${NC}  ${YELLOW}$expired_count${NC}"
             fi
-            
             # Config section
             echo -e ""
             echo -e "${CYAN}${BOLD}CONFIGURATION${NC}"
@@ -1203,13 +1150,11 @@ display_status() {
             echo -e "${BOLD}Rule Expiration:${NC}    $expire_text"
             echo -e "${BOLD}Rule Types:${NC}         $rule_types"
             echo -e "${BOLD}Logging:${NC}            $logging_text"
-            
             # Service information
             echo -e ""
             echo -e "${CYAN}${BOLD}SERVICES${NC}"
             echo -e "${MAGENTA}───────────────────────────────────────${NC}"
             echo -e "$service_status"
-            
             # Firewall information
             echo -e ""
             echo -e "${CYAN}${BOLD}FIREWALL${NC}"
@@ -1217,7 +1162,6 @@ display_status() {
             echo -e "${BOLD}IPv4 Chain:${NC}         ${YELLOW}$IPT_CHAIN${NC}"
             echo -e "${BOLD}IPv6 Chain:${NC}         ${YELLOW}$IPT6_CHAIN${NC}"
             echo -e "${BOLD}Persistence:${NC}        ${GREEN}$(detect_system)${NC}"
-            
             # System information
             echo -e ""
             echo -e "${CYAN}${BOLD}SYSTEM INFO${NC}"
@@ -1230,6 +1174,28 @@ display_status() {
             fi
             echo -e "${BOLD}Last Run:${NC}           ${BLUE}$last_run${NC}"
             echo -e "${BOLD}Version:${NC}            ${GREEN}$VERSION${NC}"
+            
+            # Check for CDN domains
+            local cdn_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM cdn_domains;" 2>/dev/null || echo 0)
+            if [[ $cdn_count -gt 0 ]]; then
+                echo -e ""
+                echo -e "${CYAN}${BOLD}CDN DOMAINS ${NC}"
+                echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+                echo -e "${YELLOW}${BOLD}$cdn_count domains detected as possibly using CDN services.${NC}"
+                echo -e "${YELLOW}It's recommended to whitelist these domains to avoid excessive blocking.${NC}"
+                echo -e "${YELLOW}To view and manage these domains, use the status command.${NC}"
+                
+                # Display top CDN domains if number is reasonable
+                if [[ $cdn_count -le 10 ]]; then
+                    echo -e ""
+                    echo -e "${BOLD}Detected CDN domains:${NC}"
+                    local cdn_domains
+                    cdn_domains=$(sqlite3 "$DB_FILE" "SELECT domain FROM cdn_domains ORDER BY last_checked DESC LIMIT 10;" 2>/dev/null)
+                    while IFS= read -r dom; do
+                        echo -e "${YELLOW}- $dom${NC}"
+                    done <<< "$cdn_domains"
+                fi
+            fi
             
             # Domain and IP sections only for moderate list sizes
             if [[ $domain_count -gt 0 && $domain_count -le 500 ]]; then
@@ -1272,7 +1238,6 @@ display_status() {
                 echo -e "${YELLOW}For performance reasons, detailed domain info is hidden.${NC}"
                 echo -e "${YELLOW}Use export features to view complete domain list.${NC}"
             fi
-            
             # Custom IPs section if exists and not too large
             if [[ $custom_ip_count -gt 0 && $custom_ip_count -le 500 ]]; then
                 echo -e ""
@@ -1305,7 +1270,6 @@ display_status() {
     rm -f "$tmpout"
     return 0
 }
-
 # Clear rules
 clear_rules() {
     echo -e "${BOLD}=== Clear Firewall Rules ===${NC}"
@@ -1332,7 +1296,6 @@ clear_rules() {
     fi
     return 0
 }
-
 # Uninstall
 uninstall() {
     echo -e "${RED}${BOLD}Warning: This will completely remove DNSniper.${NC}"
@@ -1364,7 +1327,6 @@ uninstall() {
         else
             echo -e "${YELLOW}Keeping DNSniper firewall rules.${NC}"
         fi
-        
         # Stop and remove systemd services
         if systemctl list-unit-files dnsniper.service &>/dev/null; then
             systemctl stop dnsniper.timer &>/dev/null || true
@@ -1373,25 +1335,20 @@ uninstall() {
             rm -f /etc/systemd/system/dnsniper.service &>/dev/null || true
             rm -f /etc/systemd/system/dnsniper.timer &>/dev/null || true
         fi
-        
         if systemctl list-unit-files dnsniper-firewall.service &>/dev/null; then
             systemctl disable dnsniper-firewall.service &>/dev/null || true
             rm -f /etc/systemd/system/dnsniper-firewall.service &>/dev/null || true
         fi
-        
         # Reload systemd
         systemctl daemon-reload &>/dev/null || true
-        
         # Remove cron job if any
         cleanup_cron_jobs
-        
         # Remove binary and directories
         rm -f "$BIN_CMD" 2>/dev/null || true
         rm -f "/etc/dnsniper/dnsniper-core.sh" 2>/dev/null || true
         rm -f "/etc/dnsniper/dnsniper-daemon.sh" 2>/dev/null || true
         rm -f "/etc/dnsniper/dnsniper.sh" 2>/dev/null || true
         rm -rf "$BASE_DIR" 2>/dev/null || true
-        
         echo -e "${GREEN}DNSniper successfully uninstalled.${NC}"
         exit 0
     else
@@ -1400,23 +1357,23 @@ uninstall() {
     return 0
 }
 
-# Show help
+# Show help - updated with new option names
 show_help() {
     show_banner
     echo -e "${BOLD}=== DNSniper v$VERSION Help ===${NC}"
     echo -e "${BOLD}Usage:${NC} dnsniper [options]"
     echo -e ""
     echo -e "${BOLD}Options:${NC}"
-    echo -e "  ${YELLOW}--run${NC}        Run DNSniper once (non-interactive)"
-    echo -e "  ${YELLOW}--update${NC}     Update default domains list"
-    echo -e "  ${YELLOW}--status${NC}     Display status"
-    echo -e "  ${YELLOW}--block${NC} DOMAIN Add a domain to block list"
-    echo -e "  ${YELLOW}--unblock${NC} DOMAIN Remove a domain from block list"
-    echo -e "  ${YELLOW}--block-ip${NC} IP Add an IP to block list"
-    echo -e "  ${YELLOW}--unblock-ip${NC} IP Remove an IP from block list"
+    echo -e "  ${YELLOW}--run${NC}           Run DNSniper once (non-interactive)"
+    echo -e "  ${YELLOW}--update${NC}        Update default domains list"
+    echo -e "  ${YELLOW}--status${NC}        Display status"
+    echo -e "  ${YELLOW}--block${NC} DOMAIN  Add a domain to block list"
+    echo -e "  ${YELLOW}--whitelist${NC} DOMAIN Add a domain to whitelist"  # Changed from --unblock
+    echo -e "  ${YELLOW}--block-ip${NC} IP   Add an IP to block list"
+    echo -e "  ${YELLOW}--whitelist-ip${NC} IP Add an IP to whitelist"  # Changed from --unblock-ip
     echo -e "  ${YELLOW}--check-expired${NC} Check and remove expired rules"
-    echo -e "  ${YELLOW}--version${NC}    Show version"
-    echo -e "  ${YELLOW}--help${NC}       Show this help"
+    echo -e "  ${YELLOW}--version${NC}       Show version"
+    echo -e "  ${YELLOW}--help${NC}          Show this help"
     echo -e ""
     echo -e "${BOLD}Interactive Menu:${NC}"
     echo -e "  Run without arguments to access the interactive menu"
@@ -1426,15 +1383,15 @@ show_help() {
     return 0
 }
 
-# Main menu loop
+# Main menu loop - updated with new terminology
 main_menu() {
     while true; do
         show_banner
         echo -e "${CYAN}${BOLD}MAIN MENU${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         echo -e "${YELLOW}1.${NC} Run Now              ${YELLOW}2.${NC} Status"
-        echo -e "${YELLOW}3.${NC} Block Domain         ${YELLOW}4.${NC} Unblock Domain"
-        echo -e "${YELLOW}5.${NC} Block IP Address     ${YELLOW}6.${NC} Unblock IP Address"
+        echo -e "${YELLOW}3.${NC} Block Domain         ${YELLOW}4.${NC} Add Domain to Whitelist"  # Changed from Unblock Domain
+        echo -e "${YELLOW}5.${NC} Block IP Address     ${YELLOW}6.${NC} Add IP to Whitelist"  # Changed from Unblock IP
         echo -e "${YELLOW}7.${NC} Settings             ${YELLOW}8.${NC} Update Lists"
         echo -e "${YELLOW}9.${NC} Clear Rules          ${YELLOW}0.${NC} Exit"
         echo -e "${YELLOW}U.${NC} Uninstall"
@@ -1444,9 +1401,9 @@ main_menu() {
             1) clear; run_with_lock; read -rp "Press Enter to continue..." ;;
             2) display_status; read -rp "Press Enter to continue..." ;;
             3) clear; block_domain; read -rp "Press Enter to continue..." ;;
-            4) clear; unblock_domain; read -rp "Press Enter to continue..." ;;
+            4) clear; whitelist_domain; read -rp "Press Enter to continue..." ;; # Changed from unblock_domain
             5) clear; block_custom_ip; read -rp "Press Enter to continue..." ;;
-            6) clear; unblock_custom_ip; read -rp "Press Enter to continue..." ;;
+            6) clear; whitelist_custom_ip; read -rp "Press Enter to continue..." ;; # Changed from unblock_custom_ip
             7) settings_menu ;;
             8) clear; update_default; read -rp "Press Enter to continue..." ;;
             9) clear; clear_rules; read -rp "Press Enter to continue..." ;;
@@ -1457,6 +1414,7 @@ main_menu() {
     done
 }
 
+# Updated argument handling with new option names
 handle_args() {
     case "$1" in
         --run)
@@ -1478,15 +1436,15 @@ handle_args() {
             echo -e "${GREEN}Domain added to block list:${NC} $2"
             log "INFO" "Domain added via CLI: $2" "verbose"
             ;;
-        --unblock)
+        --whitelist|--unblock)  # Support both names for backward compatibility
             if [[ -z "$2" ]]; then
                 echo -e "${RED}Error: missing domain parameter${NC}"
                 show_help
                 exit 1
             fi
             echo "$2" >> "$REMOVE_FILE"
-            echo -e "${GREEN}Domain added to unblock list:${NC} $2"
-            log "INFO" "Domain unblocked via CLI: $2" "verbose"
+            echo -e "${GREEN}Domain added to whitelist:${NC} $2" # Updated terminology
+            log "INFO" "Domain added to whitelist via CLI: $2" "verbose"
             ;;
         --block-ip)
             if [[ -z "$2" ]]; then
@@ -1502,15 +1460,15 @@ handle_args() {
             echo -e "${GREEN}IP added to block list:${NC} $2"
             log "INFO" "IP added via CLI: $2" "verbose"
             ;;
-        --unblock-ip)
+        --whitelist-ip|--unblock-ip)  # Support both names for backward compatibility
             if [[ -z "$2" ]]; then
                 echo -e "${RED}Error: missing IP parameter${NC}"
                 show_help
                 exit 1
             fi
             echo "$2" >> "$IP_REMOVE_FILE"
-            echo -e "${GREEN}IP added to unblock list:${NC} $2"
-            log "INFO" "IP unblocked via CLI: $2" "verbose"
+            echo -e "${GREEN}IP added to whitelist:${NC} $2"  # Updated terminology
+            log "INFO" "IP added to whitelist via CLI: $2" "verbose"
             ;;
         --check-expired)
             check_expired_domains
@@ -1529,31 +1487,24 @@ handle_args() {
     esac
     return 0
 }
-
 # Entry point
 main() {
     # Check if running as root
     check_root
-    
     # Check for dependencies
     check_dependencies
-    
     # Ensure environment is prepared
     ensure_environment
-    
     # Initialize logging
     initialize_logging
-    
     # Handle command line arguments if provided
     if [[ $# -gt 0 ]]; then
         if handle_args "$@"; then
             exit 0
         fi
     fi
-    
     # No valid arguments provided, start interactive menu
     main_menu
 }
-
 # Execute main function with all arguments
 main "$@"
