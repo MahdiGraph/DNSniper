@@ -1,90 +1,245 @@
 #!/usr/bin/env bash
-# DNSniper Daemon - Background service
-# Version: 2.0.0
+# DNSniper Service Functions - Domain-based threat mitigation via iptables/ip6tables
+# Repository: https://github.com/MahdiGraph/DNSniper
+# Version: 2.1.0
 
-# Base paths 
-BASE_DIR="/etc/dnsniper"
-CORE_SCRIPT="$BASE_DIR/dnsniper-core.sh"
-LOG_FILE="$BASE_DIR/dnsniper.log"
-STATUS_FILE="$BASE_DIR/status.txt"
-LOCK_FILE="/var/lock/dnsniper-daemon.lock"
-
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
-    echo "Error: This script must be run as root (sudo)." >&2
+# Source the core functionality
+if [[ -f /etc/dnsniper/dnsniper-core.sh ]]; then
+    source /etc/dnsniper/dnsniper-core.sh
+else
+    echo "Error: Core DNSniper functionality not found" >&2
     exit 1
 fi
 
-# Check if another instance is already running
-if [[ -f "$LOCK_FILE" ]]; then
-    pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-    if [[ -n "$pid" ]] && ps -p "$pid" > /dev/null 2>&1; then
-        echo "DNSniper daemon is already running with PID: $pid"
-        exit 0
-    else
-        # Stale lock file, remove it
-        rm -f "$LOCK_FILE"
+# Process locking mechanism
+acquire_lock() {
+    # Try to acquire lock
+    if [[ -f "$LOCK_FILE" ]]; then
+        # Check if the process is still running
+        local pid
+        pid=$(cat "$LOCK_FILE" 2>/dev/null)
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            # Process is still running
+            log "WARNING" "Another DNSniper process is already running (PID: $pid)" "verbose"
+            return 1
+        else
+            # Stale lock file, remove it
+            rm -f "$LOCK_FILE" 2>/dev/null || true
+        fi
     fi
-fi
-
-# Create lock file
-echo $$ > "$LOCK_FILE"
-
-# Create cleanup function to remove lock file on exit
-cleanup() {
-    rm -f "$LOCK_FILE"
-    exit "${1:-0}"
-}
-
-# Set up traps for various signals
-trap 'cleanup 1' INT TERM
-trap 'cleanup 0' EXIT
-
-# Check if core script exists
-if [[ ! -f "$CORE_SCRIPT" ]]; then
-    echo "Error: Core script not found at $CORE_SCRIPT" >&2
-    echo "DNSniper may not be properly installed. Please reinstall." >&2
-    cleanup 1
-fi
-
-# Source core functions
-source "$CORE_SCRIPT"
-
-# Main daemon function
-run_daemon() {
-    # Update status
-    echo "RUNNING" > "$STATUS_FILE"
-    
-    # Initialize logging
-    init_logging
-    
-    # Log start
-    log "INFO" "DNSniper daemon started"
-    
-    # Update domains list if auto-update is enabled
-    if is_auto_update_enabled; then
-        log "INFO" "Auto-update enabled, updating domains list"
-        update_domains
-    fi
-    
-    # Check for expired domains
-    log "INFO" "Checking for expired domains"
-    check_expired_domains
-    
-    # Process domains
-    log "INFO" "Processing domains"
-    process_domains
-    
-    # Update status
-    echo "READY" > "$STATUS_FILE"
-    
-    # Log completion
-    log "INFO" "DNSniper daemon completed successfully"
-    
+    # Create lock file with current PID
+    echo $$ > "$LOCK_FILE" || return 1
+    log "INFO" "Lock acquired for process $$" "verbose"
     return 0
 }
 
-# Run the daemon
-run_daemon
+release_lock() {
+    # Only remove lock if it belongs to current process
+    local pid
+    pid=$(cat "$LOCK_FILE" 2>/dev/null)
+    if [[ "$pid" == "$$" ]]; then
+        rm -f "$LOCK_FILE" 2>/dev/null || true
+        log "INFO" "Lock released for process $$" "verbose"
+    fi
+    return 0
+}
 
-# Exit is handled by the trap
+# Create systemd service and timer
+create_systemd_service() {
+    log "INFO" "Creating systemd services for DNSniper" "verbose"
+    
+    # Create the main service
+    cat > /etc/systemd/system/dnsniper.service << EOF
+[Unit]
+Description=DNSniper Domain Threat Mitigation
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/dnsniper --run
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Create the timer
+    local schedule_minutes=$(grep '^schedule_minutes=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    if [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]]; then
+        schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
+    fi
+    
+    cat > /etc/systemd/system/dnsniper.timer << EOF
+[Unit]
+Description=Run DNSniper periodically
+Requires=dnsniper.service
+
+[Timer]
+Unit=dnsniper.service
+OnBootSec=60s
+OnUnitActiveSec=${schedule_minutes}m
+AccuracySec=60s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    # Create firewall persistence service
+    cat > /etc/systemd/system/dnsniper-firewall.service << EOF
+[Unit]
+Description=DNSniper Firewall Rules
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables-restore $RULES_V4_FILE
+ExecStart=/sbin/ip6tables-restore $RULES_V6_FILE
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # Reload systemd
+    systemctl daemon-reload &>/dev/null || true
+    
+    # Enable firewall persistence service
+    systemctl enable dnsniper-firewall.service &>/dev/null || true
+    
+    # Enable timer if scheduler is enabled
+    local scheduler_enabled=$(grep '^scheduler_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    if [[ "$scheduler_enabled" == "1" ]]; then
+        systemctl enable dnsniper.timer &>/dev/null || true
+        systemctl start dnsniper.timer &>/dev/null || true
+        log "INFO" "DNSniper scheduler enabled to run every $schedule_minutes minutes" "verbose"
+    else
+        systemctl disable dnsniper.timer &>/dev/null || true
+        systemctl stop dnsniper.timer &>/dev/null || true
+        log "INFO" "DNSniper scheduler disabled" "verbose"
+    fi
+    
+    log "INFO" "DNSniper systemd services created" "verbose"
+}
+
+# Update systemd timer settings
+update_systemd_timer() {
+    log "INFO" "Updating systemd timer settings" "verbose"
+    
+    # Get current settings
+    local schedule_minutes=$(grep '^schedule_minutes=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    if [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]]; then
+        schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
+    fi
+    
+    local scheduler_enabled=$(grep '^scheduler_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    if [[ -z "$scheduler_enabled" || ! "$scheduler_enabled" =~ ^[01]$ ]]; then
+        scheduler_enabled=$DEFAULT_SCHEDULER_ENABLED
+    fi
+    
+    # Update timer file with new interval
+    if [[ -f /etc/systemd/system/dnsniper.timer ]]; then
+        sed -i "s/OnUnitActiveSec=.*m/OnUnitActiveSec=${schedule_minutes}m/" /etc/systemd/system/dnsniper.timer
+    else
+        # If timer doesn't exist, create services
+        create_systemd_service
+        return
+    fi
+    
+    # Reload systemd
+    systemctl daemon-reload &>/dev/null || true
+    
+    # Enable or disable timer based on settings
+    if [[ "$scheduler_enabled" == "1" ]]; then
+        systemctl enable dnsniper.timer &>/dev/null || true
+        systemctl restart dnsniper.timer &>/dev/null || true
+        log "INFO" "DNSniper scheduler updated to run every $schedule_minutes minutes" "verbose"
+    else
+        systemctl disable dnsniper.timer &>/dev/null || true
+        systemctl stop dnsniper.timer &>/dev/null || true
+        log "INFO" "DNSniper scheduler disabled" "verbose"
+    fi
+}
+
+# Check systemd service and timer status
+get_service_status() {
+    local timer_status="Not installed"
+    local service_status="Not installed"
+    local firewall_status="Not installed"
+    
+    # Check timer status
+    if systemctl list-unit-files dnsniper.timer &>/dev/null; then
+        if systemctl is-enabled dnsniper.timer &>/dev/null; then
+            if systemctl is-active dnsniper.timer &>/dev/null; then
+                timer_status="${GREEN}Active ($(systemctl show -p NextElopement --value dnsniper.timer))${NC}"
+            else
+                timer_status="${RED}Disabled${NC}"
+            fi
+        else
+            timer_status="${RED}Disabled${NC}"
+        fi
+    fi
+    
+    # Check service status
+    if systemctl list-unit-files dnsniper.service &>/dev/null; then
+        if systemctl is-enabled dnsniper.service &>/dev/null; then
+            service_status="${GREEN}Enabled${NC}"
+        else
+            service_status="${YELLOW}Installed but not enabled${NC}"
+        fi
+        
+        # Check last run
+        local last_run=$(systemctl show dnsniper.service -p ActiveEnterTimestamp --value)
+        if [[ -n "$last_run" && "$last_run" != "n/a" ]]; then
+            service_status="$service_status, Last run: $last_run"
+        fi
+    fi
+    
+    # Check firewall service status
+    if systemctl list-unit-files dnsniper-firewall.service &>/dev/null; then
+        if systemctl is-enabled dnsniper-firewall.service &>/dev/null; then
+            if systemctl is-active dnsniper-firewall.service &>/dev/null; then
+                firewall_status="${GREEN}Active${NC}"
+            else
+                firewall_status="${RED}Enabled but not active${NC}"
+            fi
+        else
+            firewall_status="${RED}Disabled${NC}"
+        fi
+    fi
+    
+    # Return status info
+    echo "DNSniper Timer: $timer_status"
+    echo "DNSniper Service: $service_status"
+    echo "Firewall Service: $firewall_status"
+}
+
+# Run with process locking
+run_with_lock() {
+    if acquire_lock; then
+        # Execute command with lock
+        resolve_block
+        # Release lock when done
+        release_lock
+    else
+        log "WARNING" "Cannot acquire lock, another DNSniper process is running"
+        echo -e "${YELLOW}Warning:${NC} Another DNSniper process is running. Please wait for it to complete."
+        return 1
+    fi
+    return 0
+}
+
+# Clean up any cron jobs from previous versions
+cleanup_cron_jobs() {
+    log "INFO" "Checking for old cron jobs" "verbose"
+    if command -v crontab &>/dev/null; then
+        # Check if dnsniper is in crontab
+        if crontab -l 2>/dev/null | grep -q "$BIN_CMD"; then
+            log "INFO" "Found old cron jobs, removing them" "verbose"
+            # Remove dnsniper entries from crontab
+            (crontab -l 2>/dev/null | grep -v "$BIN_CMD") | crontab - 2>/dev/null || true
+            echo -e "${YELLOW}Removed old cron jobs from previous DNSniper version${NC}"
+        else
+            log "INFO" "No old cron jobs found" "verbose"
+        fi
+    fi
+}
