@@ -21,15 +21,13 @@ CORE_SCRIPT="$BASE_DIR/dnsniper-core.sh"
 DAEMON_SCRIPT="$BASE_DIR/dnsniper-daemon.sh"
 MAIN_SCRIPT="$BASE_DIR/dnsniper.sh"
 CONFIG_FILE="$BASE_DIR/config.conf"
-
-# تابع دریافت آخرین کامیت با پشتیبانی از حالت بدون git
+# Function to get latest commit with fallback support
 get_latest_commit() {
     if ! command -v git &>/dev/null; then
         echo -e "${YELLOW}${BOLD}Warning:${NC} Git is not installed. Using main branch instead."
         echo "main"
         return 1
     fi
-    
     local commit
     commit=$(git ls-remote https://github.com/MahdiGraph/DNSniper.git HEAD | cut -f1)
     if [[ -z "$commit" ]]; then
@@ -39,11 +37,9 @@ get_latest_commit() {
     fi
     echo "$commit"
 }
-
-# استفاده از تابع برای دریافت آخرین کامیت
+# Get latest commit
 latest_commit=$(get_latest_commit)
 github_url="https://raw.githubusercontent.com/MahdiGraph/DNSniper/${latest_commit}"
-
 # Display banner
 echo -e "${BLUE}${BOLD}"
 echo -e "    ____  _   _ ____       _                 "
@@ -375,13 +371,13 @@ echo -e "${MAGENTA}────────────────────�
 # Source daemon script to create systemd services
 bash -c "source '$DAEMON_SCRIPT' && create_systemd_service" || true
 
-# Enable and start services if scheduler is enabled
+# FIXED SECTION: Enable and start services - but don't hang waiting for startup
 if [[ "$scheduler_enabled" -eq 1 ]]; then
     echo -e "${GREEN}Enabling and starting DNSniper services...${NC}"
     
     # Enable services first (this is quick and shouldn't hang)
     systemctl enable dnsniper-firewall.service &>/dev/null || true
-    systemctl enable dnsniper.service &>/dev/null || true
+    systemctl enable dnsniper.service &>/dev/null || true 
     systemctl enable dnsniper.timer &>/dev/null || true
     
     # Start services in background to avoid hanging the installer

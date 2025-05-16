@@ -9,35 +9,35 @@ else
     echo "Error: Core DNSniper functionality not found" >&2
     exit 1
 fi
-# مکانیزم قفل‌گذاری پروسس با عملیات اتمیک
+# Atomic process locking mechanism
 acquire_lock() {
-    # استفاده از ایجاد فایل اتمیک برای کسب قفل
+    # Use atomic file creation to acquire lock
     if ( set -o noclobber; echo "$$" > "$LOCK_FILE") 2> /dev/null; then
-        # قفل با موفقیت گرفته شد
+        # Lock successfully acquired
         log "INFO" "Lock acquired for process $$" "verbose"
-        # تنظیم trap برای حذف فایل قفل هنگام خروج
+        # Set trap to remove lock file on exit
         trap 'release_lock' EXIT HUP INT QUIT TERM
         return 0
     else
-        # ناموفق در کسب قفل
+        # Failed to acquire lock
         local pid
         pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-        # بررسی فعال بودن پروسس
+        # Check if process is active
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            # پروسس هنوز در حال اجراست
+            # Process is still running
             log "WARNING" "Another DNSniper process is already running (PID: $pid)" "verbose"
             return 1
         else
-            # فایل قفل قدیمی، حذف و تلاش مجدد
+            # Stale lock file, remove and retry
             rm -f "$LOCK_FILE" 2>/dev/null || true
             if ( set -o noclobber; echo "$$" > "$LOCK_FILE") 2> /dev/null; then
-                # قفل در تلاش دوم با موفقیت گرفته شد
+                # Lock acquired on second attempt
                 log "INFO" "Lock acquired for process $$ (after removing stale lock)" "verbose"
-                # تنظیم trap برای حذف فایل قفل هنگام خروج
+                # Set trap to remove lock file on exit
                 trap 'release_lock' EXIT HUP INT QUIT TERM
                 return 0
             else
-                # همچنان ناموفق در کسب قفل
+                # Still failed to acquire lock
                 log "WARNING" "Failed to acquire lock after removing stale lock file" "verbose"
                 return 1
             fi
@@ -45,13 +45,13 @@ acquire_lock() {
     fi
 }
 release_lock() {
-    # حذف قفل فقط اگر متعلق به پروسس فعلی باشد
+    # Only remove lock if it belongs to current process
     local pid
     pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
     if [[ "$pid" == "$$" ]]; then
         rm -f "$LOCK_FILE" 2>/dev/null || true
         log "INFO" "Lock released for process $$" "verbose"
-        # حذف trap
+        # Remove trap
         trap - EXIT HUP INT QUIT TERM
     fi
     return 0

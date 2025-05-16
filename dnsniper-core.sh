@@ -39,14 +39,12 @@ IPSET4="dnsniper-ipv4"
 IPSET6="dnsniper-ipv6"
 # Logging state
 LOGGING_ENABLED=0
-
-# تابع دریافت آخرین کامیت با پشتیبانی از حالت بدون git
+# Function to get latest commit with fallback support
 get_latest_commit() {
     if ! command -v git &>/dev/null; then
         echo "main"
         return 1
     fi
-    
     local commit
     commit=$(git ls-remote https://github.com/MahdiGraph/DNSniper.git HEAD | cut -f1)
     if [[ -z "$commit" ]]; then
@@ -55,10 +53,8 @@ get_latest_commit() {
     fi
     echo "$commit"
 }
-
-# استفاده از تابع برای دریافت آخرین کامیت
+# Get latest commit
 latest_commit=$(get_latest_commit)
-
 # Defaults
 DEFAULT_SCHEDULER_ENABLED=1
 DEFAULT_SCHEDULE_MINUTES=60
@@ -78,7 +74,6 @@ IPT6_CHAIN="DNSniper6"
 VERSION="2.1.1"
 # Dependencies
 DEPENDENCIES=(iptables ip6tables curl dig)
-
 # Helper functions
 log() {
     local level="$1" message="$2" verbose="${3:-}"
@@ -91,11 +86,10 @@ log() {
         echo -e "${RED}Error:${NC} $message" >&2
     elif [[ "$level" == "WARNING" ]]; then
         echo -e "${YELLOW}Warning:${NC} $message" >&2
-    elif [[ "$level" == "INFO" && "$verbose" == "verbose" ]]; then
+    elif [[ "$level" "INFO" && "$verbose" "verbose" ]]; then
         echo -e "${BLUE}Info:${NC} $message"
     fi
 }
-
 # Initialize logging state
 initialize_logging() {
     # Read from config file
@@ -106,28 +100,25 @@ initialize_logging() {
         LOGGING_ENABLED=0
     fi
 }
-
 # Enhanced echo with error checking
 echo_safe() {
     echo -e "$1"
 }
-
-# تشخیص بهبود یافته IPv6
+# Enhanced IPv6 detection
 is_ipv6() {
     local ip="$1"
-    # الگوی تطبیق IPv6 دقیق‌تر
-    [[ "$ip" =~ ^([0-9a-fA-F]{1,4}:){1,7}([0-9a-fA-F]{1,4}|:)$ ]] || 
+    # More precise IPv6 matching pattern
+    [[ "$ip" =~ ^([0-9a-fA-F]{1,4}:){1,7}([0-9a-fA-F]{1,4}|:)$ ]] ||
     [[ "$ip" =~ ^::([0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}$ ]] ||
     [[ "$ip" =~ ^([0-9a-fA-F]{1,4}:){0,6}::[0-9a-fA-F]{1,4}$ ]] ||
     [[ "$ip" =~ ^([0-9a-fA-F]{1,4}:){0,6}::$ ]]
 }
-
-# اعتبارسنجی بهبود یافته IPv4
+# Enhanced IPv4 validation
 is_valid_ipv4() {
     local ip="$1"
-    # الگوی regex قوی‌تر
+    # Stronger regex pattern
     if [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]]; then
-        # بررسی هر بخش
+        # Check each section
         for i in {1..4}; do
             if [[ ${BASH_REMATCH[$i]} -gt 255 ]]; then
                 return 1
@@ -137,14 +128,12 @@ is_valid_ipv4() {
     fi
     return 1
 }
-
 # Validate domain
 is_valid_domain() {
     local domain="$1"
     # Basic domain name validation
     [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]
 }
-
 # Check if an IP is critical (system IP, private network, etc.)
 is_critical_ip() {
     local ip="$1"
@@ -168,14 +157,12 @@ is_critical_ip() {
     fi
     return 1
 }
-
 # Exit with error message
 exit_with_error() {
     log "ERROR" "$1"
     echo -e "${RED}Error:${NC} $1" >&2
     exit "${2:-1}"
 }
-
 # Detect persistence mechanism and OS type
 detect_system() {
     # Detect OS family with more comprehensive checks
@@ -216,17 +203,16 @@ detect_system() {
         echo "unknown"
     fi
 }
-
 # Make iptables rules persistent based on system type
 make_rules_persistent() {
     local os_type=$(detect_system)
     # Create necessary directories based on OS type
-    if [[ "$os_type" == "debian" || "$os_type" == "ubuntu" ]]; then
+    if [[ "$os_type" "debian" || "$os_type" "ubuntu" ]]; then
         mkdir -p /etc/iptables/ 2>/dev/null || true
         iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
         ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
         chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
-    elif [[ "$os_type" == "centos" || "$os_type" == "rhel" || "$os_type" == "redhat" ]]; then
+    elif [[ "$os_type" "centos" || "$os_type" "rhel" || "$os_type" == "redhat" ]]; then
         # CentOS/RHEL uses /etc/sysconfig
         if [[ -d /etc/sysconfig ]]; then
             iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
@@ -248,7 +234,6 @@ make_rules_persistent() {
         ipset save > /etc/ipset.conf 2>/dev/null || true
     fi
 }
-
 # Initialize iptables chains
 initialize_chains() {
     # Create IPv4 chain if it doesn't exist
@@ -277,16 +262,13 @@ initialize_chains() {
     # Make the rules persistent
     make_rules_persistent
 }
-
 # Prepare environment: dirs, files
 ensure_environment() {
     # Create base directories if they don't exist
     mkdir -p "$BASE_DIR" "$HISTORY_DIR" "$DATA_DIR" 2>/dev/null || true
-    
     # Create empty files if they don't exist
     touch "$DEFAULT_FILE" "$ADD_FILE" "$REMOVE_FILE" "$IP_ADD_FILE" "$IP_REMOVE_FILE" 2>/dev/null || true
     touch "$CDN_DOMAINS_FILE" "$EXPIRED_DOMAINS_FILE" 2>/dev/null || true
-    
     # Create config file with defaults if it doesn't exist
     if [[ ! -f "$CONFIG_FILE" ]]; then
         cat > "$CONFIG_FILE" << EOF
@@ -304,35 +286,29 @@ block_destination=$DEFAULT_BLOCK_DESTINATION
 logging_enabled=$DEFAULT_LOGGING_ENABLED
 EOF
     fi
-    
     # Check for required commands
     for cmd in ${DEPENDENCIES[@]}; do
         if ! command -v $cmd >/dev/null 2>&1; then
             echo "Warning: $cmd is not installed. Some features may not work." >&2
         fi
     done
-    
     # Initialize iptables chains
     initialize_chains
-    
     # Initialize ipset if available
     if command -v ipset >/dev/null 2>&1; then
         ipset create "$IPSET4" hash:ip family inet -exist 2>/dev/null || true
         ipset create "$IPSET6" hash:ip family inet6 -exist 2>/dev/null || true
     fi
-    
     # Initialize logging
     initialize_logging
     return 0
 }
-
 # Check privileges
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         exit_with_error "Must run as root (sudo)."
     fi
 }
-
 # Check dependencies
 check_dependencies() {
     local missing=()
@@ -345,19 +321,16 @@ check_dependencies() {
         exit_with_error "Missing dependencies: ${missing[*]}\nPlease install them using your system's package manager."
     fi
 }
-
-# دانلود امن با تأیید HTTPS
+# Secure download with HTTPS verification
 secure_download() {
     local url="$1" output_file="$2" timeout="$3"
     log "INFO" "Downloading from $url to $output_file with timeout $timeout" "verbose"
-    
-    # استفاده از curl با تأیید SSL سختگیرانه
+    # Use curl with strict SSL validation
     if curl -sfL --connect-timeout "$timeout" --max-time "$timeout" \
             --proto '=https' --tlsv1.2 \
             --ssl-reqd --no-keepalive \
             "$url" -o "$output_file.tmp"; then
-        
-        # تأیید موفقیت دانلود و خالی نبودن فایل
+        # Verify download success and non-empty file
         if [[ -s "$output_file.tmp" ]]; then
             mv "$output_file.tmp" "$output_file"
             return 0
@@ -372,7 +345,6 @@ secure_download() {
         return 1
     fi
 }
-
 # Fetch default domains list - updated with secure download
 update_default() {
     log "INFO" "Updating default domains list" "verbose"
@@ -385,7 +357,6 @@ update_default() {
         timeout="$DEFAULT_TIMEOUT"
     fi
     echo_safe "${BLUE}Fetching default domains from $update_url...${NC}"
-    
     # Keep track of domains that were in the default list but are removed now
     local expire_enabled=$(grep '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ "$expire_enabled" == "1" ]]; then
@@ -400,7 +371,6 @@ update_default() {
             done < "$DEFAULT_FILE"
         fi
     fi
-    
     # Use secure download function
     if secure_download "$update_url" "$DEFAULT_FILE.tmp" "$timeout"; then
         # Move tmp file to final destination
@@ -410,7 +380,6 @@ update_default() {
             echo_safe "${RED}Failed to update default domains file${NC}"
             return 1
         fi
-        
         # Process expired domains if feature is enabled
         if [[ "$expire_enabled" == "1" ]]; then
             # Get new default domains
@@ -421,7 +390,6 @@ update_default() {
                 [[ -z "$d" ]] && continue
                 new_domains+=("$d")
             done < "$DEFAULT_FILE"
-            
             # Find domains that were in old list but not in new list
             for old_dom in "${old_domains[@]}"; do
                 local found=0
@@ -439,7 +407,6 @@ update_default() {
                 fi
             done
         fi
-        
         log "INFO" "Default domains successfully updated" "verbose"
         echo_safe "${GREEN}Default domains successfully updated${NC}"
     else
@@ -449,25 +416,21 @@ update_default() {
     fi
     return 0
 }
-
-# تابع بهبود یافته resolve_domain با مدیریت خطای بهتر
+# Enhanced resolve_domain with better error handling
 resolve_domain() {
     local domain="$1" timeout="$2" max_retries="3"
     local v4=() v6=() retry=0 success=0
-    
     log "INFO" "Resolving domain: $domain" "verbose"
-    
-    # تلاش حداکثر max_retries بار
+    # Try up to max_retries times
     while [[ $retry -lt $max_retries && $success -eq 0 ]]; do
-        # یافتن آدرس‌های IPv4 با تایم‌اوت و بررسی خطا
+        # Find IPv4 addresses with timeout and error checking
         local v4_result
         v4_result=$(dig +short +time="$timeout" +tries=2 +retry=1 A "$domain" 2>&1) || true
         local dig_status=$?
-        
         if [[ $dig_status -eq 0 && -n "$v4_result" && ! "$v4_result" =~ "connection timed out" && ! "$v4_result" =~ "server failed" ]]; then
-            # یافتن موفقیت‌آمیز
+            # Successful lookup
             mapfile -t v4_tmp <<< "$v4_result"
-            # فیلتر آی‌پی‌های معتبر
+            # Filter valid IPs
             for ip in "${v4_tmp[@]}"; do
                 if is_valid_ipv4 "$ip"; then
                     v4+=("$ip")
@@ -477,16 +440,14 @@ resolve_domain() {
         else
             log "WARNING" "IPv4 resolution attempt $((retry+1)) failed for domain: $domain" "verbose"
         fi
-        
-        # یافتن آدرس‌های IPv6 با تایم‌اوت و بررسی خطا
+        # Find IPv6 addresses with timeout and error checking
         local v6_result
         v6_result=$(dig +short +time="$timeout" +tries=2 +retry=1 AAAA "$domain" 2>&1) || true
         dig_status=$?
-        
         if [[ $dig_status -eq 0 && -n "$v6_result" && ! "$v6_result" =~ "connection timed out" && ! "$v6_result" =~ "server failed" ]]; then
-            # یافتن موفقیت‌آمیز
+            # Successful lookup
             mapfile -t v6_tmp <<< "$v6_result"
-            # فیلتر آی‌پی‌های معتبر
+            # Filter valid IPs
             for ip in "${v6_tmp[@]}"; do
                 if is_ipv6 "$ip"; then
                     v6+=("$ip")
@@ -496,8 +457,7 @@ resolve_domain() {
         else
             log "WARNING" "IPv6 resolution attempt $((retry+1)) failed for domain: $domain" "verbose"
         fi
-        
-        # اگر هنوز موفقیت‌آمیز نبوده، شمارنده تلاش را افزایش و قبل از تلاش بعدی صبر کن
+        # If still not successful, increment retry counter and wait before retrying
         if [[ $success -eq 0 ]]; then
             retry=$((retry + 1))
             if [[ $retry -lt $max_retries ]]; then
@@ -506,14 +466,12 @@ resolve_domain() {
             fi
         fi
     done
-    
-    # ترکیب و حذف موارد تکراری
+    # Combine and deduplicate
     local all=("${v4[@]}" "${v6[@]}")
     local unique=()
-    
     for ip in "${all[@]}"; do
         [[ -z "$ip" ]] && continue
-        # بررسی وجود در آرایه unique
+        # Check if already in unique array
         local found=0
         for u in "${unique[@]}"; do
             if [[ "$u" == "$ip" ]]; then
@@ -523,8 +481,7 @@ resolve_domain() {
         done
         [[ $found -eq 0 ]] && unique+=("$ip")
     done
-    
-    # برگرداندن لیست آی‌پی‌های منحصر بفرد
+    # Return the list of unique IPs
     if [[ ${#unique[@]} -gt 0 ]]; then
         printf "%s\n" "${unique[@]}"
         return 0
@@ -533,7 +490,6 @@ resolve_domain() {
         return 1
     fi
 }
-
 # Check for expired domains and remove their rules
 check_expired_domains() {
     # Check if domain expiration is enabled
@@ -541,35 +497,28 @@ check_expired_domains() {
     if [[ "$expire_enabled" != "1" ]]; then
         return 0
     fi
-    
     log "INFO" "Checking for expired domains" "verbose"
-    
     # Get schedule to determine update frequency
     local schedule_minutes=$(grep '^schedule_minutes=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]]; then
         schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
     fi
-    
     # Get expiration multiplier
     local expire_multiplier=$(grep '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$expire_multiplier" || ! "$expire_multiplier" =~ ^[0-9]+$ ]]; then
         expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
     fi
-    
     # Calculate expiration time in seconds
-    local expire_seconds=$((schedule_minutes * expire_multiplier * 60))
+    local expire_seconds=$((schedule_minutes _expire_multiplier_ 60))
     local current_time=$(date +%s)
-    
     # Create temp files
     local temp_expired=$(mktemp)
     local temp_keep=$(mktemp)
-    
     # Process the expired domains file
     if [[ -f "$EXPIRED_DOMAINS_FILE" ]]; then
         while IFS=, read -r domain timestamp source || [[ -n "$domain" ]]; do
             # Skip comments and empty lines
             [[ -z "$domain" || "$domain" =~ ^[[:space:]]*# ]] && continue
-            
             # Check if the domain has expired
             local expiry_time=$((timestamp + expire_seconds))
             if [[ $current_time -gt $expiry_time && "$source" == "default" ]]; then
@@ -580,13 +529,11 @@ check_expired_domains() {
                 echo "$domain,$timestamp,$source" >> "$temp_keep"
             fi
         done < "$EXPIRED_DOMAINS_FILE"
-        
         # Process expired domains
         if [[ -s "$temp_expired" ]]; then
             echo_safe "${YELLOW}Found expired domains to clean up...${NC}"
             while IFS= read -r domain; do
                 echo_safe "${YELLOW}Removing expired domain:${NC} $domain"
-                
                 # Get IPs associated with this domain from history file
                 local domain_history_file="$HISTORY_DIR/${domain//\//_}.txt"
                 if [[ -f "$domain_history_file" ]]; then
@@ -596,7 +543,6 @@ check_expired_domains() {
                         # Format is: timestamp,ip1,ip2,...
                         local ips=${latest_entry#*,}  # Remove timestamp
                         IFS=',' read -ra ip_list <<< "$ips"
-                        
                         # Unblock each IP
                         for ip in "${ip_list[@]}"; do
                             if whitelist_ip "$ip" "DNSniper: $domain"; then
@@ -605,27 +551,21 @@ check_expired_domains() {
                         done
                     fi
                 fi
-                
                 # If domain was manually added to remove list, honor that
                 if ! grep -Fxq "$domain" "$REMOVE_FILE" 2>/dev/null; then
                     echo "$domain" >> "$REMOVE_FILE"
                 fi
-                
                 log "INFO" "Removed expired domain: $domain" "verbose"
             done < "$temp_expired"
-            
             # Make rules persistent
             make_rules_persistent
         fi
-        
         # Replace the expired domains file with the updated version
         mv "$temp_keep" "$EXPIRED_DOMAINS_FILE"
     fi
-    
     # Clean up
     rm -f "$temp_expired" "$temp_keep" 2>/dev/null || true
 }
-
 # Merge default + added, minus removed domains
 # Performance optimized version of merge_domains
 merge_domains() {
@@ -661,7 +601,6 @@ merge_domains() {
     # Clean up
     rm -f "$tmpfile"
 }
-
 # Get list of custom IPs to block
 get_custom_ips() {
     log "INFO" "Getting custom IP list"
@@ -699,42 +638,32 @@ get_custom_ips() {
     # Clean up
     rm -f "$tmpfile"
 }
-
 # Record history for a domain and trim old entries
 record_history() {
     local domain="$1" ips_csv="$2"
-    
     log "INFO" "Recording history for domain: $domain with IPs: $ips_csv" "verbose"
-    
     # Sanitize domain name for filename
-    local safe_domain="${domain//\//_}" 
+    local safe_domain="${domain//\//_}"
     local history_file="$HISTORY_DIR/${safe_domain}.txt"
     local max_ips=$(grep '^max_ips=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-    
     # Validate max_ips
     if [[ -z "$max_ips" || ! "$max_ips" =~ ^[0-9]+$ ]]; then
         log "WARNING" "Invalid max_ips value, using default: $DEFAULT_MAX_IPS"
         max_ips=$DEFAULT_MAX_IPS
     fi
-    
     # Current timestamp
     local timestamp=$(date +%s)
-    
     # Create a temporary file
     local tmpfile=$(mktemp)
-    
     # Write new entry as first line
     echo "$timestamp,$ips_csv" > "$tmpfile"
-    
     # Append existing entries if file exists
     if [[ -f "$history_file" ]]; then
         # Only keep up to max_ips-1 previous entries
         head -n $((max_ips - 1)) "$history_file" >> "$tmpfile"
     fi
-    
     # Move tmp file to history file
     mv "$tmpfile" "$history_file"
-    
     # Check if successful
     if [[ $? -eq 0 ]]; then
         return 0
@@ -744,13 +673,11 @@ record_history() {
         return 1
     fi
 }
-
 # Get domain's most recent IPs
 get_domain_ips() {
     local domain="$1"
     local safe_domain="${domain//\//_}"
     local history_file="$HISTORY_DIR/${safe_domain}.txt"
-    
     if [[ -f "$history_file" && -s "$history_file" ]]; then
         # Get first line (most recent) and extract IPs
         local line=$(head -n 1 "$history_file" 2>/dev/null)
@@ -760,26 +687,22 @@ get_domain_ips() {
             return 0
         fi
     fi
-    
     # No history found
     echo ""
     return 1
 }
-
-# تشخیص بهبود یافته CDN با گزارش‌دهی بهتر
+# Enhanced CDN detection with better reporting
 detect_cdn() {
-    # دریافت دامنه‌ها از آرگومان‌ها
+    # Get domains from arguments
     local domains=("$@")
     if [[ ${#domains[@]} -eq 0 ]]; then
         return 0
     fi
     local cdn_domains=()
     log "INFO" "Detecting CDN usage for ${#domains[@]} domains" "verbose"
-    
     # Create temporary files
     local temp_cdn=$(mktemp)
     local current_time=$(date +%s)
-    
     # Load known CDNs
     if [[ -f "$CDN_DOMAINS_FILE" ]]; then
         local known_cdns=()
@@ -788,19 +711,16 @@ detect_cdn() {
             known_cdns+=("$domain")
         done < "$CDN_DOMAINS_FILE"
     fi
-    
-    # پردازش دامنه‌ها در دسته‌های کوچکتر برای کارایی بهتر
+    # Process domains in smaller batches for better performance
     local batch_size=50
     local total_domains=${#domains[@]}
     for ((i=0; i<total_domains; i+=batch_size)); do
         local end=$((i + batch_size))
         [[ $end -gt $total_domains ]] && end=$total_domains
-        
-        # پردازش این دسته
+        # Process this batch
         for ((j=i; j<end; j++)); do
             local dom="${domains[j]}"
             local safe_dom="${dom//\//_}"
-            
             # Check if already known as CDN
             local is_known_cdn=0
             for known in "${known_cdns[@]}"; do
@@ -809,41 +729,33 @@ detect_cdn() {
                     break
                 fi
             done
-            
             if [[ $is_known_cdn -eq 1 ]]; then
                 cdn_domains+=("$dom")
                 continue
             fi
-            
             # Check history file for IP changes
             local history_file="$HISTORY_DIR/${safe_dom}.txt"
             if [[ ! -f "$history_file" ]]; then
                 continue
             fi
-            
             # We need at least 2 entries to compare
             local line_count=$(wc -l < "$history_file" 2>/dev/null || echo "0")
             if [[ $line_count -lt 2 ]]; then
                 continue
             fi
-            
             # Get the last two entries
             local entries=($(head -n 2 "$history_file"))
             local last="${entries[0]}"
             local prev="${entries[1]}"
-            
             # Extract IPs from each entry
             local last_ips=(${last#*,}) # Remove timestamp
             local prev_ips=(${prev#*,}) # Remove timestamp
-            
             # Count IPs
             IFS=',' read -ra last_ips_array <<< "${last#*,}"
             IFS=',' read -ra prev_ips_array <<< "${prev#*,}"
-            
             # Calculate overlap/change
-            local common=0 
+            local common=0
             local total=$((${#last_ips_array[@]} + ${#prev_ips_array[@]}))
-            
             for last_ip in "${last_ips_array[@]}"; do
                 for prev_ip in "${prev_ips_array[@]}"; do
                     if [[ "$last_ip" == "$prev_ip" ]]; then
@@ -852,13 +764,11 @@ detect_cdn() {
                     fi
                 done
             done
-            
             # Calculate change percentage
             local change_pct=0
             if [[ $total -gt 0 ]]; then
                 change_pct=$(( (100 * (total - common)) / total ))
             fi
-            
             # If significant change, mark as CDN
             if [[ $change_pct -gt 30 ]]; then
                 cdn_domains+=("$dom")
@@ -866,58 +776,50 @@ detect_cdn() {
             fi
         done
     done
-    
     # Merge with existing CDN domains file
     if [[ -f "$CDN_DOMAINS_FILE" ]]; then
         cat "$CDN_DOMAINS_FILE" >> "$temp_cdn"
     fi
-    
     # Sort and remove duplicates
     if [[ -s "$temp_cdn" ]]; then
         sort -u "$temp_cdn" > "$CDN_DOMAINS_FILE"
     fi
-    
     # Clean up
     rm -f "$temp_cdn"
-    
     if [[ ${#cdn_domains[@]} -gt 0 ]]; then
-        echo_safe "${YELLOW}${BOLD}[!] دامنه‌های احتمالی استفاده‌کننده از CDN:${NC}"
-        echo_safe "${YELLOW}این دامنه‌ها مرتباً آدرس IP خود را تغییر می‌دهند که می‌تواند نشانگر استفاده از CDN باشد.${NC}"
-        echo_safe "${YELLOW}پیشنهاد می‌شود آنها را به لیست سفید اضافه کنید تا از مسدودسازی غیرضروری جلوگیری شود.${NC}"
+        echo_safe "${YELLOW}${BOLD}[!] Potential CDN domains detected:${NC}"
+        echo_safe "${YELLOW}These domains frequently change their IP addresses, which may indicate CDN usage.${NC}"
+        echo_safe "${YELLOW}Consider adding them to the whitelist to prevent unnecessary blocking.${NC}"
         echo_safe ""
-        
-        # نمایش هشدارها در قالبی خواناتر برای لیست‌های بزرگ
+        # Display warnings in a more readable format for large lists
         if [[ ${#cdn_domains[@]} -le 10 ]]; then
-            # نمایش همه اگر 10 یا کمتر باشد
+            # Show all if 10 or fewer
             for dom in "${cdn_domains[@]}"; do
                 echo_safe "${YELLOW}- $dom${NC}"
             done
         else
-            # نمایش 10 مورد اول با تعداد اگر بیش از 10 باشد
+            # Show first 10 with count if more than 10
             for ((i=0; i<10; i++)); do
                 echo_safe "${YELLOW}- ${cdn_domains[i]}${NC}"
             done
-            echo_safe "${YELLOW}...و $((${#cdn_domains[@]} - 10)) مورد دیگر${NC}"
+            echo_safe "${YELLOW}...and $((${#cdn_domains[@]} - 10)) more${NC}"
         fi
         log "WARNING" "Potential CDN domains detected: ${cdn_domains[*]}"
-        
-        # پیشنهاد افزودن این دامنه‌ها به لیست سفید
-        if [[ -t 1 ]]; then  # فقط اگر در ترمینال تعاملی باشیم
+        # Suggest adding these domains to whitelist
+        if [[ -t 1 ]]; then  # Only if in interactive terminal
             echo_safe ""
-            read -rp "آیا می‌خواهید این دامنه‌ها را به لیست سفید اضافه کنید؟ [y/N]: " whitelist_cdn
+            read -rp "Do you want to add these domains to the whitelist? [y/N]: " whitelist_cdn
             if [[ "$whitelist_cdn" =~ ^[Yy] ]]; then
                 for dom in "${cdn_domains[@]}"; do
                     echo "$dom" >> "$REMOVE_FILE"
-                    echo_safe "${GREEN}به لیست سفید اضافه شد:${NC} $dom"
+                    echo_safe "${GREEN}Added to whitelist:${NC} $dom"
                     log "INFO" "Added CDN domain to whitelist: $dom" "verbose"
                 done
             fi
         fi
     fi
-    
     return 0
 }
-
 # Block a specific IP with iptables/ip6tables
 block_ip() {
     local ip="$1" comment="$2"
@@ -957,7 +859,6 @@ block_ip() {
     fi
     return $((1 - rules_added))
 }
-
 # Whitelist a specific IP (renamed from unblock_ip for clarity)
 whitelist_ip() {
     local ip="$1" comment_pattern="$2"
@@ -995,7 +896,6 @@ whitelist_ip() {
     fi
     return $((1 - success))
 }
-
 # Count actual blocked IPs (not just rules)
 count_blocked_ips() {
     local v4_rules v6_rules
@@ -1007,30 +907,24 @@ count_blocked_ips() {
     # Return total
     echo $((v4_rules + v6_rules))
 }
-
 # Check if a domain has active IP blocks
 has_active_blocks() {
     local domain="$1"
     local safe_domain="${domain//\//_}"
     local history_file="$HISTORY_DIR/${safe_domain}.txt"
-    
     # First check if domain exists in history
     if [[ ! -f "$history_file" || ! -s "$history_file" ]]; then
         return 1  # No records found
     fi
-    
     # Get the most recent IPs for this domain
     local line=$(head -n 1 "$history_file")
     local ips=${line#*,}  # Remove timestamp
-    
     if [[ -z "$ips" ]]; then
         return 1  # No IPs found
     fi
-    
     # Convert CSV to array
     local ip_list=()
     IFS=',' read -ra ip_list <<< "$ips"
-    
     # Check if any IP is actively blocked
     for ip in "${ip_list[@]}"; do
         local blocked=0
@@ -1044,10 +938,8 @@ has_active_blocks() {
             return 0  # At least one IP is actively blocked
         fi
     done
-    
     return 1  # No active blocks found
 }
-
 # Resolve domains and apply iptables/ip6tables rules - Updated with improved DNS resolution
 resolve_block() {
     log "INFO" "Starting domain resolution and blocking" "verbose"
@@ -1060,18 +952,14 @@ resolve_block() {
         echo_safe "${BLUE}Auto-updating domain lists...${NC}"
         update_default
     fi
-    
     # Check for expired domains
     check_expired_domains
-    
     echo_safe "${BLUE}Resolving domains...${NC}"
-    
     # Get domains
     local domains=()
     # Using temp file approach for better performance with large domain lists
     local tmpdomains=$(mktemp)
     merge_domains > "$tmpdomains"
-    
     # Count domains
     local total=$(wc -l < "$tmpdomains")
     if [[ $total -eq 0 ]]; then
@@ -1080,55 +968,43 @@ resolve_block() {
         rm -f "$tmpdomains"
     else
         echo_safe "${BLUE}Processing ${total} domains...${NC}"
-        
         # Get timeout from settings
         local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
         if [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]]; then
             log "WARNING" "Invalid timeout value, using default: $DEFAULT_TIMEOUT"
             timeout=$DEFAULT_TIMEOUT
         fi
-        
         local success_count=0
         local ip_count=0
-        
         # Process domains in batches for better performance
         local batch_size=50
         local progress=0
-        
         while IFS= read -r dom || [[ -n "$dom" ]]; do
             progress=$((progress + 1))
-            
             # Show progress for large domain lists
             if [[ $total -gt 100 && $((progress % 10)) -eq 0 ]]; then
                 echo_safe "${BLUE}Progress: $progress/$total domains ($(( (progress * 100) / total ))%)${NC}"
             fi
-            
             # Skip invalid domains
             if ! is_valid_domain "$dom"; then
                 log "WARNING" "Invalid domain format, skipping: $dom"
                 continue
             fi
-            
             log "INFO" "Processing domain: $dom" "verbose"
-            
             # Use improved resolve_domain function
             local unique=()
             mapfile -t unique < <(resolve_domain "$dom" "$timeout")
-            
             # If no valid IPs found
             if [[ ${#unique[@]} -eq 0 ]]; then
                 log "WARNING" "No valid IP addresses found for domain: $dom" "verbose"
                 continue
             fi
-            
             # Convert array to CSV for storage
             local ips_csv=$(IFS=,; echo "${unique[*]}")
-            
             # Record in history
             if record_history "$dom" "$ips_csv"; then
                 success_count=$((success_count + 1))
             fi
-            
             # Block each IP
             for ip in "${unique[@]}"; do
                 # Skip critical IPs
@@ -1136,7 +1012,6 @@ resolve_block() {
                     log "WARNING" "Skipping critical IP: $ip for domain $dom" "verbose"
                     continue
                 fi
-                
                 if block_ip "$ip" "DNSniper: $dom"; then
                     log "INFO" "Successfully blocked IP: $ip for domain: $dom"
                     ip_count=$((ip_count + 1))
@@ -1144,19 +1019,15 @@ resolve_block() {
                     log "ERROR" "Error blocking IP: $ip for domain: $dom"
                 fi
             done
-            
             # Periodically make rules persistent for large domain lists
             if [[ $total -gt 100 && $((progress % 50)) -eq 0 ]]; then
                 make_rules_persistent
             fi
         done < "$tmpdomains"
-        
         # Clean up
         rm -f "$tmpdomains"
-        
         echo_safe "${GREEN}Domain resolution complete. $success_count/$total domains processed, $ip_count new IPs blocked.${NC}"
         log "INFO" "Domain resolution complete. $success_count/$total domains processed, $ip_count new IPs blocked." "verbose"
-        
         # Run CDN detection only for interactive mode or if explicitly requested
         if [[ -t 1 || "$1" == "force-cdn-check" ]]; then
             # Get list of domains again for CDN detection
@@ -1164,48 +1035,39 @@ resolve_block() {
             detect_cdn "${domains[@]}"
         fi
     fi
-    
     # Also block custom IPs
     local custom_ips=()
     local tmpcustomips=$(mktemp)
     get_custom_ips > "$tmpcustomips"
     local custom_total=$(wc -l < "$tmpcustomips")
-    
     if [[ $custom_total -gt 0 ]]; then
         echo_safe "${BLUE}Processing ${custom_total} custom IPs...${NC}"
         local custom_blocked=0
-        
         while IFS= read -r ip || [[ -n "$ip" ]]; do
             # Skip critical IPs
             if is_critical_ip "$ip"; then
                 log "WARNING" "Skipping critical IP: $ip" "verbose"
                 continue
             fi
-            
             if block_ip "$ip" "DNSniper: custom"; then
                 log "INFO" "Successfully blocked custom IP: $ip"
                 custom_blocked=$((custom_blocked + 1))
             else
                 log "ERROR" "Error blocking custom IP: $ip"
             fi
-            
             # Periodically make rules persistent for large IP lists
             if [[ $custom_total -gt 100 && $((custom_blocked % 50)) -eq 0 ]]; then
                 make_rules_persistent
             fi
         done < "$tmpcustomips"
-        
         # Clean up
         rm -f "$tmpcustomips"
-        
         echo_safe "${GREEN}Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked.${NC}"
         log "INFO" "Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked." "verbose"
     else
         rm -f "$tmpcustomips"
     fi
-    
     # Make sure the rules are persistent
     make_rules_persistent
-    
     return 0
 }
