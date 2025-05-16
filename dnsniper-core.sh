@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper Core Functions - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 2.1.1
+# Version: 2.1.2
 # Strict error handling mode
 set -o errexit
 set -o pipefail
@@ -27,6 +27,9 @@ IP_REMOVE_FILE="$BASE_DIR/ips-remove.txt"
 CONFIG_FILE="$BASE_DIR/config.conf"
 HISTORY_DIR="$BASE_DIR/history"
 DATA_DIR="$BASE_DIR/data"
+STATUS_DIR="$BASE_DIR/status"
+STATUS_FILE="$STATUS_DIR/status.json"
+PROGRESS_FILE="$STATUS_DIR/progress.txt"
 CDN_DOMAINS_FILE="$DATA_DIR/cdn_domains.txt"
 EXPIRED_DOMAINS_FILE="$DATA_DIR/expired_domains.txt"
 RULES_V4_FILE="$BASE_DIR/iptables.rules"
@@ -39,6 +42,8 @@ IPSET4="dnsniper-ipv4"
 IPSET6="dnsniper-ipv6"
 # Logging state
 LOGGING_ENABLED=0
+# Status tracking state
+STATUS_ENABLED=1
 # Function to get latest commit with fallback support
 get_latest_commit() {
     if ! command -v git &>/dev/null; then
@@ -67,11 +72,12 @@ DEFAULT_EXPIRE_MULTIPLIER=5
 DEFAULT_BLOCK_SOURCE=1
 DEFAULT_BLOCK_DESTINATION=1
 DEFAULT_LOGGING_ENABLED=0
+DEFAULT_STATUS_ENABLED=1
 # Chain names
 IPT_CHAIN="DNSniper"
 IPT6_CHAIN="DNSniper6"
 # Version
-VERSION="2.1.1"
+VERSION="2.1.2"
 # Dependencies
 DEPENDENCIES=(iptables ip6tables curl dig)
 # Helper functions
@@ -98,6 +104,63 @@ initialize_logging() {
         LOGGING_ENABLED=1
     else
         LOGGING_ENABLED=0
+    fi
+}
+# Initialize status tracking
+initialize_status_tracking() {
+    # Create status directory if it doesn't exist
+    mkdir -p "$STATUS_DIR" 2>/dev/null || true
+    
+    # Read from config file
+    local status_setting=$(grep '^status_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    if [[ "$status_setting" == "0" ]]; then
+        STATUS_ENABLED=0
+    else
+        STATUS_ENABLED=1
+    fi
+    
+    # Initialize status file if it doesn't exist
+    if [[ $STATUS_ENABLED -eq 1 && ! -f "$STATUS_FILE" ]]; then
+        update_status "idle" "System initialized" "0" "0"
+    fi
+}
+# Update status file
+update_status() {
+    # Only update if status tracking is enabled
+    if [[ $STATUS_ENABLED -eq 0 ]]; then
+        return 0
+    fi
+    
+    local status="$1"     # running, idle, error, etc.
+    local message="$2"    # descriptive message
+    local progress="$3"   # percentage 0-100
+    local eta="$4"        # estimated time remaining in seconds
+    
+    local timestamp=$(date +%s)
+    local formatted_time=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    # Create JSON-like structure (basic, without requiring jq)
+    cat > "$STATUS_FILE" << EOF
+{
+  "status": "$status",
+  "message": "$message",
+  "progress": $progress,
+  "eta": $eta,
+  "timestamp": $timestamp,
+  "formatted_time": "$formatted_time"
+}
+EOF
+    # For scripts that need simpler format, also update the progress file
+    echo "$progress% - $message" > "$PROGRESS_FILE"
+    return 0
+}
+# Read status
+get_status() {
+    if [[ -f "$STATUS_FILE" ]]; then
+        cat "$STATUS_FILE"
+    else
+        # Return a default status if file doesn't exist
+        echo '{"status":"unknown","message":"Status file not found","progress":0,"eta":0,"timestamp":0,"formatted_time":"unknown"}'
     fi
 }
 # Enhanced echo with error checking
@@ -265,7 +328,7 @@ initialize_chains() {
 # Prepare environment: dirs, files
 ensure_environment() {
     # Create base directories if they don't exist
-    mkdir -p "$BASE_DIR" "$HISTORY_DIR" "$DATA_DIR" 2>/dev/null || true
+    mkdir -p "$BASE_DIR" "$HISTORY_DIR" "$DATA_DIR" "$STATUS_DIR" 2>/dev/null || true
     # Create empty files if they don't exist
     touch "$DEFAULT_FILE" "$ADD_FILE" "$REMOVE_FILE" "$IP_ADD_FILE" "$IP_REMOVE_FILE" 2>/dev/null || true
     touch "$CDN_DOMAINS_FILE" "$EXPIRED_DOMAINS_FILE" 2>/dev/null || true
@@ -284,6 +347,7 @@ expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
 block_source=$DEFAULT_BLOCK_SOURCE
 block_destination=$DEFAULT_BLOCK_DESTINATION
 logging_enabled=$DEFAULT_LOGGING_ENABLED
+status_enabled=$DEFAULT_STATUS_ENABLED
 EOF
     fi
     # Check for required commands
@@ -301,6 +365,8 @@ EOF
     fi
     # Initialize logging
     initialize_logging
+    # Initialize status tracking
+    initialize_status_tracking
     return 0
 }
 # Check privileges
@@ -348,6 +414,7 @@ secure_download() {
 # Fetch default domains list - updated with secure download
 update_default() {
     log "INFO" "Updating default domains list" "verbose"
+    update_status "running" "Updating default domains list" "10" "0"
     local update_url=$(grep '^update_url=' "$CONFIG_FILE" 2>/dev/null | cut -d"'" -f2)
     local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$update_url" ]]; then
@@ -357,6 +424,7 @@ update_default() {
         timeout="$DEFAULT_TIMEOUT"
     fi
     echo_safe "${BLUE}Fetching default domains from $update_url...${NC}"
+    update_status "running" "Fetching default domains from $update_url" "20" "0"
     # Keep track of domains that were in the default list but are removed now
     local expire_enabled=$(grep '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ "$expire_enabled" == "1" ]]; then
@@ -371,17 +439,21 @@ update_default() {
             done < "$DEFAULT_FILE"
         fi
     fi
+    update_status "running" "Downloading domain list" "40" "0"
     # Use secure download function
     if secure_download "$update_url" "$DEFAULT_FILE.tmp" "$timeout"; then
+        update_status "running" "Processing downloaded domains" "60" "0"
         # Move tmp file to final destination
         if ! mv "$DEFAULT_FILE.tmp" "$DEFAULT_FILE"; then
             rm -f "$DEFAULT_FILE.tmp" &>/dev/null || true
             log "ERROR" "Failed to update default domains file"
             echo_safe "${RED}Failed to update default domains file${NC}"
+            update_status "error" "Failed to update default domains file" "0" "0"
             return 1
         fi
         # Process expired domains if feature is enabled
         if [[ "$expire_enabled" == "1" ]]; then
+            update_status "running" "Processing expired domains" "80" "0"
             # Get new default domains
             local new_domains=()
             while IFS= read -r d || [[ -n "$d" ]]; do
@@ -407,11 +479,13 @@ update_default() {
                 fi
             done
         fi
+        update_status "completed" "Default domains successfully updated" "100" "0"
         log "INFO" "Default domains successfully updated" "verbose"
         echo_safe "${GREEN}Default domains successfully updated${NC}"
     else
         log "ERROR" "Error downloading default domains from $update_url"
         echo_safe "${RED}Error downloading default domains${NC}"
+        update_status "error" "Error downloading default domains" "0" "0"
         return 1
     fi
     return 0
@@ -498,6 +572,7 @@ check_expired_domains() {
         return 0
     fi
     log "INFO" "Checking for expired domains" "verbose"
+    update_status "running" "Checking for expired domains" "10" "0"
     # Get schedule to determine update frequency
     local schedule_minutes=$(grep '^schedule_minutes=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]]; then
@@ -516,14 +591,23 @@ check_expired_domains() {
     local temp_keep=$(mktemp)
     # Process the expired domains file
     if [[ -f "$EXPIRED_DOMAINS_FILE" ]]; then
+        update_status "running" "Processing expired domains list" "20" "0"
+        local total_processed=0
+        local expired_count=0
         while IFS=, read -r domain timestamp source || [[ -n "$domain" ]]; do
             # Skip comments and empty lines
             [[ -z "$domain" || "$domain" =~ ^[[:space:]]*# ]] && continue
+            total_processed=$((total_processed + 1))
+            # Update progress periodically
+            if [[ $((total_processed % 10)) -eq 0 ]]; then
+                update_status "running" "Processed $total_processed domains for expiration" "30" "0"
+            fi
             # Check if the domain has expired
             local expiry_time=$((timestamp + expire_seconds))
             if [[ $current_time -gt $expiry_time && "$source" == "default" ]]; then
                 # Domain has expired
                 echo "$domain" >> "$temp_expired"
+                expired_count=$((expired_count + 1))
             else
                 # Domain hasn't expired yet
                 echo "$domain,$timestamp,$source" >> "$temp_keep"
@@ -531,8 +615,14 @@ check_expired_domains() {
         done < "$EXPIRED_DOMAINS_FILE"
         # Process expired domains
         if [[ -s "$temp_expired" ]]; then
+            update_status "running" "Found $expired_count expired domains to clean up" "40" "0"
             echo_safe "${YELLOW}Found expired domains to clean up...${NC}"
+            local processed=0
             while IFS= read -r domain; do
+                processed=$((processed + 1))
+                local progress=$((40 + (processed * 50 / expired_count)))
+                progress=$((progress > 90 ? 90 : progress))
+                update_status "running" "Removing expired domain: $domain ($processed/$expired_count)" "$progress" "0"
                 echo_safe "${YELLOW}Removing expired domain:${NC} $domain"
                 # Get IPs associated with this domain from history file
                 local domain_history_file="$HISTORY_DIR/${domain//\//_}.txt"
@@ -558,6 +648,7 @@ check_expired_domains() {
                 log "INFO" "Removed expired domain: $domain" "verbose"
             done < "$temp_expired"
             # Make rules persistent
+            update_status "running" "Making firewall rules persistent" "95" "0"
             make_rules_persistent
         fi
         # Replace the expired domains file with the updated version
@@ -565,6 +656,7 @@ check_expired_domains() {
     fi
     # Clean up
     rm -f "$temp_expired" "$temp_keep" 2>/dev/null || true
+    update_status "completed" "Expired domain check completed" "100" "0"
 }
 # Merge default + added, minus removed domains
 # Performance optimized version of merge_domains
@@ -951,9 +1043,11 @@ resolve_block() {
     if [[ $auto_update -eq 1 ]]; then
         echo_safe "${BLUE}Auto-updating domain lists...${NC}"
         update_default
-    fi
+    }
     # Check for expired domains
+    update_status "running" "Checking for expired domains" "10" "0"
     check_expired_domains
+    update_status "running" "Starting domain resolution" "15" "0"
     echo_safe "${BLUE}Resolving domains...${NC}"
     # Get domains
     local domains=()
@@ -966,7 +1060,9 @@ resolve_block() {
         echo_safe "${YELLOW}No domains to process.${NC}"
         log "INFO" "No domains to process" "verbose"
         rm -f "$tmpdomains"
+        update_status "completed" "No domains to process" "100" "0"
     else
+        update_status "running" "Processing $total domains" "20" "0"
         echo_safe "${BLUE}Processing ${total} domains...${NC}"
         # Get timeout from settings
         local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
@@ -979,8 +1075,21 @@ resolve_block() {
         # Process domains in batches for better performance
         local batch_size=50
         local progress=0
+        local eta=0
+        local start_time=$(date +%s)
         while IFS= read -r dom || [[ -n "$dom" ]]; do
             progress=$((progress + 1))
+            # Calculate and update progress
+            local percent=$((20 + (progress * 60 / total)))
+            
+            # Calculate ETA (rough estimate based on progress)
+            if [[ $progress -gt 10 ]]; then
+                local elapsed=$(($(date +%s) - start_time))
+                eta=$(( (elapsed * (total - progress)) / progress ))
+            fi
+            
+            update_status "running" "Processing domain $progress/$total: $dom" "$percent" "$eta"
+            
             # Show progress for large domain lists
             if [[ $total -gt 100 && $((progress % 10)) -eq 0 ]]; then
                 echo_safe "${BLUE}Progress: $progress/$total domains ($(( (progress * 100) / total ))%)${NC}"
@@ -1026,10 +1135,12 @@ resolve_block() {
         done < "$tmpdomains"
         # Clean up
         rm -f "$tmpdomains"
+        update_status "running" "Domain resolution complete" "80" "0"
         echo_safe "${GREEN}Domain resolution complete. $success_count/$total domains processed, $ip_count new IPs blocked.${NC}"
         log "INFO" "Domain resolution complete. $success_count/$total domains processed, $ip_count new IPs blocked." "verbose"
         # Run CDN detection only for interactive mode or if explicitly requested
         if [[ -t 1 || "$1" == "force-cdn-check" ]]; then
+            update_status "running" "Checking for CDN domains" "85" "0"
             # Get list of domains again for CDN detection
             mapfile -t domains < <(merge_domains)
             detect_cdn "${domains[@]}"
@@ -1041,6 +1152,7 @@ resolve_block() {
     get_custom_ips > "$tmpcustomips"
     local custom_total=$(wc -l < "$tmpcustomips")
     if [[ $custom_total -gt 0 ]]; then
+        update_status "running" "Processing custom IPs" "90" "0"
         echo_safe "${BLUE}Processing ${custom_total} custom IPs...${NC}"
         local custom_blocked=0
         while IFS= read -r ip || [[ -n "$ip" ]]; do
@@ -1062,12 +1174,15 @@ resolve_block() {
         done < "$tmpcustomips"
         # Clean up
         rm -f "$tmpcustomips"
+        update_status "running" "Custom IP blocking complete" "95" "0"
         echo_safe "${GREEN}Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked.${NC}"
         log "INFO" "Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked." "verbose"
     else
         rm -f "$tmpcustomips"
     fi
     # Make sure the rules are persistent
+    update_status "running" "Making firewall rules persistent" "98" "0"
     make_rules_persistent
+    update_status "completed" "Operation completed successfully" "100" "0" 
     return 0
 }

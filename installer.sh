@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper Installer
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 2.1.1
+# Version: 2.1.2
 # Usage: curl -sSL https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/installer.sh | bash
 set -e
 # ANSI color codes
@@ -48,7 +48,7 @@ echo -e "   | | | |  \\| \\___ \\ '_ \\| | '_ \\ / _\\ '__|"
 echo -e "   | |_| | |\\  |___) | | | | | |_) |  __/ |  "
 echo -e "   |____/|_| \\_|____/|_| |_|_| .__/ \\___|_|  "
 echo -e "                             |_|              "
-echo -e "${GREEN}${BOLD} Domain-based Network Threat Mitigation v2.1.1 ${NC}"
+echo -e "${GREEN}${BOLD} Domain-based Network Threat Mitigation v2.1.2 ${NC}"
 echo -e ""
 # Check root
 if [[ $EUID -ne 0 ]]; then
@@ -62,17 +62,17 @@ if command -v apt &>/dev/null; then
     PKG_MANAGER="apt"
     PKG_UPDATE="apt update"
     PKG_INSTALL="apt install -y"
-    DEPS="iptables iptables-persistent curl dnsutils git"  # sqlite3 removed
+    DEPS="iptables iptables-persistent curl dnsutils git"
 elif command -v dnf &>/dev/null; then
     PKG_MANAGER="dnf"
     PKG_UPDATE="dnf check-update || true"
     PKG_INSTALL="dnf install -y"
-    DEPS="iptables iptables-services curl bind-utils git"  # sqlite removed
+    DEPS="iptables iptables-services curl bind-utils git"
 elif command -v yum &>/dev/null; then
     PKG_MANAGER="yum"
     PKG_UPDATE="yum check-update || true"
     PKG_INSTALL="yum install -y"
-    DEPS="iptables iptables-services curl bind-utils git"  # sqlite removed
+    DEPS="iptables iptables-services curl bind-utils git"
 else
     echo -e "${YELLOW}${BOLD}Warning:${NC} Unsupported package manager."
     echo -e "You'll need to manually install these dependencies:"
@@ -132,7 +132,7 @@ else
     echo -e "${CYAN}${BOLD}DEPENDENCIES CHECK${NC}"
     echo -e "${MAGENTA}───────────────────────────────────────${NC}"
     missing=()
-    for cmd in iptables ip6tables curl dig git; do # sqlite3 removed
+    for cmd in iptables ip6tables curl dig git; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
@@ -183,9 +183,10 @@ echo -e ""
 echo -e "${CYAN}${BOLD}DIRECTORY SETUP${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 mkdir -p "$BASE_DIR"
-mkdir -p "$BASE_DIR/history"    # Create directory for history files
-mkdir -p "$BASE_DIR/data"       # Create directory for data files
-echo -e "${GREEN}Directories created: $BASE_DIR, $BASE_DIR/history, $BASE_DIR/data${NC}"
+mkdir -p "$BASE_DIR/history"
+mkdir -p "$BASE_DIR/data"
+mkdir -p "$BASE_DIR/status"
+echo -e "${GREEN}Directories created: $BASE_DIR, $BASE_DIR/history, $BASE_DIR/data, $BASE_DIR/status${NC}"
 # Setup firewall persistence according to system type
 echo -e ""
 echo -e "${CYAN}${BOLD}FIREWALL PERSISTENCE${NC}"
@@ -328,6 +329,7 @@ else
     [[ -z "$DEFAULT_BLOCK_SOURCE" ]] && DEFAULT_BLOCK_SOURCE=1
     [[ -z "$DEFAULT_BLOCK_DESTINATION" ]] && DEFAULT_BLOCK_DESTINATION=1
     [[ -z "$DEFAULT_LOGGING_ENABLED" ]] && DEFAULT_LOGGING_ENABLED=0
+    [[ -z "$DEFAULT_STATUS_ENABLED" ]] && DEFAULT_STATUS_ENABLED=1
     cat > "$CONFIG_FILE" << EOF
 # DNSniper Configuration
 scheduler_enabled=$scheduler_enabled
@@ -341,6 +343,7 @@ expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
 block_source=$DEFAULT_BLOCK_SOURCE
 block_destination=$DEFAULT_BLOCK_DESTINATION
 logging_enabled=$DEFAULT_LOGGING_ENABLED
+status_enabled=$DEFAULT_STATUS_ENABLED
 EOF
     echo -e "${GREEN}Created default configuration file.${NC}"
 fi
@@ -370,38 +373,36 @@ echo -e "${CYAN}${BOLD}INITIALIZATION${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 # Source daemon script to create systemd services
 bash -c "source '$DAEMON_SCRIPT' && create_systemd_service" || true
-
-# FIXED SECTION: Enable and start services - but don't hang waiting for startup
+# IMPROVED SECTION: Enable and start services - without hanging
 if [[ "$scheduler_enabled" -eq 1 ]]; then
     echo -e "${GREEN}Enabling and starting DNSniper services...${NC}"
     # Enable services first (this is quick and shouldn't hang)
     systemctl enable dnsniper-firewall.service &>/dev/null || true
     systemctl enable dnsniper.service &>/dev/null || true
     systemctl enable dnsniper.timer &>/dev/null || true
-    # Start services in background to avoid hanging the installer
+    # Start services in background with nohup to ensure they don't hang
     echo -e "${YELLOW}Starting services in background...${NC}"
-    (systemctl start dnsniper-firewall.service &>/dev/null || true) &
-    (systemctl start dnsniper.timer &>/dev/null || true) &
+    nohup systemctl start dnsniper-firewall.service >/dev/null 2>&1 &
+    nohup systemctl start dnsniper.timer >/dev/null 2>&1 &
     # Brief pause to allow services to begin startup
-    sleep 2
+    sleep 1
     echo -e "${GREEN}Services enabled and started in background.${NC}"
     echo -e "${BLUE}Tip: Check service status with: sudo dnsniper --status${NC}"
 fi
-
-# FIXED SECTION: Make sure initialization check doesn't hang
-# Use timeout to prevent indefinite waiting on version check
-if timeout 10 "$BIN_PATH" --version &>/dev/null; then
+# IMPROVED SECTION: Make sure initialization check doesn't hang
+# Check version instead of doing a full run to avoid hanging
+"$BIN_PATH" --version >/dev/null 2>&1
+if [[ $? -eq 0 ]]; then
     echo -e "${GREEN}DNSniper successfully initialized.${NC}"
     if [[ "$installation_type" != "upgrade" ]]; then
         echo -e "${YELLOW}Running initial domains update in background...${NC}"
         # Run update in background to avoid hanging the installer
-        ("$BIN_PATH" --update &>/dev/null || echo "Domain update still running...") &
+        nohup "$BIN_PATH" --update >/dev/null 2>&1 &
     fi
 else
     echo -e "${RED}${BOLD}Warning:${NC} There might be issues with initialization."
     echo -e "${YELLOW}Please check by running: sudo dnsniper --status${NC}"
 fi
-
 # Final instructions
 echo -e ""
 echo -e "${CYAN}${BOLD}INSTALLATION COMPLETE!${NC}"

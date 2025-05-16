@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
 # DNSniper Service Functions - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 2.1.1
-
+# Version: 2.1.2
 # Define fallback log function in case sourcing fails
 log() {
     local level="$1" message="$2" verbose="${3:-}"
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    
     # If we're running standalone, log to stderr
     echo "[$timestamp] [$level] $message" >&2
-    
     # If we have a LOG_FILE and LOGGING_ENABLED variables (from core script)
     if [[ -n "${LOG_FILE:-}" && "${LOGGING_ENABLED:-0}" -eq 1 ]]; then
         echo "[$timestamp] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
     fi
 }
-
 # Now source the core functionality
 if [[ -f /etc/dnsniper/dnsniper-core.sh ]]; then
     source /etc/dnsniper/dnsniper-core.sh
@@ -24,7 +20,6 @@ else
     echo "Error: Core DNSniper functionality not found" >&2
     exit 1
 fi
-
 # Atomic process locking mechanism
 acquire_lock() {
     # Use atomic file creation to acquire lock
@@ -60,7 +55,24 @@ acquire_lock() {
         fi
     fi
 }
-
+# Check if a background process is running without blocking
+is_background_process_running() {
+    if [[ -f "$LOCK_FILE" ]]; then
+        local pid
+        pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            # Get info about the process
+            local process_start=$(ps -p "$pid" -o lstart= 2>/dev/null || echo "Unknown")
+            local process_cmd=$(ps -p "$pid" -o cmd= 2>/dev/null || echo "Unknown")
+            # Return process info
+            echo "1|$pid|$process_start|$process_cmd"
+            return 0
+        fi
+    fi
+    # No active process
+    echo "0|0|None|None"
+    return 1
+}
 release_lock() {
     # Only remove lock if it belongs to current process
     local pid
@@ -73,7 +85,6 @@ release_lock() {
     fi
     return 0
 }
-
 # Create systemd service and timer
 create_systemd_service() {
     log "INFO" "Creating systemd services for DNSniper" "verbose"
@@ -82,10 +93,15 @@ create_systemd_service() {
 [Unit]
 Description=DNSniper Domain Threat Mitigation
 After=network.target
+
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/dnsniper --run
+ExecStart=/usr/local/bin/dnsniper --run-background
 RemainAfterExit=no
+TimeoutStartSec=1800
+TimeoutStopSec=90
+KillMode=process
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -98,11 +114,13 @@ EOF
 [Unit]
 Description=Run DNSniper periodically
 Requires=dnsniper.service
+
 [Timer]
 Unit=dnsniper.service
 OnBootSec=60s
 OnUnitActiveSec=${schedule_minutes}m
 AccuracySec=60s
+
 [Install]
 WantedBy=timers.target
 EOF
@@ -111,11 +129,13 @@ EOF
 [Unit]
 Description=DNSniper Firewall Rules
 After=network.target
+
 [Service]
 Type=oneshot
 ExecStart=/sbin/iptables-restore $RULES_V4_FILE
 ExecStart=/sbin/ip6tables-restore $RULES_V6_FILE
 RemainAfterExit=yes
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -154,7 +174,6 @@ EOF
     systemctl restart dnsniper-firewall.service &>/dev/null
     log "INFO" "Created initial rules files and started firewall service" "verbose"
 }
-
 # Update systemd timer settings
 update_systemd_timer() {
     log "INFO" "Updating systemd timer settings" "verbose"
@@ -189,7 +208,6 @@ update_systemd_timer() {
         log "INFO" "DNSniper scheduler disabled" "verbose"
     fi
 }
-
 # Check systemd service and timer status
 get_service_status() {
     local timer_status="Not installed"
@@ -237,8 +255,7 @@ get_service_status() {
     echo "DNSniper Service: $service_status"
     echo "Firewall Service: $firewall_status"
 }
-
-# Run with process locking
+# Run with process locking in foreground
 run_with_lock() {
     if acquire_lock; then
         # Execute command with lock
@@ -252,7 +269,35 @@ run_with_lock() {
     fi
     return 0
 }
-
+# Run in background without blocking terminal
+run_background() {
+    # Update status to indicate we're starting
+    update_status "starting" "Initializing background operation" "0" "0"
+    
+    # Background processes shouldn't ask for user input - always use non-interactive mode
+    export DNSniper_NONINTERACTIVE=1
+    
+    if acquire_lock; then
+        # We got the lock, execute in the background with redirected output
+        resolve_block > /dev/null 2>&1
+        local result=$?
+        
+        # Update status and release lock when done
+        if [[ $result -eq 0 ]]; then
+            update_status "completed" "Background operation completed successfully" "100" "0"
+        else
+            update_status "error" "Background operation failed with error code $result" "0" "0"
+        fi
+        
+        release_lock
+        return $result
+    else
+        log "WARNING" "Cannot acquire lock, another DNSniper process is running"
+        update_status "error" "Cannot start background operation - another process is running" "0" "0"
+        echo -e "${YELLOW}Warning:${NC} Another DNSniper process is running. Please wait for it to complete."
+        return 1
+    fi
+}
 # Clean up any cron jobs from previous versions
 cleanup_cron_jobs() {
     log "INFO" "Checking for old cron jobs" "verbose"

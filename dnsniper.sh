@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 2.1.1
+# Version: 2.1.2
 # Source the core and daemon functionality
 if [[ -f /etc/dnsniper/dnsniper-core.sh ]]; then
     source /etc/dnsniper/dnsniper-core.sh
@@ -30,71 +30,144 @@ show_banner() {
         echo -e ""
     fi
 }
-# Check and manage running process
-check_and_manage_running_process() {
-    if [[ -f "$LOCK_FILE" ]]; then
-        local pid
-        pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-            # Process is still running
-            echo -e "${YELLOW}${BOLD}Note:${NC} A DNSniper process (PID: $pid) is already running."
-            echo -e "Start time: $(ps -p $pid -o lstart= 2>/dev/null || echo "Unknown")"
-            echo -e ""
-            echo -e "Options:"
-            echo -e "1. ${BOLD}Wait${NC} for the current process to finish"
-            echo -e "2. ${BOLD}Show status${NC} without changing anything"
-            echo -e "3. ${BOLD}Terminate${NC} the current process and continue"
-            echo -e "4. ${BOLD}Exit${NC}"
-            read -rp "Your choice (1-4): " choice
-            case "$choice" in
-                1)
-                    echo -e "Waiting for current process to complete... (Ctrl+C to cancel)"
-                    while kill -0 "$pid" 2>/dev/null; do
-                        echo -n "."
-                        sleep 1
-                    done
-                    echo -e "\n${GREEN}Process completed.${NC}"
-                    # Remove any potential stale lock file
-                    rm -f "$LOCK_FILE" 2>/dev/null || true
-                    return 0
-                    ;;
-                2)
-                    # Just show status without changing anything
-                    display_status
-                    exit 0
-                    ;;
-                3)
-                    echo -e "${YELLOW}Terminating process $pid...${NC}"
-                    kill "$pid" 2>/dev/null
-                    sleep 1
-                    # If still running, try stronger signal
-                    if kill -0 "$pid" 2>/dev/null; then
-                        echo -e "${YELLOW}Still running, using SIGKILL...${NC}"
-                        kill -9 "$pid" 2>/dev/null
-                        sleep 1
-                    fi
-                    rm -f "$LOCK_FILE" 2>/dev/null || true
-                    echo -e "${GREEN}Process terminated.${NC}"
-                    return 0
-                    ;;
-                4|*)
-                    echo -e "${YELLOW}Exiting as requested.${NC}"
-                    exit 0
-                    ;;
-            esac
-        else
-            # Stale lock file, remove it
-            rm -f "$LOCK_FILE" 2>/dev/null || true
-            return 0
+
+# IMPROVED: Check for running process but always allow menu to be shown
+check_background_process() {
+    # Check for running background process without blocking
+    local bg_status=$(is_background_process_running)
+    local IFS="|"
+    read -r is_running pid start_time cmd <<< "$bg_status"
+    
+    if [[ "$is_running" == "1" ]]; then
+        # Show a notification but allow menu to continue
+        echo -e "${YELLOW}${BOLD}Note:${NC} A DNSniper process (PID: $pid) is running in the background."
+        echo -e "Started: ${YELLOW}$start_time${NC}"
+        
+        # Check if we have status information
+        if [[ -f "$STATUS_FILE" ]]; then
+            local status_data=$(get_status)
+            local status=$(echo "$status_data" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+            local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+            local progress=$(echo "$status_data" | grep -o '"progress":[^,}]*' | cut -d':' -f2)
+            local eta=$(echo "$status_data" | grep -o '"eta":[^,}]*' | cut -d':' -f2)
+            
+            # Format ETA if available
+            local eta_text=""
+            if [[ $eta -gt 0 ]]; then
+                if [[ $eta -gt 3600 ]]; then
+                    eta_text="$(($eta / 3600))h $(($eta % 3600 / 60))m"
+                elif [[ $eta -gt 60 ]]; then
+                    eta_text="$(($eta / 60))m $(($eta % 60))s"
+                else
+                    eta_text="${eta}s"
+                fi
+                eta_text=" (ETA: ${eta_text})"
+            fi
+            
+            echo -e "Status: ${CYAN}${status}${NC} - ${YELLOW}${message}${NC} - ${GREEN}${progress}%${YELLOW}${eta_text}${NC}"
         fi
+        
+        echo -e "${BLUE}You can use the menu while the process is running.${NC}"
+        echo -e "${BLUE}Some operations will be limited until the background process completes.${NC}"
+        echo -e "${BLUE}Choose '2' to view detailed status.${NC}"
+        echo -e ""
+        
+        # Return true to indicate a background process is running
+        return 0
     fi
-    return 0
+    
+    # Return false to indicate no background process is running
+    return 1
 }
+
+# IMPROVED MENU: Simplified menu with background process indicator
+main_menu() {
+    local bg_running=false
+    while true; do
+        show_banner
+        
+        # Check if a background process is running
+        if check_background_process; then
+            bg_running=true
+            echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+        fi
+        
+        echo -e "${CYAN}${BOLD}MAIN MENU${NC}"
+        echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+        echo -e "${YELLOW}1.${NC} Run Now              ${YELLOW}2.${NC} Status"
+        echo -e "${YELLOW}3.${NC} Block Domain         ${YELLOW}4.${NC} Add Domain to Whitelist"
+        echo -e "${YELLOW}5.${NC} Block IP Address     ${YELLOW}6.${NC} Add IP to Whitelist"
+        echo -e "${YELLOW}7.${NC} Settings             ${YELLOW}8.${NC} Update Lists"
+        echo -e "${YELLOW}9.${NC} Clear Rules          ${YELLOW}0.${NC} Exit"
+        echo -e "${YELLOW}U.${NC} Uninstall"
+        echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+        
+        read -rp "Select an option: " choice
+        case "$choice" in
+            1)
+                clear
+                if $bg_running; then
+                    echo -e "${YELLOW}A background process is already running.${NC}"
+                    echo -e "${YELLOW}Please wait for it to complete or check status.${NC}"
+                else
+                    echo -e "${BLUE}Starting DNSniper...${NC}"
+                    # Run in background to avoid hanging the menu
+                    nohup bash -c 'source /etc/dnsniper/dnsniper-daemon.sh && run_with_lock' >/dev/null 2>&1 &
+                    echo -e "${GREEN}DNSniper is now running in the background.${NC}"
+                    echo -e "${GREEN}You can continue using the menu or check status.${NC}"
+                fi
+                read -rp "Press Enter to continue..."
+                ;;
+            2) display_status; read -rp "Press Enter to continue..." ;;
+            3) clear; block_domain; read -rp "Press Enter to continue..." ;;
+            4) clear; whitelist_domain; read -rp "Press Enter to continue..." ;;
+            5) clear; block_custom_ip; read -rp "Press Enter to continue..." ;;
+            6) clear; whitelist_custom_ip; read -rp "Press Enter to continue..." ;;
+            7) settings_menu ;;
+            8)
+                clear
+                if $bg_running; then
+                    echo -e "${YELLOW}A background process is already running.${NC}"
+                    echo -e "${YELLOW}Please wait for it to complete before updating lists.${NC}"
+                else
+                    echo -e "${BLUE}Updating default domain lists...${NC}"
+                    # Run in background to avoid hanging the menu
+                    nohup bash -c 'source /etc/dnsniper/dnsniper-core.sh && update_default' >/dev/null 2>&1 &
+                    echo -e "${GREEN}Update started in background.${NC}"
+                    echo -e "${GREEN}You can check status to monitor progress.${NC}"
+                fi
+                read -rp "Press Enter to continue..."
+                ;;
+            9)
+                clear
+                if $bg_running; then
+                    echo -e "${YELLOW}A background process is already running.${NC}"
+                    echo -e "${YELLOW}Please wait for it to complete before clearing rules.${NC}"
+                else
+                    clear_rules
+                fi
+                read -rp "Press Enter to continue..."
+                ;;
+            0) echo -e "${GREEN}Exiting...${NC}"; exit 0 ;;
+            [Uu]) clear; uninstall ;;
+            *) echo -e "${RED}Invalid selection. Please choose from the menu.${NC}"; sleep 1 ;;
+        esac
+    done
+}
+
 ### Interactive menu functions
 # --- Settings submenu ---
 settings_menu() {
     while true; do
         show_banner
+        
+        # Check if a background process is running
+        local bg_running=false
+        if check_background_process; then
+            bg_running=true
+            echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+        fi
+        
         echo -e "${BLUE}${BOLD}SETTINGS${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         echo -e "${YELLOW}1.${NC} Set Schedule"
@@ -107,7 +180,7 @@ settings_menu() {
         echo -e "${YELLOW}8.${NC} Block Rule Types"
         echo -e "${YELLOW}9.${NC} Toggle Logging"
         echo -e "${YELLOW}S.${NC} Service Management"
-        echo -e "${YELLOW}L.${NC} Lock Management"
+        echo -e "${YELLOW}P.${NC} Process Management"
         echo -e "${YELLOW}0.${NC} Back to Main Menu"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         read -rp "Select option: " choice
@@ -122,66 +195,134 @@ settings_menu() {
             8) rule_types_settings ;;
             9) toggle_logging ;;
             [Ss]) service_management_menu ;;
-            [Ll]) lock_management ;;
+            [Pp]) process_management ;;
             0) return ;;
-            *) echo -e "${RED}Invalid selection. Please choose 0-9.${NC}" ;;
+            *) echo -e "${RED}Invalid selection. Please choose 0-9, S, or P.${NC}" ;;
         esac
         read -rp "Press Enter to continue..."
     done
 }
-# Lock management function
-lock_management() {
-    echo -e "${BOLD}=== Lock Management ===${NC}"
-    if [[ -f "$LOCK_FILE" ]]; then
-        local pid
-        pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "Unknown")
-        echo -e "${YELLOW}Lock file exists:${NC} $LOCK_FILE"
-        echo -e "${YELLOW}Process ID:${NC} $pid"
-        if [[ -n "$pid" && "$pid" != "Unknown" ]]; then
-            if kill -0 "$pid" 2>/dev/null; then
-                echo -e "${YELLOW}Process status:${NC} Running (started at $(ps -p $pid -o lstart= 2>/dev/null || echo "unknown time"))"
-                read -rp "Terminate this process? [y/N]: " choice
-                if [[ "$choice" =~ ^[Yy] ]]; then
-                    echo -e "${YELLOW}Attempting to terminate process $pid...${NC}"
-                    kill "$pid" 2>/dev/null
-                    sleep 1
-                    if kill -0 "$pid" 2>/dev/null; then
-                        echo -e "${YELLOW}Process still running, using SIGKILL...${NC}"
-                        kill -9 "$pid" 2>/dev/null
-                        sleep 1
-                    fi
-                    if kill -0 "$pid" 2>/dev/null; then
-                        echo -e "${RED}Failed to terminate process.${NC}"
+
+# NEW: Process management function
+process_management() {
+    echo -e "${BOLD}=== Process Management ===${NC}"
+    
+    # Check for running background process
+    local bg_status=$(is_background_process_running)
+    local IFS="|"
+    read -r is_running pid start_time cmd <<< "$bg_status"
+    
+    if [[ "$is_running" == "1" ]]; then
+        echo -e "${YELLOW}Background process is running:${NC}"
+        echo -e "  ${BOLD}PID:${NC} $pid"
+        echo -e "  ${BOLD}Started:${NC} $start_time"
+        echo -e "  ${BOLD}Command:${NC} $cmd"
+        
+        # Show status if available
+        if [[ -f "$STATUS_FILE" ]]; then
+            local status_data=$(get_status)
+            local status=$(echo "$status_data" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+            local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+            local progress=$(echo "$status_data" | grep -o '"progress":[^,}]*' | cut -d':' -f2)
+            
+            echo -e "  ${BOLD}Status:${NC} $status"
+            echo -e "  ${BOLD}Progress:${NC} ${progress}%"
+            echo -e "  ${BOLD}Message:${NC} $message"
+        fi
+        
+        echo -e ""
+        echo -e "What would you like to do?"
+        echo -e "1. ${BOLD}Monitor${NC} process progress"
+        echo -e "2. ${BOLD}Terminate${NC} process"
+        echo -e "3. ${BOLD}Back${NC} to settings menu"
+        read -rp "Choice (1-3): " proc_choice
+        
+        case "$proc_choice" in
+            1)
+                echo -e "${BLUE}Monitoring process progress (Press Ctrl+C to stop monitoring)...${NC}"
+                # Monitor progress in a loop until user presses Ctrl+C
+                trap 'break' INT
+                while kill -0 "$pid" 2>/dev/null; do
+                    if [[ -f "$PROGRESS_FILE" ]]; then
+                        clear
+                        echo -e "${CYAN}${BOLD}DNSniper Process Monitor${NC}"
+                        echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+                        echo -e "${BOLD}PID:${NC} $pid"
+                        echo -e "${BOLD}Started:${NC} $start_time"
+                        echo -e "${BOLD}Status:${NC}"
+                        cat "$PROGRESS_FILE"
+                        echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+                        echo -e "${YELLOW}Press Ctrl+C to stop monitoring${NC}"
                     else
-                        rm -f "$LOCK_FILE" 2>/dev/null
-                        echo -e "${GREEN}Process terminated and lock file removed.${NC}"
+                        echo -e "${YELLOW}Waiting for status update...${NC}"
                     fi
+                    sleep 1
+                done
+                trap - INT
+                echo -e "${GREEN}Process completed or no longer running.${NC}"
+                ;;
+            2)
+                echo -e "${YELLOW}Terminating process $pid...${NC}"
+                kill "$pid" 2>/dev/null
+                sleep 1
+                # If still running, try stronger signal
+                if kill -0 "$pid" 2>/dev/null; then
+                    echo -e "${YELLOW}Still running, using SIGKILL...${NC}"
+                    kill -9 "$pid" 2>/dev/null
+                    sleep 1
+                fi
+                if ! kill -0 "$pid" 2>/dev/null; then
+                    rm -f "$LOCK_FILE" 2>/dev/null || true
+                    echo -e "${GREEN}Process terminated successfully.${NC}"
+                    update_status "terminated" "Process terminated by user" "0" "0"
                 else
-                    echo -e "${YELLOW}Process left running.${NC}"
+                    echo -e "${RED}Failed to terminate process.${NC}"
                 fi
-            else
-                echo -e "${YELLOW}Process status:${NC} Not running (stale lock file)"
-                read -rp "Remove stale lock file? [Y/n]: " choice
-                if [[ ! "$choice" =~ ^[Nn] ]]; then
-                    rm -f "$LOCK_FILE" 2>/dev/null
-                    echo -e "${GREEN}Stale lock file removed.${NC}"
-                fi
-            fi
-        else
-            echo -e "${YELLOW}Process status:${NC} Unknown (lock file may be corrupted)"
-            read -rp "Remove lock file? [Y/n]: " choice
-            if [[ ! "$choice" =~ ^[Nn] ]]; then
-                rm -f "$LOCK_FILE" 2>/dev/null
-                echo -e "${GREEN}Lock file removed.${NC}"
+                ;;
+            3|*)
+                echo -e "${YELLOW}Returning to settings menu.${NC}"
+                ;;
+        esac
+    else
+        echo -e "${GREEN}No background processes are currently running.${NC}"
+        
+        # Check for stale lock file
+        if [[ -f "$LOCK_FILE" ]]; then
+            local lock_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "Unknown")
+            echo -e "${YELLOW}Found stale lock file for PID: $lock_pid${NC}"
+            read -rp "Remove stale lock file? [Y/n]: " remove_lock
+            if [[ ! "$remove_lock" =~ ^[Nn] ]]; then
+                rm -f "$LOCK_FILE" 2>/dev/null || true
+                echo -e "${GREEN}Stale lock file removed.${NC}"
             fi
         fi
-    else
-        echo -e "${GREEN}No lock file exists. DNSniper is not currently running.${NC}"
+        
+        # Show recent status if available
+        if [[ -f "$STATUS_FILE" ]]; then
+            local status_data=$(get_status)
+            local status=$(echo "$status_data" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+            local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+            local timestamp=$(echo "$status_data" | grep -o '"formatted_time":"[^"]*"' | cut -d'"' -f4)
+            
+            echo -e "${BLUE}Last process status:${NC}"
+            echo -e "  ${BOLD}Status:${NC} $status"
+            echo -e "  ${BOLD}Message:${NC} $message"
+            echo -e "  ${BOLD}Time:${NC} $timestamp"
+        fi
     fi
 }
+
 service_management_menu() {
     while true; do
         show_banner
+        
+        # Check if a background process is running
+        local bg_running=false
+        if check_background_process; then
+            bg_running=true
+            echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+        fi
+        
         echo -e "${BLUE}${BOLD}SERVICE MANAGEMENT${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         # Get service status
@@ -264,6 +405,7 @@ service_management_menu() {
         read -rp "Press Enter to continue..."
     done
 }
+
 # Toggle logging function
 toggle_logging() {
     echo -e "${BOLD}=== Toggle Logging ===${NC}"
@@ -315,6 +457,7 @@ toggle_logging() {
         fi
     fi
 }
+
 # Rule expiration settings
 expiration_settings() {
     echo -e "${BOLD}=== Rule Expiration Settings ===${NC}"
@@ -417,6 +560,7 @@ expiration_settings() {
         fi
     fi
 }
+
 # Rule types settings
 rule_types_settings() {
     local need_apply=0
@@ -458,18 +602,31 @@ rule_types_settings() {
     # If changes were made, apply them immediately
     if [[ $need_apply -eq 1 ]]; then
         echo -e "\n${YELLOW}Applying changes...${NC}"
-        # Clear all rules
-        echo -e "${BLUE}Clearing existing rules...${NC}"
-        iptables -F "$IPT_CHAIN" 2>/dev/null && ip6tables -F "$IPT6_CHAIN" 2>/dev/null
-        log "INFO" "Cleared rules for rule type changes" "verbose"
-        # Run a full resolve_block to rebuild the rules with new settings
-        echo -e "${BLUE}Rebuilding rules with new settings...${NC}"
-        resolve_block
-        echo -e "${GREEN}Rule type changes applied successfully.${NC}"
+        
+        # Check if a background process is running
+        local bg_status=$(is_background_process_running)
+        local IFS="|"
+        read -r is_running pid start_time cmd <<< "$bg_status"
+        
+        if [[ "$is_running" == "1" ]]; then
+            echo -e "${RED}Cannot apply rule type changes while a background process is running.${NC}"
+            echo -e "${YELLOW}Changes will take effect on the next run.${NC}"
+        else
+            # Clear all rules
+            echo -e "${BLUE}Clearing existing rules...${NC}"
+            iptables -F "$IPT_CHAIN" 2>/dev/null && ip6tables -F "$IPT6_CHAIN" 2>/dev/null
+            log "INFO" "Cleared rules for rule type changes" "verbose"
+            # Run a full resolve_block to rebuild the rules with new settings
+            echo -e "${BLUE}Rebuilding rules with new settings...${NC}"
+            nohup bash -c 'source /etc/dnsniper/dnsniper-daemon.sh && run_with_lock' >/dev/null 2>&1 &
+            echo -e "${GREEN}Rule rebuilding started in background.${NC}"
+            echo -e "${GREEN}You can check status to monitor progress.${NC}"
+        fi
     else
         echo -e "${YELLOW}No changes made.${NC}"
     fi
 }
+
 # Set schedule
 set_schedule() {
     echo -e "${BOLD}=== Set Schedule ===${NC}"
@@ -538,6 +695,7 @@ set_schedule() {
             ;;
     esac
 }
+
 # Set max IPs
 set_max_ips() {
     echo -e "${BOLD}=== Set Max IPs Per Domain ===${NC}"
@@ -552,6 +710,7 @@ set_max_ips() {
         echo -e "${RED}Invalid input. Please enter a number between 5 and 50.${NC}"
     fi
 }
+
 # Set timeout
 set_timeout() {
     echo -e "${BOLD}=== Set Timeout ===${NC}"
@@ -566,6 +725,7 @@ set_timeout() {
         echo -e "${RED}Invalid input. Please enter a number between 5 and 60.${NC}"
     fi
 }
+
 # Set update URL
 set_update_url() {
     echo -e "${BOLD}=== Set Update URL ===${NC}"
@@ -585,6 +745,7 @@ set_update_url() {
         echo -e "${YELLOW}No change.${NC}"
     fi
 }
+
 # Toggle auto-update
 toggle_auto_update() {
     echo -e "${BOLD}=== Toggle Auto-Update ===${NC}"
@@ -614,10 +775,19 @@ toggle_auto_update() {
         fi
     fi
 }
+
 # --- Import/Export submenu ---
 import_export_menu() {
     while true; do
         show_banner
+        
+        # Check if a background process is running
+        local bg_running=false
+        if check_background_process; then
+            bg_running=true
+            echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+        fi
+        
         echo -e "${BLUE}${BOLD}IMPORT / EXPORT${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         echo -e "${YELLOW}1.${NC} Import Domains"
@@ -646,6 +816,7 @@ import_export_menu() {
         read -rp "Press Enter to continue..."
     done
 }
+
 # Import domains
 import_domains() {
     echo -e "${BOLD}=== Import Domains ===${NC}"
@@ -693,6 +864,7 @@ import_domains() {
     log "INFO" "Imported $count domains from file: $file" "verbose"
     return 0
 }
+
 # Export domains
 export_domains() {
     echo -e "${BOLD}=== Export Domains ===${NC}"
@@ -734,6 +906,7 @@ export_domains() {
     rm -f "$tmpfile"
     return 0
 }
+
 # Import IPs
 import_ips() {
     echo -e "${BOLD}=== Import IP Addresses ===${NC}"
@@ -794,6 +967,7 @@ import_ips() {
     log "INFO" "Imported $count IPs from file: $file" "verbose"
     return 0
 }
+
 # Export IPs
 export_ips() {
     echo -e "${BOLD}=== Export IP Addresses ===${NC}"
@@ -835,6 +1009,7 @@ export_ips() {
     rm -f "$tmpfile"
     return 0
 }
+
 # Export config
 export_config() {
     echo -e "${BOLD}=== Export Configuration ===${NC}"
@@ -865,6 +1040,7 @@ export_config() {
     log "INFO" "Configuration exported to file: $file" "verbose"
     return 0
 }
+
 # Export firewall rules
 export_firewall_rules() {
     echo -e "${BOLD}=== Export Firewall Rules ===${NC}"
@@ -893,6 +1069,7 @@ export_firewall_rules() {
     log "INFO" "Exported firewall rules to: $dir" "verbose"
     return 0
 }
+
 # Import all (complete backup)
 import_all() {
     echo -e "${BOLD}=== Import Complete Backup ===${NC}"
@@ -952,6 +1129,7 @@ import_all() {
     fi
     return 0
 }
+
 # Export all (complete backup)
 export_all() {
     echo -e "${BOLD}=== Export Complete Backup ===${NC}"
@@ -977,7 +1155,7 @@ export_all() {
         return 1
     fi
     # Create subdirectories
-    mkdir -p "$export_dir/history" "$export_dir/data" 2>/dev/null
+    mkdir -p "$export_dir/history" "$export_dir/data" "$export_dir/status" 2>/dev/null
     # Export domains
     local tmpdomains=$(mktemp)
     merge_domains > "$tmpdomains"
@@ -1019,6 +1197,10 @@ export_all() {
     if [[ -d "$DATA_DIR" ]]; then
         cp -R "$DATA_DIR/"* "$export_dir/data/" 2>/dev/null || true
     fi
+    # Export status files
+    if [[ -d "$STATUS_DIR" ]]; then
+        cp -R "$STATUS_DIR/"* "$export_dir/status/" 2>/dev/null || true
+    fi
     # Create README
     {
         echo "DNSniper Backup"
@@ -1031,6 +1213,7 @@ export_all() {
         echo "- Configuration settings"
         echo "- Firewall rules"
         echo "- Domain history data"
+        echo "- Status information"
         echo ""
         echo "To restore, use the 'Import Complete Backup' feature in DNSniper."
     } > "$export_dir/README.txt"
@@ -1038,6 +1221,7 @@ export_all() {
     log "INFO" "Complete backup exported to: $export_dir" "verbose"
     return 0
 }
+
 # --- Block/Whitelist Domain/IP Functions ---
 # Block domain
 block_domain() {
@@ -1064,40 +1248,51 @@ block_domain() {
     # Ask if to block immediately
     read -rp "Block this domain immediately? [y/N]: " block_now
     if [[ "$block_now" =~ ^[Yy] ]]; then
-        echo -e "${BLUE}Resolving and blocking $domain...${NC}"
-        local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
-        if [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]]; then
-            timeout=$DEFAULT_TIMEOUT
-        fi
-        # Use improved resolve_domain function
-        local unique=()
-        mapfile -t unique < <(resolve_domain "$domain" "$timeout")
-        if [[ ${#unique[@]} -eq 0 ]]; then
-            echo -e "  ${YELLOW}No valid IP addresses found${NC}"
-            return 0
-        fi
-        # Convert array to CSV for storage
-        local ips_csv=$(IFS=,; echo "${unique[*]}")
-        # Record in history
-        record_history "$domain" "$ips_csv"
-        # Block each IP
-        for ip in "${unique[@]}"; do
-            # Skip critical IPs
-            if is_critical_ip "$ip"; then
-                echo -e "  - ${YELLOW}Skipped critical IP${NC}: $ip"
-                continue
+        # Check if a background process is running
+        local bg_status=$(is_background_process_running)
+        local IFS="|"
+        read -r is_running pid start_time cmd <<< "$bg_status"
+        
+        if [[ "$is_running" == "1" ]]; then
+            echo -e "${YELLOW}A background process is already running.${NC}"
+            echo -e "${YELLOW}The domain will be blocked on the next run or when the current process completes.${NC}"
+        else
+            echo -e "${BLUE}Resolving and blocking $domain...${NC}"
+            local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+            if [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]]; then
+                timeout=$DEFAULT_TIMEOUT
             fi
-            if block_ip "$ip" "DNSniper: $domain"; then
-                echo -e "  - ${RED}Blocked${NC}: $ip"
-            else
-                echo -e "  - ${RED}Error blocking${NC}: $ip"
+            # Use improved resolve_domain function
+            local unique=()
+            mapfile -t unique < <(resolve_domain "$domain" "$timeout")
+            if [[ ${#unique[@]} -eq 0 ]]; then
+                echo -e "  ${YELLOW}No valid IP addresses found${NC}"
+                return 0
             fi
-        done
-        # Make rules persistent
-        make_rules_persistent
+            # Convert array to CSV for storage
+            local ips_csv=$(IFS=,; echo "${unique[*]}")
+            # Record in history
+            record_history "$domain" "$ips_csv"
+            # Block each IP
+            for ip in "${unique[@]}"; do
+                # Skip critical IPs
+                if is_critical_ip "$ip"; then
+                    echo -e "  - ${YELLOW}Skipped critical IP${NC}: $ip"
+                    continue
+                fi
+                if block_ip "$ip" "DNSniper: $domain"; then
+                    echo -e "  - ${RED}Blocked${NC}: $ip"
+                else
+                    echo -e "  - ${RED}Error blocking${NC}: $ip"
+                fi
+            done
+            # Make rules persistent
+            make_rules_persistent
+        fi
     fi
     return 0
 }
+
 # Whitelist domain (renamed from unblock_domain for clarity)
 whitelist_domain() {
     echo -e "${BOLD}=== Add Domain to Whitelist ===${NC}"
@@ -1148,29 +1343,39 @@ whitelist_domain() {
         # Ask if to remove firewall rules immediately
         read -rp "Remove firewall rules for this domain immediately? [y/N]: " whitelist_now
         if [[ "$whitelist_now" =~ ^[Yy] ]]; then
-            echo -e "${BLUE}Removing firewall rules for $domain_to_whitelist...${NC}"
-            # Get IPs from history file
-            local safe_domain="${domain_to_whitelist//\//_}"
-            local history_file="$HISTORY_DIR/${safe_domain}.txt"
-            if [[ -f "$history_file" && -s "$history_file" ]]; then
-                # Get the most recent entry (first line)
-                local latest_entry=$(head -n 1 "$history_file" 2>/dev/null)
-                if [[ -n "$latest_entry" ]]; then
-                    # Format is: timestamp,ip1,ip2,...
-                    local ips=${latest_entry#*,}  # Remove timestamp
-                    IFS=',' read -ra ip_list <<< "$ips"
-                    for ip in "${ip_list[@]}"; do
-                        if whitelist_ip "$ip" "DNSniper: $domain_to_whitelist"; then
-                            echo -e "  - ${GREEN}Added to whitelist:${NC} $ip"
-                        fi
-                    done
-                    # Make rules persistent
-                    make_rules_persistent
-                else
-                    echo -e "${YELLOW}No IP records found for this domain.${NC}"
-                fi
+            # Check if a background process is running
+            local bg_status=$(is_background_process_running)
+            local IFS="|"
+            read -r is_running pid start_time cmd <<< "$bg_status"
+            
+            if [[ "$is_running" == "1" ]]; then
+                echo -e "${YELLOW}A background process is already running.${NC}"
+                echo -e "${YELLOW}The domain will be whitelisted on the next run or when the current process completes.${NC}"
             else
-                echo -e "${YELLOW}No history found for this domain.${NC}"
+                echo -e "${BLUE}Removing firewall rules for $domain_to_whitelist...${NC}"
+                # Get IPs from history file
+                local safe_domain="${domain_to_whitelist//\//_}"
+                local history_file="$HISTORY_DIR/${safe_domain}.txt"
+                if [[ -f "$history_file" && -s "$history_file" ]]; then
+                    # Get the most recent entry (first line)
+                    local latest_entry=$(head -n 1 "$history_file" 2>/dev/null)
+                    if [[ -n "$latest_entry" ]]; then
+                        # Format is: timestamp,ip1,ip2,...
+                        local ips=${latest_entry#*,}  # Remove timestamp
+                        IFS=',' read -ra ip_list <<< "$ips"
+                        for ip in "${ip_list[@]}"; do
+                            if whitelist_ip "$ip" "DNSniper: $domain_to_whitelist"; then
+                                echo -e "  - ${GREEN}Added to whitelist:${NC} $ip"
+                            fi
+                        done
+                        # Make rules persistent
+                        make_rules_persistent
+                    else
+                        echo -e "${YELLOW}No IP records found for this domain.${NC}"
+                    fi
+                else
+                    echo -e "${YELLOW}No history found for this domain.${NC}"
+                fi
             fi
         fi
     else
@@ -1178,6 +1383,7 @@ whitelist_domain() {
     fi
     return 0
 }
+
 # Block IP
 block_custom_ip() {
     echo -e "${BOLD}=== Block IP Address ===${NC}"
@@ -1209,16 +1415,27 @@ block_custom_ip() {
     # Ask if to block immediately
     read -rp "Block this IP immediately? [y/N]: " block_now
     if [[ "$block_now" =~ ^[Yy] ]]; then
-        if block_ip "$ip" "DNSniper: custom"; then
-            echo -e "${GREEN}Successfully blocked IP:${NC} $ip"
-            # Make rules persistent
-            make_rules_persistent
+        # Check if a background process is running
+        local bg_status=$(is_background_process_running)
+        local IFS="|"
+        read -r is_running pid start_time cmd <<< "$bg_status"
+        
+        if [[ "$is_running" == "1" ]]; then
+            echo -e "${YELLOW}A background process is already running.${NC}"
+            echo -e "${YELLOW}The IP will be blocked on the next run or when the current process completes.${NC}"
         else
-            echo -e "${RED}Error blocking IP:${NC} $ip"
+            if block_ip "$ip" "DNSniper: custom"; then
+                echo -e "${GREEN}Successfully blocked IP:${NC} $ip"
+                # Make rules persistent
+                make_rules_persistent
+            else
+                echo -e "${RED}Error blocking IP:${NC} $ip"
+            fi
         fi
     fi
     return 0
 }
+
 # Whitelist IP (renamed from unblock_custom_ip for clarity)
 whitelist_custom_ip() {
     echo -e "${BOLD}=== Add IP Address to Whitelist ===${NC}"
@@ -1269,12 +1486,22 @@ whitelist_custom_ip() {
         # Ask if to remove firewall rules immediately
         read -rp "Remove firewall rules for this IP immediately? [y/N]: " whitelist_now
         if [[ "$whitelist_now" =~ ^[Yy] ]]; then
-            if whitelist_ip "$ip_to_whitelist" "DNSniper: custom"; then
-                echo -e "${GREEN}Successfully added IP to whitelist:${NC} $ip_to_whitelist"
-                # Make rules persistent
-                make_rules_persistent
+            # Check if a background process is running
+            local bg_status=$(is_background_process_running)
+            local IFS="|"
+            read -r is_running pid start_time cmd <<< "$bg_status"
+            
+            if [[ "$is_running" == "1" ]]; then
+                echo -e "${YELLOW}A background process is already running.${NC}"
+                echo -e "${YELLOW}The IP will be whitelisted on the next run or when the current process completes.${NC}"
             else
-                echo -e "${RED}Error adding IP to whitelist:${NC} $ip_to_whitelist"
+                if whitelist_ip "$ip_to_whitelist" "DNSniper: custom"; then
+                    echo -e "${GREEN}Successfully added IP to whitelist:${NC} $ip_to_whitelist"
+                    # Make rules persistent
+                    make_rules_persistent
+                else
+                    echo -e "${RED}Error adding IP to whitelist:${NC} $ip_to_whitelist"
+                fi
             fi
         fi
     else
@@ -1282,6 +1509,7 @@ whitelist_custom_ip() {
     fi
     return 0
 }
+
 # Show status - Performance optimized
 display_status() {
     # Start processing in background for better UI responsiveness
@@ -1292,6 +1520,47 @@ display_status() {
     # Run analysis and data gathering in background
     (
         show_banner > "$tmpout"
+        
+        # Check for running background process
+        local bg_status=$(is_background_process_running)
+        local IFS="|"
+        read -r is_running pid start_time cmd <<< "$bg_status"
+        
+        if [[ "$is_running" == "1" ]]; then
+            echo -e "${YELLOW}${BOLD}Background Process Running${NC}" >> "$tmpout"
+            echo -e "${MAGENTA}───────────────────────────────────────${NC}" >> "$tmpout"
+            echo -e "${BOLD}PID:${NC} $pid" >> "$tmpout"
+            echo -e "${BOLD}Started:${NC} $start_time" >> "$tmpout"
+            
+            # Show status if available
+            if [[ -f "$STATUS_FILE" ]]; then
+                local status_data=$(get_status)
+                local status=$(echo "$status_data" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+                local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+                local progress=$(echo "$status_data" | grep -o '"progress":[^,}]*' | cut -d':' -f2)
+                local eta=$(echo "$status_data" | grep -o '"eta":[^,}]*' | cut -d':' -f2)
+                
+                # Format ETA if available
+                local eta_text=""
+                if [[ $eta -gt 0 ]]; then
+                    if [[ $eta -gt 3600 ]]; then
+                        eta_text="$(($eta / 3600))h $(($eta % 3600 / 60))m"
+                    elif [[ $eta -gt 60 ]]; then
+                        eta_text="$(($eta / 60))m $(($eta % 60))s"
+                    else
+                        eta_text="${eta}s"
+                    fi
+                    eta_text=" (ETA: ${eta_text})"
+                fi
+                
+                echo -e "${BOLD}Status:${NC} ${CYAN}$status${NC}" >> "$tmpout"
+                echo -e "${BOLD}Progress:${NC} ${GREEN}$progress%${NC}${YELLOW}$eta_text${NC}" >> "$tmpout"
+                echo -e "${BOLD}Message:${NC} $message" >> "$tmpout"
+            fi
+            
+            echo -e "${MAGENTA}───────────────────────────────────────${NC}" >> "$tmpout"
+        fi
+        
         # Get domains and IPs in a more efficient way
         local domain_count=$(merge_domains | wc -l)
         local blocked_ips=$(count_blocked_ips)
@@ -1308,6 +1577,7 @@ display_status() {
         local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
         local block_destination=$(grep '^block_destination=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
         local logging_enabled=$(grep '^logging_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+        local status_enabled=$(grep '^status_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
         # Apply defaults if missing or invalid
         [[ -z "$scheduler_enabled" || ! "$scheduler_enabled" =~ ^[01]$ ]] && scheduler_enabled=$DEFAULT_SCHEDULER_ENABLED
         [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]] && schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
@@ -1320,6 +1590,7 @@ display_status() {
         [[ -z "$block_source" || ! "$block_source" =~ ^[01]$ ]] && block_source=$DEFAULT_BLOCK_SOURCE
         [[ -z "$block_destination" || ! "$block_destination" =~ ^[01]$ ]] && block_destination=$DEFAULT_BLOCK_DESTINATION
         [[ -z "$logging_enabled" || ! "$logging_enabled" =~ ^[01]$ ]] && logging_enabled=$DEFAULT_LOGGING_ENABLED
+        [[ -z "$status_enabled" || ! "$status_enabled" =~ ^[01]$ ]] && status_enabled=$DEFAULT_STATUS_ENABLED
         # Format auto-update text
         local auto_update_text="${RED}Disabled${NC}"
         [[ "$auto_update" == "1" ]] && auto_update_text="${GREEN}Enabled${NC}"
@@ -1340,12 +1611,15 @@ display_status() {
         # Format logging text
         local logging_text="${RED}Disabled${NC}"
         [[ "$logging_enabled" == "1" ]] && logging_text="${GREEN}Enabled${NC}"
+        # Format status tracking text
+        local status_text="${RED}Disabled${NC}"
+        [[ "$status_enabled" == "1" ]] && status_text="${GREEN}Enabled${NC}"
         # Get service status
         local service_status=$(get_service_status)
         # Count expired domains pending cleanup
         local expired_count=0
         if [[ "$expire_enabled" == "1" && -f "$EXPIRED_DOMAINS_FILE" ]]; then
-            local expire_seconds=$((schedule_minutes _expire_multiplier_ 60))
+            local expire_seconds=$((schedule_minutes * expire_multiplier * 60))
             local current_time=$(date +%s)
             while IFS=, read -r domain timestamp source || [[ -n "$domain" ]]; do
                 [[ -z "$domain" || "$domain" =~ ^# ]] && continue
@@ -1384,6 +1658,7 @@ display_status() {
             echo -e "${BOLD}Rule Expiration:${NC}    $expire_text"
             echo -e "${BOLD}Rule Types:${NC}         $rule_types"
             echo -e "${BOLD}Logging:${NC}            $logging_text"
+            echo -e "${BOLD}Status Tracking:${NC}    $status_text"
             # Service information
             echo -e ""
             echo -e "${CYAN}${BOLD}SERVICES${NC}"
@@ -1401,7 +1676,13 @@ display_status() {
             echo -e "${CYAN}${BOLD}SYSTEM INFO${NC}"
             echo -e "${MAGENTA}───────────────────────────────────────${NC}"
             local last_run="Never"
-            if [[ -f "$LOG_FILE" ]]; then
+            if [[ -f "$STATUS_FILE" ]]; then
+                local status_data=$(get_status)
+                local timestamp=$(echo "$status_data" | grep -o '"formatted_time":"[^"]*"' | cut -d'"' -f4)
+                if [[ -n "$timestamp" && "$timestamp" != "unknown" ]]; then
+                    last_run="$timestamp"
+                fi
+            elif [[ -f "$LOG_FILE" ]]; then
                 last_run=$(stat -c %y "$LOG_FILE" 2>/dev/null || echo "Never")
             elif [[ -d "$HISTORY_DIR" ]]; then
                 # Check if there are any history files
@@ -1423,6 +1704,7 @@ display_status() {
                 if [[ $cdn_count -le 10 ]]; then
                     echo -e ""
                     echo -e "${BOLD}Detected CDN domains:${NC}"
+                    local count=0
                     while IFS=, read -r dom timestamp || [[ -n "$dom" ]]; do
                         [[ -z "$dom" || "$dom" =~ ^# ]] && continue
                         count=$((count + 1))
@@ -1500,6 +1782,7 @@ display_status() {
     rm -f "$tmpout"
     return 0
 }
+
 # Clear rules
 clear_rules() {
     echo -e "${BOLD}=== Clear Firewall Rules ===${NC}"
@@ -1526,6 +1809,7 @@ clear_rules() {
     fi
     return 0
 }
+
 # Uninstall
 uninstall() {
     echo -e "${RED}${BOLD}Warning: This will completely remove DNSniper.${NC}"
@@ -1586,6 +1870,7 @@ uninstall() {
     fi
     return 0
 }
+
 # Show help - updated with new option names
 show_help() {
     show_banner
@@ -1593,14 +1878,16 @@ show_help() {
     echo -e "${BOLD}Usage:${NC} dnsniper [options]"
     echo -e ""
     echo -e "${BOLD}Options:${NC}"
-    echo -e "  ${YELLOW}--run${NC}           Run DNSniper once (non-interactive)"
+    echo -e "  ${YELLOW}--run${NC}           Run DNSniper once (blocks terminal)"
+    echo -e "  ${YELLOW}--run-background${NC} Run DNSniper in background (non-blocking)"
     echo -e "  ${YELLOW}--update${NC}        Update default domains list"
     echo -e "  ${YELLOW}--status${NC}        Display status"
     echo -e "  ${YELLOW}--block${NC} DOMAIN  Add a domain to block list"
-    echo -e "  ${YELLOW}--whitelist${NC} DOMAIN Add a domain to whitelist"  # Changed from --unblock
+    echo -e "  ${YELLOW}--whitelist${NC} DOMAIN Add a domain to whitelist"
     echo -e "  ${YELLOW}--block-ip${NC} IP   Add an IP to block list"
-    echo -e "  ${YELLOW}--whitelist-ip${NC} IP Add an IP to whitelist"  # Changed from --unblock-ip
+    echo -e "  ${YELLOW}--whitelist-ip${NC} IP Add an IP to whitelist"
     echo -e "  ${YELLOW}--check-expired${NC} Check and remove expired rules"
+    echo -e "  ${YELLOW}--monitor${NC}       Monitor background process status"
     echo -e "  ${YELLOW}--version${NC}       Show version"
     echo -e "  ${YELLOW}--help${NC}          Show this help"
     echo -e ""
@@ -1611,47 +1898,107 @@ show_help() {
     echo -e ""
     return 0
 }
-# Main menu loop - updated with new terminology
-main_menu() {
+
+# NEW: Monitor background process
+monitor_background_process() {
+    echo -e "${BOLD}Monitoring DNSniper Background Process${NC}"
+    echo -e "${YELLOW}Press Ctrl+C to stop monitoring${NC}"
+    
+    # Trap Ctrl+C to exit cleanly
+    trap 'echo -e "\n${BLUE}Monitoring stopped by user.${NC}"; exit 0' INT
+    
     while true; do
-        show_banner
-        echo -e "${CYAN}${BOLD}MAIN MENU${NC}"
+        clear
+        echo -e "${CYAN}${BOLD}DNSniper Process Monitor${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
-        echo -e "${YELLOW}1.${NC} Run Now              ${YELLOW}2.${NC} Status"
-        echo -e "${YELLOW}3.${NC} Block Domain         ${YELLOW}4.${NC} Add Domain to Whitelist"  # Changed from Unblock Domain
-        echo -e "${YELLOW}5.${NC} Block IP Address     ${YELLOW}6.${NC} Add IP to Whitelist"  # Changed from Unblock IP
-        echo -e "${YELLOW}7.${NC} Settings             ${YELLOW}8.${NC} Update Lists"
-        echo -e "${YELLOW}9.${NC} Clear Rules          ${YELLOW}0.${NC} Exit"
-        echo -e "${YELLOW}U.${NC} Uninstall"
+        
+        # Check for running background process
+        local bg_status=$(is_background_process_running)
+        local IFS="|"
+        read -r is_running pid start_time cmd <<< "$bg_status"
+        
+        if [[ "$is_running" == "1" ]]; then
+            echo -e "${GREEN}Process running:${NC} PID $pid"
+            echo -e "${GREEN}Started:${NC} $start_time"
+            
+            # Get status information
+            if [[ -f "$STATUS_FILE" ]]; then
+                local status_data=$(get_status)
+                local status=$(echo "$status_data" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+                local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+                local progress=$(echo "$status_data" | grep -o '"progress":[^,}]*' | cut -d':' -f2)
+                local eta=$(echo "$status_data" | grep -o '"eta":[^,}]*' | cut -d':' -f2)
+                
+                # Format ETA if available
+                local eta_text=""
+                if [[ $eta -gt 0 ]]; then
+                    if [[ $eta -gt 3600 ]]; then
+                        eta_text="$(($eta / 3600))h $(($eta % 3600 / 60))m"
+                    elif [[ $eta -gt 60 ]]; then
+                        eta_text="$(($eta / 60))m $(($eta % 60))s"
+                    else
+                        eta_text="${eta}s"
+                    fi
+                    eta_text=" (ETA: ${eta_text})"
+                fi
+                
+                echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+                echo -e "${BOLD}Status:${NC} $status"
+                echo -e "${BOLD}Message:${NC} $message"
+                echo -e "${BOLD}Progress:${NC} "
+                
+                # Draw a progress bar
+                local bar_width=50
+                local filled_width=$((progress * bar_width / 100))
+                local empty_width=$((bar_width - filled_width))
+                
+                printf "[%${filled_width}s%${empty_width}s] %d%%${YELLOW}%s${NC}\n" | sed "s/ /=/g; s/\-/ /g" "" "$progress" "$eta_text"
+            else
+                echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+                echo -e "${YELLOW}Status information not available${NC}"
+            fi
+        else
+            echo -e "${RED}No background process is currently running.${NC}"
+            if [[ -f "$STATUS_FILE" ]]; then
+                local status_data=$(get_status)
+                local status=$(echo "$status_data" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+                local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+                local timestamp=$(echo "$status_data" | grep -o '"formatted_time":"[^"]*"' | cut -d'"' -f4)
+                
+                echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+                echo -e "${BOLD}Last known status:${NC} $status"
+                echo -e "${BOLD}Last message:${NC} $message"
+                echo -e "${BOLD}Time:${NC} $timestamp"
+            fi
+            echo -e "${YELLOW}Waiting for process to start...${NC}"
+        fi
+        
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
-        read -rp "Select an option: " choice
-        case "$choice" in
-            1) clear; run_with_lock; read -rp "Press Enter to continue..." ;;
-            2) display_status; read -rp "Press Enter to continue..." ;;
-            3) clear; block_domain; read -rp "Press Enter to continue..." ;;
-            4) clear; whitelist_domain; read -rp "Press Enter to continue..." ;; # Changed from unblock_domain
-            5) clear; block_custom_ip; read -rp "Press Enter to continue..." ;;
-            6) clear; whitelist_custom_ip; read -rp "Press Enter to continue..." ;; # Changed from unblock_custom_ip
-            7) settings_menu ;;
-            8) clear; update_default; read -rp "Press Enter to continue..." ;;
-            9) clear; clear_rules; read -rp "Press Enter to continue..." ;;
-            0) echo -e "${GREEN}Exiting...${NC}"; exit 0 ;;
-            [Uu]) clear; uninstall ;;
-            *) echo -e "${RED}Invalid selection. Please choose from the menu.${NC}"; sleep 1 ;;
-        esac
+        echo -e "${YELLOW}Press Ctrl+C to stop monitoring${NC}"
+        sleep 2
     done
 }
+
 # Updated argument handling with new option names
 handle_args() {
     case "$1" in
         --run)
+            # Run in foreground
             run_with_lock
+            ;;
+        --run-background)
+            # Non-interactive run for background operation
+            export DNSniper_NONINTERACTIVE=1
+            run_background
             ;;
         --update)
             update_default
             ;;
         --status)
             display_status
+            ;;
+        --monitor)
+            monitor_background_process
             ;;
         --block)
             if [[ -z "$2" ]]; then
@@ -1714,18 +2061,18 @@ handle_args() {
     esac
     return 0
 }
+
 # Entry point
 main() {
     # Check if running as root
     check_root
     # Check for dependencies
     check_dependencies
-    # Check for running instance and offer to manage it
-    check_and_manage_running_process
     # Ensure environment is prepared
     ensure_environment
-    # Initialize logging
+    # Initialize logging and status tracking
     initialize_logging
+    initialize_status_tracking
     # Handle command line arguments if provided
     if [[ $# -gt 0 ]]; then
         if handle_args "$@"; then
@@ -1735,5 +2082,6 @@ main() {
     # No valid arguments provided, start interactive menu
     main_menu
 }
+
 # Execute main function with all arguments
 main "$@"
