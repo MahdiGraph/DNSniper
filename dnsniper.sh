@@ -1295,7 +1295,7 @@ whitelist_domain() {
                     make_rules_persistent
                 else
                     echo -e "${YELLOW}No IP records found for this domain.${NC}"
-                }
+                fi
             else
                 echo -e "${YELLOW}No history found for this domain.${NC}"
             fi
