@@ -2,13 +2,29 @@
 # DNSniper Service Functions - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
 # Version: 2.1.1
-# Source the core functionality
+
+# Define fallback log function in case sourcing fails
+log() {
+    local level="$1" message="$2" verbose="${3:-}"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    # If we're running standalone, log to stderr
+    echo "[$timestamp] [$level] $message" >&2
+    
+    # If we have a LOG_FILE and LOGGING_ENABLED variables (from core script)
+    if [[ -n "${LOG_FILE:-}" && "${LOGGING_ENABLED:-0}" -eq 1 ]]; then
+        echo "[$timestamp] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
+    fi
+}
+
+# Now source the core functionality
 if [[ -f /etc/dnsniper/dnsniper-core.sh ]]; then
     source /etc/dnsniper/dnsniper-core.sh
 else
     echo "Error: Core DNSniper functionality not found" >&2
     exit 1
 fi
+
 # Atomic process locking mechanism
 acquire_lock() {
     # Use atomic file creation to acquire lock
@@ -44,6 +60,7 @@ acquire_lock() {
         fi
     fi
 }
+
 release_lock() {
     # Only remove lock if it belongs to current process
     local pid
@@ -56,6 +73,7 @@ release_lock() {
     fi
     return 0
 }
+
 # Create systemd service and timer
 create_systemd_service() {
     log "INFO" "Creating systemd services for DNSniper" "verbose"
@@ -136,6 +154,7 @@ EOF
     systemctl restart dnsniper-firewall.service &>/dev/null
     log "INFO" "Created initial rules files and started firewall service" "verbose"
 }
+
 # Update systemd timer settings
 update_systemd_timer() {
     log "INFO" "Updating systemd timer settings" "verbose"
@@ -170,6 +189,7 @@ update_systemd_timer() {
         log "INFO" "DNSniper scheduler disabled" "verbose"
     fi
 }
+
 # Check systemd service and timer status
 get_service_status() {
     local timer_status="Not installed"
@@ -217,6 +237,7 @@ get_service_status() {
     echo "DNSniper Service: $service_status"
     echo "Firewall Service: $firewall_status"
 }
+
 # Run with process locking
 run_with_lock() {
     if acquire_lock; then
@@ -231,6 +252,7 @@ run_with_lock() {
     fi
     return 0
 }
+
 # Clean up any cron jobs from previous versions
 cleanup_cron_jobs() {
     log "INFO" "Checking for old cron jobs" "verbose"

@@ -86,7 +86,7 @@ log() {
         echo -e "${RED}Error:${NC} $message" >&2
     elif [[ "$level" == "WARNING" ]]; then
         echo -e "${YELLOW}Warning:${NC} $message" >&2
-    elif [[ "$level" "INFO" && "$verbose" "verbose" ]]; then
+    elif [[ "$level" == "INFO" && "$verbose" == "verbose" ]]; then
         echo -e "${BLUE}Info:${NC} $message"
     fi
 }
