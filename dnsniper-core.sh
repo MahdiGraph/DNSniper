@@ -1062,7 +1062,7 @@ resolve_block() {
             if is_critical_ip "$ip"; then
                 log "WARNING" "Skipping critical IP: $ip" "verbose"
                 continue
-            fi
+            fi  # اینجا fi صحیح است، نه }
             if block_ip "$ip" "DNSniper: custom"; then
                 log "INFO" "Successfully blocked custom IP: $ip"
                 custom_blocked=$((custom_blocked + 1))

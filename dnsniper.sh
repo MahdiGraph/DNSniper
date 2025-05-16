@@ -866,7 +866,7 @@ block_domain() {
             if is_critical_ip "$ip"; then
                 echo -e "  - ${YELLOW}Skipped critical IP${NC}: $ip"
                 continue
-            }
+            fi  # ここを修正: } → fi
             
             if block_ip "$ip" "DNSniper: $domain"; then
                 echo -e "  - ${RED}Blocked${NC}: $ip"
