@@ -207,12 +207,12 @@ detect_system() {
 make_rules_persistent() {
     local os_type=$(detect_system)
     # Create necessary directories based on OS type
-    if [[ "$os_type" "debian" || "$os_type" "ubuntu" ]]; then
+    if [[ "$os_type" == "debian" || "$os_type" == "ubuntu" ]]; then
         mkdir -p /etc/iptables/ 2>/dev/null || true
         iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
         ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
         chmod 644 /etc/iptables/rules.v4 /etc/iptables/rules.v6 2>/dev/null || true
-    elif [[ "$os_type" "centos" || "$os_type" "rhel" || "$os_type" == "redhat" ]]; then
+    elif [[ "$os_type" == "centos" || "$os_type" == "rhel" || "$os_type" == "redhat" ]]; then
         # CentOS/RHEL uses /etc/sysconfig
         if [[ -d /etc/sysconfig ]]; then
             iptables-save > /etc/sysconfig/iptables 2>/dev/null || true
@@ -509,7 +509,7 @@ check_expired_domains() {
         expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
     fi
     # Calculate expiration time in seconds
-    local expire_seconds=$((schedule_minutes _expire_multiplier_ 60))
+    local expire_seconds=$((schedule_minutes * expire_multiplier * 60))
     local current_time=$(date +%s)
     # Create temp files
     local temp_expired=$(mktemp)
