@@ -29,13 +29,112 @@ echo -e ""
 BASE_DIR="/etc/dnsniper"
 BIN_PATH="/usr/local/bin/dnsniper"
 TMP_SCRIPT="/tmp/dnsniper.sh"
-CHECKSUM_FILE="/tmp/dnsniper.sha256"
+BACKUP_DIR="/tmp/dnsniper-backup-$(date +%Y%m%d-%H%M%S)"
+LOG_FILE="/tmp/dnsniper-install.log"
 GITHUB_URL="https://raw.githubusercontent.com/MahdiGraph/DNSniper/main"
 
 # Check root
 if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}${BOLD}Error:${NC} This installer must be run as root (sudo)." >&2
     exit 1
+fi
+
+# Setup logging
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo -e "${CYAN}${BOLD}CHECKING PREVIOUS INSTALLATION${NC}"
+echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+
+# Check for previous installation
+if [[ -f "$BIN_PATH" || -d "$BASE_DIR" ]]; then
+    echo -e "${YELLOW}${BOLD}Previous installation detected!${NC}"
+    echo -e "1) Upgrade (keeps your configurations)"
+    echo -e "2) Clean install (removes all configurations)"
+    echo -e "3) Cancel installation"
+    
+    read -rp "Choose an option [1-3]: " choice
+    
+    case "$choice" in
+        1)
+            echo -e "${YELLOW}Upgrading DNSniper...${NC}"
+            
+            # Create backup directory
+            mkdir -p "$BACKUP_DIR"
+            
+            # Stop any running processes and services
+            echo -e "${BLUE}Stopping DNSniper services...${NC}"
+            
+            # Kill any running DNSniper processes
+            pkill -f "/usr/local/bin/dnsniper" 2>/dev/null || true
+            
+            # Disable and stop systemd services if they exist
+            if command -v systemctl &>/dev/null; then
+                systemctl stop dnsniper.timer 2>/dev/null || true
+                systemctl stop dnsniper.service 2>/dev/null || true
+                systemctl stop dnsniper-firewall.service 2>/dev/null || true
+                
+                systemctl disable dnsniper.timer 2>/dev/null || true
+                systemctl disable dnsniper.service 2>/dev/null || true
+                systemctl disable dnsniper-firewall.service 2>/dev/null || true
+            fi
+            
+            # Remove cron jobs
+            echo -e "${BLUE}Removing cron jobs...${NC}"
+            crontab -l 2>/dev/null | grep -v "dnsniper" | crontab - 2>/dev/null || true
+            
+            # Backup configuration
+            if [[ -d "$BASE_DIR" ]]; then
+                echo -e "${YELLOW}Backing up configuration...${NC}"
+                cp -r "$BASE_DIR"/* "$BACKUP_DIR/" 2>/dev/null || true
+                echo -e "${GREEN}Configuration backed up to: $BACKUP_DIR${NC}"
+            fi
+            
+            # Remove binary
+            rm -f "$BIN_PATH" 2>/dev/null || true
+            ;;
+        2)
+            echo -e "${YELLOW}Performing clean install...${NC}"
+            
+            # Kill any running DNSniper processes
+            pkill -f "/usr/local/bin/dnsniper" 2>/dev/null || true
+            
+            # Clean up systemd services
+            if command -v systemctl &>/dev/null; then
+                systemctl stop dnsniper.timer 2>/dev/null || true
+                systemctl stop dnsniper.service 2>/dev/null || true
+                systemctl stop dnsniper-firewall.service 2>/dev/null || true
+                
+                systemctl disable dnsniper.timer 2>/dev/null || true
+                systemctl disable dnsniper.service 2>/dev/null || true
+                systemctl disable dnsniper-firewall.service 2>/dev/null || true
+                
+                rm -f /etc/systemd/system/dnsniper.service 2>/dev/null || true
+                rm -f /etc/systemd/system/dnsniper.timer 2>/dev/null || true
+                rm -f /etc/systemd/system/dnsniper-firewall.service 2>/dev/null || true
+                
+                systemctl daemon-reload 2>/dev/null || true
+            fi
+            
+            # Remove cron jobs
+            crontab -l 2>/dev/null | grep -v "dnsniper" | crontab - 2>/dev/null || true
+            
+            # Clean up firewall rules if DNSniper binary exists
+            if [[ -f "$BIN_PATH" ]]; then
+                echo -e "${YELLOW}Cleaning firewall rules...${NC}"
+                "$BIN_PATH" --clean-rules 2>/dev/null || true
+            fi
+            
+            # Remove files
+            rm -f "$BIN_PATH" 2>/dev/null || true
+            rm -rf "$BASE_DIR" 2>/dev/null || true
+            
+            echo -e "${GREEN}Previous installation completely removed.${NC}"
+            ;;
+        3|*)
+            echo -e "${RED}Installation cancelled.${NC}"
+            exit 0
+            ;;
+    esac
 fi
 
 echo -e "${CYAN}${BOLD}SYSTEM DETECTION${NC}"
@@ -165,24 +264,6 @@ elif [[ -f /etc/fedora-release ]]; then
 else
     OS_TYPE="unknown"
     echo -e "${YELLOW}Unknown OS, will create systemd service for persistence${NC}"
-    
-    # Create systemd unit for loading rules at boot
-    cat > /etc/systemd/system/dnsniper-firewall.service << EOF
-[Unit]
-Description=DNSniper Firewall Rules
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/sbin/iptables-restore $BASE_DIR/iptables.rules
-ExecStart=/sbin/ip6tables-restore $BASE_DIR/ip6tables.rules
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload &>/dev/null || true
-    systemctl enable dnsniper-firewall.service &>/dev/null || true
 fi
 
 # Download script
@@ -227,7 +308,23 @@ if ! "$TMP_SCRIPT" --version &>/dev/null; then
     echo -e "${RED}${BOLD}Warning:${NC} Script test failed. Installing anyway, but there might be issues."
 fi
 
+# Check for backup to restore
+if [[ -d "$BACKUP_DIR" && $(ls -A "$BACKUP_DIR" 2>/dev/null) ]]; then
+    echo -e "${YELLOW}Found backup from previous installation.${NC}"
+    read -rp "Restore configuration from backup? [Y/n]: " restore_backup
+    
+    if [[ ! "$restore_backup" =~ ^[Nn]$ ]]; then
+        echo -e "${BLUE}Restoring configuration from backup...${NC}"
+        mkdir -p "$BASE_DIR"
+        cp -r "$BACKUP_DIR"/* "$BASE_DIR/" 2>/dev/null || true
+        echo -e "${GREEN}Configuration restored.${NC}"
+    else
+        echo -e "${YELLOW}Skipping backup restoration.${NC}"
+    fi
+fi
+
 # Move script to final location
+echo -e "${BLUE}Installing DNSniper...${NC}"
 cp "$TMP_SCRIPT" "$BASE_DIR/dnsniper.sh"
 ln -sf "$BASE_DIR/dnsniper.sh" "$BIN_PATH"
 chmod +x "$BASE_DIR/dnsniper.sh" "$BIN_PATH"
@@ -271,54 +368,18 @@ if "$BIN_PATH" --version &>/dev/null; then
             if command -v systemctl &>/dev/null; then
                 echo -e "${YELLOW}Setting up systemd timer...${NC}"
                 
-                # Create systemd service
-                cat > /etc/systemd/system/dnsniper.service << EOF
-[Unit]
-Description=DNSniper Domain Threat Mitigation
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=$BIN_PATH --run
-User=root
-Group=root
-IOSchedulingClass=best-effort
-CPUSchedulingPolicy=batch
-Nice=19
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-                # Create systemd timer
-                cat > /etc/systemd/system/dnsniper.timer << EOF
-[Unit]
-Description=Run DNSniper hourly
-Requires=dnsniper.service
-
-[Timer]
-Unit=dnsniper.service
-OnBootSec=60
-OnUnitActiveSec=1h
-
-[Install]
-WantedBy=timers.target
-EOF
-
-                # Enable and start the timer
-                systemctl daemon-reload
-                systemctl enable dnsniper.timer
-                systemctl start dnsniper.timer
-                
-                # Configure DNSniper to use systemd
+                # Configure to use systemd (will be picked up when service runs)
                 sed -i "s|^use_systemd=.*|use_systemd=1|" "$BASE_DIR/config.conf" 2>/dev/null || true
+                
+                # Enable systemd timer
+                "$BIN_PATH" --status > /dev/null 2>&1
                 
                 echo -e "${GREEN}DNSniper scheduled with systemd timer (runs hourly)${NC}"
             else
                 echo -e "${RED}Systemd not available. Falling back to cron.${NC}"
                 
                 # Create cron job for hourly execution
-                (crontab -l 2>/dev/null | grep -v "$BIN_PATH"; echo "0 * * * * $BIN_PATH --run >/dev/null 2>&1") | crontab - 2>/dev/null || true
+                (crontab -l 2>/dev/null | grep -v "$BIN_PATH"; echo "0 * * * * $BIN_PATH --run-service >/dev/null 2>&1") | crontab - 2>/dev/null || true
                 
                 echo -e "${GREEN}DNSniper scheduled with cron (runs hourly)${NC}"
             fi
@@ -327,13 +388,15 @@ EOF
             # No scheduling
             echo -e "${YELLOW}Not setting up automatic scheduling.${NC}"
             echo -e "${YELLOW}You can manually run DNSniper with: ${NC}sudo dnsniper --run"
+            # Set cron to disabled in config
+            sed -i "s|^cron=.*|cron='# DNSniper disabled'|" "$BASE_DIR/config.conf" 2>/dev/null || true
             ;;
         *)
             # Default: Use cron
             echo -e "${YELLOW}Setting up cron job...${NC}"
             
             # Create cron job for hourly execution
-            (crontab -l 2>/dev/null | grep -v "$BIN_PATH"; echo "0 * * * * $BIN_PATH --run >/dev/null 2>&1") | crontab - 2>/dev/null || true
+            (crontab -l 2>/dev/null | grep -v "$BIN_PATH"; echo "0 * * * * $BIN_PATH --run-service >/dev/null 2>&1") | crontab - 2>/dev/null || true
             
             echo -e "${GREEN}DNSniper scheduled with cron (runs hourly)${NC}"
             ;;
@@ -346,9 +409,14 @@ EOF
     read -rp "Would you like to run DNSniper now to update domain lists? [Y/n]: " run_now
     
     if [[ ! "$run_now" =~ ^[Nn]$ ]]; then
-        echo -e "${YELLOW}Running DNSniper for initial setup...${NC}"
-        $BIN_PATH --update && $BIN_PATH --run
-        echo -e "${GREEN}Initial setup complete!${NC}"
+        echo -e "${YELLOW}Running DNSniper for initial setup in background...${NC}"
+        
+        # Run DNSniper in background
+        nohup "$BIN_PATH" --update > /dev/null 2>&1 &
+        
+        echo -e "${GREEN}DNSniper update started in background.${NC}"
+        echo -e "${YELLOW}Domain block lists will be downloaded and applied automatically.${NC}"
+        echo -e "${YELLOW}You can check status later with 'sudo dnsniper --status'${NC}"
     else
         echo -e "${YELLOW}Skipping initial run. You can run DNSniper manually with 'sudo dnsniper'${NC}"
     fi
@@ -369,5 +437,9 @@ echo -e ""
 echo -e "${YELLOW}To run manually:${NC}"
 echo -e "  ${BOLD}Command:${NC} sudo dnsniper --run"
 echo -e ""
+echo -e "${YELLOW}To check status:${NC}"
+echo -e "  ${BOLD}Command:${NC} sudo dnsniper --status"
+echo -e ""
 echo -e "${BLUE}${BOLD}Protect your servers against malicious domains with DNSniper!${NC}"
 echo -e ""
+echo -e "${YELLOW}Installation log saved to: $LOG_FILE${NC}"

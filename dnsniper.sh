@@ -2,42 +2,12 @@
 # DNSniper - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
 # Version: 1.4.0
-# Strict error handling mode
-set -o errexit
-set -o pipefail
-set -o nounset
 
-# Process locking to prevent multiple instances running simultaneously
-LOCK_FILE="/var/lock/dnsniper.lock"
+# Separate lock files for different operations
+RUN_LOCK_FILE="/var/lock/dnsniper-run.lock"
+UPDATE_LOCK_FILE="/var/lock/dnsniper-update.lock"
 
-# Create a trap to remove the lock file on exit or error
-cleanup() {
-    rm -f "$LOCK_FILE"
-    exit "${1:-0}"
-}
-
-# Set up traps for various signals
-trap 'cleanup 1' SIGHUP SIGINT SIGQUIT SIGTERM
-trap 'cleanup 0' EXIT
-
-# Try to create the lock file - exit if another instance is running
-if ! ( set -o noclobber; echo "$$" > "$LOCK_FILE" ) 2>/dev/null; then
-    # Get the PID of the running process
-    running_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "unknown")
-    
-    # Check if the process is actually running
-    if ps -p "$running_pid" > /dev/null 2>&1; then
-        echo "Another instance is already running (PID: $running_pid). Exiting."
-        exit 1
-    else
-        # Stale lock file, remove it
-        echo "Removing stale lock file from previous run."
-        rm -f "$LOCK_FILE"
-        echo "$$" > "$LOCK_FILE"
-    fi
-fi
-
-# ANSI color codes and formatting
+# ANSI color codes
 RED='\e[31m'
 GREEN='\e[32m'
 YELLOW='\e[33m'
@@ -63,6 +33,7 @@ RULES_V6_FILE="$BASE_DIR/ip6tables.rules"
 BIN_CMD="/usr/local/bin/dnsniper"
 LOG_FILE="$BASE_DIR/dnsniper.log"
 LOG_DIR="$BASE_DIR/logs"
+STATUS_FILE="$BASE_DIR/status.txt"
 
 # IPSet definitions
 IPSET4="dnsniper-ipv4"
@@ -95,6 +66,42 @@ VERSION="1.4.0"
 # Dependencies
 DEPENDENCIES=(iptables ip6tables curl dig sqlite3 crontab)
 
+# Function to acquire lock for specific operations
+acquire_lock() {
+    local lock_file="$1"
+    local operation="$2"
+    
+    # Try to create the lock file
+    if ! ( set -o noclobber; echo "$$" > "$lock_file" ) 2>/dev/null; then
+        # Get the PID of the running process
+        running_pid=$(cat "$lock_file" 2>/dev/null || echo "unknown")
+        
+        # Check if the process is actually running
+        if ps -p "$running_pid" > /dev/null 2>&1; then
+            echo "Another $operation operation is already running (PID: $running_pid)."
+            return 1
+        else
+            # Stale lock file, remove it
+            echo "Removing stale lock file from previous $operation."
+            rm -f "$lock_file"
+            echo "$$" > "$lock_file"
+        fi
+    fi
+    
+    return 0
+}
+
+# Function to release lock
+release_lock() {
+    local lock_file="$1"
+    rm -f "$lock_file" 2>/dev/null || true
+}
+
+# Write status information
+write_status() {
+    echo "$1" > "$STATUS_FILE"
+}
+
 # Helper functions
 log() {
     local level="$1" message="$2" verbose="${3:-}"
@@ -102,7 +109,7 @@ log() {
     
     # Only write to log file if logging is enabled
     if [[ $LOGGING_ENABLED -eq 1 ]]; then
-        # Check if log file is too large (>10MB by default)
+        # Check if log file is too large
         local max_size=$(grep '^log_max_size=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2 || echo "$DEFAULT_LOG_MAX_SIZE")
         local max_size_bytes=$((max_size * 1024 * 1024))
         
@@ -257,7 +264,7 @@ is_critical_ip() {
 exit_with_error() {
     log "ERROR" "$1"
     echo -e "${RED}Error:${NC} $1" >&2
-    cleanup "${2:-1}"
+    exit "${2:-1}"
 }
 
 # Setup systemd service and timer for automatic execution
@@ -272,7 +279,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=$BIN_CMD --run
+ExecStart=$BIN_CMD --run-service
 User=root
 Group=root
 IOSchedulingClass=best-effort
@@ -483,6 +490,9 @@ use_systemd=0
 EOF
     fi
     
+    # Initial status
+    echo "READY" > "$STATUS_FILE"
+    
     # Check for required commands
     local missing_deps=()
     for cmd in ${DEPENDENCIES[@]}; do
@@ -613,7 +623,7 @@ update_default() {
     local retry_count=0
     local success=false
     
-    while [[ $retry_count -lt $max_retries ]]; do
+    while [[ $retry_count -lt $max_retries && $success == false ]]; do
         if curl -sfL --connect-timeout "$timeout" --max-time "$timeout" "$update_url" -o "$temp_file"; then
             success=true
             break
@@ -688,6 +698,33 @@ SQL
     fi
     
     return 0
+}
+
+# Function to handle update with proper locking
+update_with_lock() {
+    if ! acquire_lock "$UPDATE_LOCK_FILE" "update"; then
+        echo_safe "${YELLOW}An update operation is already in progress. Please try again later.${NC}"
+        return 1
+    fi
+    
+    # Update status
+    write_status "UPDATING"
+    
+    # Perform update
+    update_default
+    local result=$?
+    
+    # Update status based on result
+    if [[ $result -eq 0 ]]; then
+        write_status "READY"
+    else
+        write_status "UPDATE_FAILED"
+    fi
+    
+    # Release lock
+    release_lock "$UPDATE_LOCK_FILE"
+    
+    return $result
 }
 
 ### 4) Check for expired domains and remove their rules
@@ -1135,6 +1172,9 @@ has_active_blocks() {
 resolve_block() {
     log "INFO" "Starting domain resolution and blocking" "verbose"
     
+    # Update status
+    write_status "RUNNING"
+    
     # Check if we should auto-update
     local auto_update=$(grep '^auto_update=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$auto_update" || ! "$auto_update" =~ ^[0-9]+$ ]]; then
@@ -1321,6 +1361,64 @@ resolve_block() {
     
     # Make sure the rules are persistent
     make_rules_persistent
+    
+    # Update status
+    write_status "READY"
+    
+    return 0
+}
+
+# Function to run resolve_block with proper locking for background service
+run_with_lock() {
+    if ! acquire_lock "$RUN_LOCK_FILE" "run"; then
+        echo_safe "${YELLOW}A run operation is already in progress. Please try again later.${NC}"
+        return 1
+    fi
+    
+    # Perform resolution and blocking
+    resolve_block
+    local result=$?
+    
+    # Release lock
+    release_lock "$RUN_LOCK_FILE"
+    
+    return $result
+}
+
+# Clean all DNSniper rules
+clean_rules() {
+    echo_safe "${BLUE}Cleaning DNSniper firewall rules...${NC}"
+    local success=0
+    
+    # Remove references to our chains
+    iptables -D INPUT -j "$IPT_CHAIN" 2>/dev/null || true
+    iptables -D OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
+    ip6tables -D INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+    ip6tables -D OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
+    
+    # Flush our chains
+    iptables -F "$IPT_CHAIN" 2>/dev/null && ip6tables -F "$IPT6_CHAIN" 2>/dev/null && success=1
+    
+    # Delete our chains
+    iptables -X "$IPT_CHAIN" 2>/dev/null || true
+    ip6tables -X "$IPT6_CHAIN" 2>/dev/null || true
+    
+    # Remove ipsets if they exist
+    if command -v ipset &>/dev/null; then
+        ipset destroy "$IPSET4" 2>/dev/null || true
+        ipset destroy "$IPSET6" 2>/dev/null || true
+    fi
+    
+    # Make changes persistent
+    make_rules_persistent
+    
+    if [[ $success -eq 1 ]]; then
+        echo_safe "${GREEN}All DNSniper rules cleared.${NC}"
+        log "INFO" "All firewall rules cleared"
+    else
+        echo_safe "${YELLOW}Some rules could not be cleared. Check iptables status.${NC}"
+        log "WARNING" "Some firewall rules could not be cleared"
+    fi
     
     return 0
 }
@@ -1703,9 +1801,15 @@ rule_types_settings() {
         
         # Run a full resolve_block to rebuild the rules with new settings
         echo_safe "${BLUE}Rebuilding rules with new settings...${NC}"
-        resolve_block
         
-        echo_safe "${GREEN}Rule type changes applied successfully.${NC}"
+        # Run in background with minimal output
+        (
+            resolve_block > /dev/null 2>&1
+            echo_safe "${GREEN}Rule type changes applied successfully.${NC}" >> "$LOG_FILE"
+        ) &
+        
+        echo_safe "${GREEN}Rule rebuilding started in background.${NC}"
+        echo_safe "${YELLOW}This may take a few minutes for large domain lists.${NC}"
     else
         echo_safe "${YELLOW}No changes made.${NC}"
     fi
@@ -1740,12 +1844,12 @@ set_schedule() {
             # Set cron to run every m minutes
             local expr
             if [[ $m -eq 60 ]]; then
-                expr="0 * * * * $BIN_CMD --run >/dev/null 2>&1"
+                expr="0 * * * * $BIN_CMD --run-service >/dev/null 2>&1"
             elif [[ $m -lt 60 ]]; then
-                expr="*/$m * * * * $BIN_CMD --run >/dev/null 2>&1"
+                expr="*/$m * * * * $BIN_CMD --run-service >/dev/null 2>&1"
             else
                 local hours=$((m / 60))
-                expr="0 */$hours * * * $BIN_CMD --run >/dev/null 2>&1"
+                expr="0 */$hours * * * $BIN_CMD --run-service >/dev/null 2>&1"
             fi
             
             sed -i "s|^cron=.*|cron='$expr'|" "$CONFIG_FILE"
@@ -2689,6 +2793,31 @@ display_status() {
     (
         show_banner > "$tmpout"
         
+        # Get current service status
+        local service_status=$(cat "$STATUS_FILE" 2>/dev/null || echo "UNKNOWN")
+        local status_text="${YELLOW}Unknown${NC}"
+        case "$service_status" in
+            READY) status_text="${GREEN}Ready${NC}" ;;
+            RUNNING) status_text="${BLUE}Running${NC}" ;;
+            UPDATING) status_text="${CYAN}Updating${NC}" ;;
+            UPDATE_FAILED) status_text="${RED}Update Failed${NC}" ;;
+            *) status_text="${YELLOW}$service_status${NC}" ;;
+        esac
+        
+        # Check if background service is running
+        local run_lock_pid=$(cat "$RUN_LOCK_FILE" 2>/dev/null || echo "")
+        local run_status="${RED}Not Running${NC}"
+        if [[ -n "$run_lock_pid" ]] && ps -p "$run_lock_pid" >/dev/null 2>&1; then
+            run_status="${GREEN}Running (PID: $run_lock_pid)${NC}"
+        fi
+        
+        # Get background update status
+        local update_lock_pid=$(cat "$UPDATE_LOCK_FILE" 2>/dev/null || echo "")
+        local update_status="${RED}Not Running${NC}"
+        if [[ -n "$update_lock_pid" ]] && ps -p "$update_lock_pid" >/dev/null 2>&1; then
+            update_status="${GREEN}Running (PID: $update_lock_pid)${NC}"
+        fi
+        
         # Get domains and IPs in a more efficient way
         local domain_count=$(merge_domains | wc -l)
         local blocked_ips=$(count_blocked_ips)
@@ -2770,12 +2899,15 @@ display_status() {
         {
             echo_safe "${CYAN}${BOLD}SYSTEM STATUS${NC}"
             echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
-            echo_safe "${BOLD}Blocked Domains:${NC}      ${GREEN}${domain_count}${NC}"
-            echo_safe "${BOLD}Blocked IPs:${NC}          ${RED}${blocked_ips}${NC}"
-            echo_safe "${BOLD}Custom IPs:${NC}           ${YELLOW}${custom_ip_count}${NC}"
+            echo_safe "${BOLD}Current Status:${NC}      $status_text"
+            echo_safe "${BOLD}Service:${NC}             $run_status"
+            echo_safe "${BOLD}Update Process:${NC}      $update_status"
+            echo_safe "${BOLD}Blocked Domains:${NC}     ${GREEN}${domain_count}${NC}"
+            echo_safe "${BOLD}Blocked IPs:${NC}         ${RED}${blocked_ips}${NC}"
+            echo_safe "${BOLD}Custom IPs:${NC}          ${YELLOW}${custom_ip_count}${NC}"
             
             if [[ $expired_count -gt 0 && "$expire_enabled" == "1" ]]; then
-                echo_safe "${BOLD}Pending Expirations:${NC}  ${YELLOW}$expired_count${NC}"
+                echo_safe "${BOLD}Pending Expirations:${NC} ${YELLOW}$expired_count${NC}"
             fi
             
             # Config section
@@ -2902,31 +3034,13 @@ display_status() {
     return 0
 }
 
-# Clear rules
-clear_rules() {
+# Clear rules interactively
+clear_rules_interactive() {
     echo_safe "${BOLD}=== Clear Firewall Rules ===${NC}"
     read -rp "Clear all DNSniper firewall rules? [y/N]: " confirm
     
     if [[ "$confirm" =~ ^[Yy] ]]; then
-        echo_safe "${BLUE}Removing DNSniper rules...${NC}"
-        local success=0
-        
-        # Flush our custom chains
-        if iptables -F "$IPT_CHAIN" 2>/dev/null && ip6tables -F "$IPT6_CHAIN" 2>/dev/null; then
-            success=1
-        fi
-        
-        # Make rules persistent
-        make_rules_persistent
-        
-        if [[ $success -eq 1 ]]; then
-            echo_safe "${GREEN}All DNSniper rules cleared.${NC}"
-            log "INFO" "All firewall rules cleared" "verbose"
-        else
-            echo_safe "${RED}Error clearing rules. Check iptables status.${NC}"
-            log "ERROR" "Error clearing firewall rules"
-            return 1
-        fi
+        clean_rules
     else
         echo_safe "${YELLOW}Operation canceled.${NC}"
     fi
@@ -2946,29 +3060,7 @@ uninstall() {
         read -rp "Remove DNSniper firewall rules? [Y/n]: " remove_rules
         if [[ ! "$remove_rules" =~ ^[Nn] ]]; then
             echo_safe "${BLUE}Removing DNSniper firewall rules...${NC}"
-            
-            # Remove references to our chains
-            iptables -D INPUT -j "$IPT_CHAIN" 2>/dev/null || true
-            iptables -D OUTPUT -j "$IPT_CHAIN" 2>/dev/null || true
-            ip6tables -D INPUT -j "$IPT6_CHAIN" 2>/dev/null || true
-            ip6tables -D OUTPUT -j "$IPT6_CHAIN" 2>/dev/null || true
-            
-            # Flush our chains
-            iptables -F "$IPT_CHAIN" 2>/dev/null || true
-            ip6tables -F "$IPT6_CHAIN" 2>/dev/null || true
-            
-            # Delete our chains
-            iptables -X "$IPT_CHAIN" 2>/dev/null || true
-            ip6tables -X "$IPT6_CHAIN" 2>/dev/null || true
-            
-            # Remove ipsets if they exist
-            if command -v ipset &>/dev/null; then
-                ipset destroy "$IPSET4" 2>/dev/null || true
-                ipset destroy "$IPSET6" 2>/dev/null || true
-            fi
-            
-            # Make changes persistent
-            make_rules_persistent
+            clean_rules
         else
             echo_safe "${YELLOW}Keeping DNSniper firewall rules.${NC}"
         fi
@@ -2994,7 +3086,7 @@ uninstall() {
         rm -rf "$BASE_DIR" 2>/dev/null || true
         
         echo_safe "${GREEN}DNSniper successfully uninstalled.${NC}"
-        cleanup 0
+        exit 0
     else
         echo_safe "${YELLOW}Uninstall canceled.${NC}"
     fi
@@ -3009,7 +3101,8 @@ show_help() {
     echo_safe "${BOLD}Usage:${NC} dnsniper [options]"
     echo_safe ""
     echo_safe "${BOLD}Options:${NC}"
-    echo_safe "  ${YELLOW}--run${NC}        Run DNSniper once (non-interactive)"
+    echo_safe "  ${YELLOW}--run${NC}        Run DNSniper once in foreground (interactive)"
+    echo_safe "  ${YELLOW}--run-service${NC} Run DNSniper once in background (non-interactive)"
     echo_safe "  ${YELLOW}--update${NC}     Update default domains list"
     echo_safe "  ${YELLOW}--status${NC}     Display status"
     echo_safe "  ${YELLOW}--block${NC} DOMAIN Add a domain to block list"
@@ -3017,6 +3110,7 @@ show_help() {
     echo_safe "  ${YELLOW}--block-ip${NC} IP Add an IP to block list"
     echo_safe "  ${YELLOW}--unblock-ip${NC} IP Remove an IP from block list"
     echo_safe "  ${YELLOW}--check-expired${NC} Check and remove expired rules"
+    echo_safe "  ${YELLOW}--clean-rules${NC} Clean all DNSniper firewall rules"
     echo_safe "  ${YELLOW}--version${NC}    Show version"
     echo_safe "  ${YELLOW}--help${NC}       Show this help"
     echo_safe ""
@@ -3042,18 +3136,35 @@ main_menu() {
         echo_safe "${YELLOW}9.${NC} Clear Rules          ${YELLOW}0.${NC} Exit"
         echo_safe "${YELLOW}U.${NC} Uninstall"
         echo_safe "${MAGENTA}───────────────────────────────────────${NC}"
+        
+        # Show service status if a process is running
+        local run_lock_pid=$(cat "$RUN_LOCK_FILE" 2>/dev/null || echo "")
+        if [[ -n "$run_lock_pid" ]] && ps -p "$run_lock_pid" >/dev/null 2>&1; then
+            echo_safe "${YELLOW}Note: Background service is running (PID: $run_lock_pid)${NC}"
+        fi
+        
         read -rp "Select an option: " choice
         case "$choice" in
-            1) clear; resolve_block; read -rp "Press Enter to continue..." ;;
+            1) 
+                clear
+                echo_safe "${BLUE}Running DNSniper in foreground...${NC}"
+                run_with_lock
+                read -rp "Press Enter to continue..."
+                ;;
             2) display_status; read -rp "Press Enter to continue..." ;;
             3) clear; block_domain; read -rp "Press Enter to continue..." ;;
             4) clear; unblock_domain; read -rp "Press Enter to continue..." ;;
             5) clear; block_custom_ip; read -rp "Press Enter to continue..." ;;
             6) clear; unblock_custom_ip; read -rp "Press Enter to continue..." ;;
             7) settings_menu ;;
-            8) clear; update_default; read -rp "Press Enter to continue..." ;;
-            9) clear; clear_rules; read -rp "Press Enter to continue..." ;;
-            0) echo_safe "${GREEN}Exiting...${NC}"; cleanup 0 ;;
+            8) 
+                clear
+                echo_safe "${BLUE}Updating domain lists...${NC}"
+                update_with_lock
+                read -rp "Press Enter to continue..."
+                ;;
+            9) clear; clear_rules_interactive; read -rp "Press Enter to continue..." ;;
+            0) echo_safe "${GREEN}Exiting...${NC}"; exit 0 ;;
             [Uu]) clear; uninstall ;;
             *) echo_safe "${RED}Invalid selection. Please choose from the menu.${NC}"; sleep 1 ;;
         esac
@@ -3063,10 +3174,29 @@ main_menu() {
 handle_args() {
     case "$1" in
         --run)
+            # For interactive/foreground run requested by user
+            run_with_lock
+            ;;
+        --run-service)
+            # For background service run by cron/systemd
+            # Just run directly without interactive output
+            if ! acquire_lock "$RUN_LOCK_FILE" "run"; then
+                log "WARNING" "A run operation is already in progress. Service execution skipped."
+                return 1
+            fi
+            
+            # Update status and run
+            write_status "RUNNING"
             resolve_block
+            local result=$?
+            
+            # Release lock
+            release_lock "$RUN_LOCK_FILE"
+            
+            return $result
             ;;
         --update)
-            update_default
+            update_with_lock
             ;;
         --status)
             display_status
@@ -3075,7 +3205,7 @@ handle_args() {
             if [[ -z "$2" ]]; then
                 echo_safe "${RED}Error: missing domain parameter${NC}"
                 show_help
-                cleanup 1
+                exit 1
             fi
             echo "$2" >> "$ADD_FILE"
             echo_safe "${GREEN}Domain added to block list:${NC} $2"
@@ -3085,7 +3215,7 @@ handle_args() {
             if [[ -z "$2" ]]; then
                 echo_safe "${RED}Error: missing domain parameter${NC}"
                 show_help
-                cleanup 1
+                exit 1
             fi
             echo "$2" >> "$REMOVE_FILE"
             echo_safe "${GREEN}Domain added to unblock list:${NC} $2"
@@ -3095,11 +3225,11 @@ handle_args() {
             if [[ -z "$2" ]]; then
                 echo_safe "${RED}Error: missing IP parameter${NC}"
                 show_help
-                cleanup 1
+                exit 1
             fi
             if is_critical_ip "$2"; then
                 echo_safe "${RED}Cannot block critical IP:${NC} $2"
-                cleanup 1
+                exit 1
             fi
             echo "$2" >> "$IP_ADD_FILE"
             echo_safe "${GREEN}IP added to block list:${NC} $2"
@@ -3109,7 +3239,7 @@ handle_args() {
             if [[ -z "$2" ]]; then
                 echo_safe "${RED}Error: missing IP parameter${NC}"
                 show_help
-                cleanup 1
+                exit 1
             fi
             echo "$2" >> "$IP_REMOVE_FILE"
             echo_safe "${GREEN}IP added to unblock list:${NC} $2"
@@ -3118,13 +3248,16 @@ handle_args() {
         --check-expired)
             check_expired_domains
             ;;
+        --clean-rules)
+            clean_rules
+            ;;
         --version)
             echo_safe "DNSniper version $VERSION"
-            cleanup 0
+            exit 0
             ;;
         --help)
             show_help
-            cleanup 0
+            exit 0
             ;;
         *)
             return 1
@@ -3150,7 +3283,7 @@ main() {
     # Handle command line arguments if provided
     if [[ $# -gt 0 ]]; then
         if handle_args "$@"; then
-            cleanup 0
+            exit 0
         fi
     fi
     
