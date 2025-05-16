@@ -24,6 +24,14 @@ CORE_SCRIPT="$BASE_DIR/dnsniper-core.sh"
 DAEMON_SCRIPT="$BASE_DIR/dnsniper-daemon.sh"
 MAIN_SCRIPT="$BASE_DIR/dnsniper.sh"
 CONFIG_FILE="$BASE_DIR/config.conf"
+# Retrieve latest commit hash from GitHub
+latest_commit=$(git ls-remote https://github.com/MahdiGraph/DNSniper.git | head -n 1 | cut -f1)
+if [[ -z "$latest_commit" ]]; then
+    echo -e "${RED}${BOLD}Error:${NC} Failed to retrieve latest commit hash."
+    exit 1
+fi
+
+github_url="https://raw.githubusercontent.com/MahdiGraph/DNSniper/${latest_commit}"
 
 # Display banner
 echo -e "${BLUE}${BOLD}"
@@ -228,21 +236,15 @@ echo -e "${MAGENTA}────────────────────�
 download_script() {
     local script_name="$1"
     local output_file="$2"
-    local github_url="https://raw.githubusercontent.com/MahdiGraph/DNSniper/main"
-    
+
     echo -e "${YELLOW}Downloading ${script_name}...${NC}"
     if curl -sfL --connect-timeout 10 --max-time 30 "${github_url}/${script_name}" -o "${output_file}.tmp"; then
-        # Verify script health
         if [[ ! -s "${output_file}.tmp" ]]; then
             echo -e "${RED}${BOLD}Error:${NC} Downloaded ${script_name} is empty."
             rm -f "${output_file}.tmp"
             return 1
         fi
-        
-        # Make sure script is executable
         chmod +x "${output_file}.tmp"
-        
-        # Move to final location
         mv "${output_file}.tmp" "${output_file}"
         echo -e "${GREEN}${script_name} successfully downloaded.${NC}"
         return 0
@@ -339,7 +341,7 @@ else
     # If source fails, set defaults directly
     [[ -z "$DEFAULT_MAX_IPS" ]] && DEFAULT_MAX_IPS=10
     [[ -z "$DEFAULT_TIMEOUT" ]] && DEFAULT_TIMEOUT=30
-    [[ -z "$DEFAULT_URL" ]] && DEFAULT_URL="https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"
+    [[ -z "$DEFAULT_URL" ]] && DEFAULT_URL="https://raw.githubusercontent.com/MahdiGraph/DNSniper/${latest_commit}/domains-default.txt"
     [[ -z "$DEFAULT_AUTO_UPDATE" ]] && DEFAULT_AUTO_UPDATE=1
     [[ -z "$DEFAULT_EXPIRE_ENABLED" ]] && DEFAULT_EXPIRE_ENABLED=1
     [[ -z "$DEFAULT_EXPIRE_MULTIPLIER" ]] && DEFAULT_EXPIRE_MULTIPLIER=5

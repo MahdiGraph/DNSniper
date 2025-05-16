@@ -42,12 +42,19 @@ IPSET6="dnsniper-ipv6"
 # Logging state
 LOGGING_ENABLED=0
 
+# Retrieve latest commit hash from GitHub
+latest_commit=$(git ls-remote https://github.com/MahdiGraph/DNSniper.git | head -n 1 | cut -f1)
+if [[ -z "$latest_commit" ]]; then
+    echo -e "${RED}${BOLD}Error:${NC} Failed to retrieve latest commit hash."
+    exit 1
+fi
+
 # Defaults
 DEFAULT_SCHEDULER_ENABLED=1
 DEFAULT_SCHEDULE_MINUTES=60
 DEFAULT_MAX_IPS=10
 DEFAULT_TIMEOUT=30
-DEFAULT_URL="https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"
+DEFAULT_URL="https://raw.githubusercontent.com/MahdiGraph/DNSniper/${latest_commit}/domains-default.txt"
 DEFAULT_AUTO_UPDATE=1
 DEFAULT_EXPIRE_ENABLED=1
 DEFAULT_EXPIRE_MULTIPLIER=5
