@@ -307,10 +307,10 @@ EOF
     done
     
     # Initialize SQLite DB: safe defaults + busy_timeout
+# Initialize SQLite DB: simple and reliable
     if command -v sqlite3 >/dev/null 2>&1; then
         sqlite3 "$DB_FILE" <<SQL
 PRAGMA busy_timeout = 3000;
-PRAGMA journal_mode = DELETE;
 CREATE TABLE IF NOT EXISTS history(
     domain TEXT,
     ips    TEXT,
@@ -326,6 +326,7 @@ SQL
     else
         echo "Warning: sqlite3 not found, database functionality disabled." >&2
     fi
+
 
     
     # Initialize iptables chains
