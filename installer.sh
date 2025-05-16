@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper Installer
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 2.1.0
+# Version: 2.1.1
 # Usage: curl -sSL https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/installer.sh | bash
 set -e
 # ANSI color codes
@@ -52,7 +52,7 @@ echo -e "   | | | |  \\| \\___ \\ '_ \\| | '_ \\ / _\\ '__|"
 echo -e "   | |_| | |\\  |___) | | | | | |_) |  __/ |  "
 echo -e "   |____/|_| \\_|____/|_| |_|_| .__/ \\___|_|  "
 echo -e "                             |_|              "
-echo -e "${GREEN}${BOLD} Domain-based Network Threat Mitigation v2.1.0 ${NC}"
+echo -e "${GREEN}${BOLD} Domain-based Network Threat Mitigation v2.1.1 ${NC}"
 echo -e ""
 # Check root
 if [[ $EUID -ne 0 ]]; then
@@ -66,21 +66,21 @@ if command -v apt &>/dev/null; then
     PKG_MANAGER="apt"
     PKG_UPDATE="apt update"
     PKG_INSTALL="apt install -y"
-    DEPS="iptables iptables-persistent curl dnsutils sqlite3 git"  # git اضافه شد
+    DEPS="iptables iptables-persistent curl dnsutils git"  # sqlite3 removed
 elif command -v dnf &>/dev/null; then
     PKG_MANAGER="dnf"
     PKG_UPDATE="dnf check-update || true"
     PKG_INSTALL="dnf install -y"
-    DEPS="iptables iptables-services curl bind-utils sqlite git"  # git اضافه شد
+    DEPS="iptables iptables-services curl bind-utils git"  # sqlite removed
 elif command -v yum &>/dev/null; then
     PKG_MANAGER="yum"
     PKG_UPDATE="yum check-update || true"
     PKG_INSTALL="yum install -y"
-    DEPS="iptables iptables-services curl bind-utils sqlite git"  # git اضافه شد
+    DEPS="iptables iptables-services curl bind-utils git"  # sqlite removed
 else
     echo -e "${YELLOW}${BOLD}Warning:${NC} Unsupported package manager."
     echo -e "You'll need to manually install these dependencies:"
-    echo -e "- iptables\n- ip6tables\n- curl\n- bind-utils/dnsutils (for dig)\n- sqlite3\n- git"
+    echo -e "- iptables\n- ip6tables\n- curl\n- bind-utils/dnsutils (for dig)\n- git"
     read -rp "Continue anyway? [y/N]: " response
     if [[ ! "$response" =~ ^[Yy]$ ]]; then
         echo -e "${RED}Installation cancelled.${NC}"
@@ -136,7 +136,7 @@ else
     echo -e "${CYAN}${BOLD}DEPENDENCIES CHECK${NC}"
     echo -e "${MAGENTA}───────────────────────────────────────${NC}"
     missing=()
-    for cmd in iptables ip6tables curl dig sqlite3 git; do
+    for cmd in iptables ip6tables curl dig git; do # sqlite3 removed
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
@@ -187,7 +187,9 @@ echo -e ""
 echo -e "${CYAN}${BOLD}DIRECTORY SETUP${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
 mkdir -p "$BASE_DIR"
-echo -e "${GREEN}Directory created: $BASE_DIR${NC}"
+mkdir -p "$BASE_DIR/history"    # Create directory for history files
+mkdir -p "$BASE_DIR/data"       # Create directory for data files
+echo -e "${GREEN}Directories created: $BASE_DIR, $BASE_DIR/history, $BASE_DIR/data${NC}"
 # Setup firewall persistence according to system type
 echo -e ""
 echo -e "${CYAN}${BOLD}FIREWALL PERSISTENCE${NC}"
@@ -353,6 +355,8 @@ if [[ "$installation_type" != "upgrade" ]]; then
     echo -e "${MAGENTA}───────────────────────────────────────${NC}"
     touch "$BASE_DIR/domains-default.txt" "$BASE_DIR/domains-add.txt" "$BASE_DIR/domains-remove.txt" \
           "$BASE_DIR/ips-add.txt" "$BASE_DIR/ips-remove.txt" 2>/dev/null
+    # Create required data files
+    touch "$BASE_DIR/data/cdn_domains.txt" "$BASE_DIR/data/expired_domains.txt" 2>/dev/null
     # Add explanatory comment to default domains file
     cat > "$BASE_DIR/domains-default.txt" << EOF
 # DNSniper Default Domains

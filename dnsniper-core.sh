@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # DNSniper Core Functions - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
-# Version: 2.1.0
+# Version: 2.1.1
 # Strict error handling mode
 set -o errexit
 set -o pipefail
@@ -25,7 +25,10 @@ REMOVE_FILE="$BASE_DIR/domains-remove.txt"
 IP_ADD_FILE="$BASE_DIR/ips-add.txt"
 IP_REMOVE_FILE="$BASE_DIR/ips-remove.txt"
 CONFIG_FILE="$BASE_DIR/config.conf"
-DB_FILE="$BASE_DIR/history.db"
+HISTORY_DIR="$BASE_DIR/history"
+DATA_DIR="$BASE_DIR/data"
+CDN_DOMAINS_FILE="$DATA_DIR/cdn_domains.txt"
+EXPIRED_DOMAINS_FILE="$DATA_DIR/expired_domains.txt"
 RULES_V4_FILE="$BASE_DIR/iptables.rules"
 RULES_V6_FILE="$BASE_DIR/ip6tables.rules"
 BIN_CMD="/usr/local/bin/dnsniper"
@@ -72,9 +75,10 @@ DEFAULT_LOGGING_ENABLED=0
 IPT_CHAIN="DNSniper"
 IPT6_CHAIN="DNSniper6"
 # Version
-VERSION="2.1.0"
+VERSION="2.1.1"
 # Dependencies
-DEPENDENCIES=(iptables ip6tables curl dig sqlite3)
+DEPENDENCIES=(iptables ip6tables curl dig)
+
 # Helper functions
 log() {
     local level="$1" message="$2" verbose="${3:-}"
@@ -91,6 +95,7 @@ log() {
         echo -e "${BLUE}Info:${NC} $message"
     fi
 }
+
 # Initialize logging state
 initialize_logging() {
     # Read from config file
@@ -101,15 +106,10 @@ initialize_logging() {
         LOGGING_ENABLED=0
     fi
 }
+
 # Enhanced echo with error checking
 echo_safe() {
     echo -e "$1"
-}
-# SQL escape
-sql_escape() {
-    local s=$1
-    s=${s//\'/\'\'}
-    printf "%s" "$s"
 }
 
 # تشخیص بهبود یافته IPv6
@@ -144,6 +144,7 @@ is_valid_domain() {
     # Basic domain name validation
     [[ "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]
 }
+
 # Check if an IP is critical (system IP, private network, etc.)
 is_critical_ip() {
     local ip="$1"
@@ -167,12 +168,14 @@ is_critical_ip() {
     fi
     return 1
 }
+
 # Exit with error message
 exit_with_error() {
     log "ERROR" "$1"
     echo -e "${RED}Error:${NC} $1" >&2
     exit "${2:-1}"
 }
+
 # Detect persistence mechanism and OS type
 detect_system() {
     # Detect OS family with more comprehensive checks
@@ -213,6 +216,7 @@ detect_system() {
         echo "unknown"
     fi
 }
+
 # Make iptables rules persistent based on system type
 make_rules_persistent() {
     local os_type=$(detect_system)
@@ -244,6 +248,7 @@ make_rules_persistent() {
         ipset save > /etc/ipset.conf 2>/dev/null || true
     fi
 }
+
 # Initialize iptables chains
 initialize_chains() {
     # Create IPv4 chain if it doesn't exist
@@ -272,12 +277,16 @@ initialize_chains() {
     # Make the rules persistent
     make_rules_persistent
 }
-# Prepare environment: dirs, files, DB
+
+# Prepare environment: dirs, files
 ensure_environment() {
-    # Create base directory if it doesn't exist
-    mkdir -p "$BASE_DIR" 2>/dev/null || true
+    # Create base directories if they don't exist
+    mkdir -p "$BASE_DIR" "$HISTORY_DIR" "$DATA_DIR" 2>/dev/null || true
+    
     # Create empty files if they don't exist
     touch "$DEFAULT_FILE" "$ADD_FILE" "$REMOVE_FILE" "$IP_ADD_FILE" "$IP_REMOVE_FILE" 2>/dev/null || true
+    touch "$CDN_DOMAINS_FILE" "$EXPIRED_DOMAINS_FILE" 2>/dev/null || true
+    
     # Create config file with defaults if it doesn't exist
     if [[ ! -f "$CONFIG_FILE" ]]; then
         cat > "$CONFIG_FILE" << EOF
@@ -295,102 +304,35 @@ block_destination=$DEFAULT_BLOCK_DESTINATION
 logging_enabled=$DEFAULT_LOGGING_ENABLED
 EOF
     fi
+    
     # Check for required commands
     for cmd in ${DEPENDENCIES[@]}; do
         if ! command -v $cmd >/dev/null 2>&1; then
             echo "Warning: $cmd is not installed. Some features may not work." >&2
         fi
     done
-
-    # Initialize SQLite DB with a more conservative approach
-    if command -v sqlite3 >/dev/null 2>&1; then
-        # Remove any WAL files if they exist (force journal mode to DELETE)
-        rm -f "$DB_FILE-wal" "$DB_FILE-shm" 2>/dev/null || true
-        
-        # Create or update database with safer settings
-        sqlite3 "$DB_FILE" <<SQL
-PRAGMA journal_mode = DELETE;         -- Use DELETE instead of WAL for stability
-PRAGMA synchronous = FULL;            -- Prioritize data integrity over speed
-PRAGMA busy_timeout = 10000;          -- Much longer timeout (10 seconds)
-PRAGMA locking_mode = NORMAL;         -- Standard file locking
-
-BEGIN IMMEDIATE TRANSACTION;          -- Use IMMEDIATE to acquire write lock from the start
-
-CREATE TABLE IF NOT EXISTS history(
-    domain TEXT,
-    ips    TEXT,
-    ts     INTEGER
-);
-CREATE INDEX IF NOT EXISTS idx_history_domain ON history(domain);
-
-CREATE TABLE IF NOT EXISTS expired_domains(
-    domain TEXT PRIMARY KEY,
-    last_seen TEXT,
-    source TEXT
-);
-
-CREATE TABLE IF NOT EXISTS cdn_domains(
-    domain TEXT PRIMARY KEY,
-    last_checked TEXT
-);
-
-COMMIT;
-SQL
-        
-        # Add this function to better handle database operations
-        db_query() {
-            local query="$1"
-            local retries=3
-            local attempt=1
-            local result
-            
-            while [ $attempt -le $retries ]; do
-                result=$(sqlite3 -init /dev/null "$DB_FILE" "$query" 2>&1)
-                if [ $? -eq 0 ]; then
-                    echo "$result"
-                    return 0
-                else
-                    log "WARNING" "Database error on attempt $attempt: $result" "verbose"
-                    sleep 1
-                    attempt=$((attempt + 1))
-                fi
-            done
-            
-            log "ERROR" "Database operation failed after $retries attempts: $query"
-            return 1
-        }
-        
-        # Make sure database is usable
-        if ! db_query "PRAGMA quick_check;" &>/dev/null; then
-            log "WARNING" "Database integrity check failed. Attempting repair..." "verbose"
-            # Try to recover
-            sqlite3 "$DB_FILE" "PRAGMA integrity_check;" &>/dev/null || {
-                log "ERROR" "Database corrupt. Creating new database..." "verbose"
-                mv "$DB_FILE" "$DB_FILE.corrupted.$(date +%s)" 2>/dev/null
-                # The next run will recreate the database
-            }
-        fi
-    else
-        echo "Warning: sqlite3 not found, database functionality disabled." >&2
-    fi
-
+    
     # Initialize iptables chains
     initialize_chains
+    
     # Initialize ipset if available
     if command -v ipset >/dev/null 2>&1; then
         ipset create "$IPSET4" hash:ip family inet -exist 2>/dev/null || true
         ipset create "$IPSET6" hash:ip family inet6 -exist 2>/dev/null || true
     fi
+    
     # Initialize logging
     initialize_logging
     return 0
 }
+
 # Check privileges
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         exit_with_error "Must run as root (sudo)."
     fi
 }
+
 # Check dependencies
 check_dependencies() {
     local missing=()
@@ -443,6 +385,7 @@ update_default() {
         timeout="$DEFAULT_TIMEOUT"
     fi
     echo_safe "${BLUE}Fetching default domains from $update_url...${NC}"
+    
     # Keep track of domains that were in the default list but are removed now
     local expire_enabled=$(grep '^expire_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ "$expire_enabled" == "1" ]]; then
@@ -478,6 +421,7 @@ update_default() {
                 [[ -z "$d" ]] && continue
                 new_domains+=("$d")
             done < "$DEFAULT_FILE"
+            
             # Find domains that were in old list but not in new list
             for old_dom in "${old_domains[@]}"; do
                 local found=0
@@ -488,16 +432,14 @@ update_default() {
                     fi
                 done
                 if [[ $found -eq 0 ]]; then
-                    # Domain was removed, add/update in expired_domains table
-                    local esc_dom=$(sql_escape "$old_dom")
-                    sqlite3 "$DB_FILE" <<SQL 2>/dev/null
-INSERT OR REPLACE INTO expired_domains(domain, last_seen, source)
-VALUES('$esc_dom', datetime('now'), 'default');
-SQL
+                    # Domain was removed, add to expired_domains file
+                    local timestamp=$(date +%s)
+                    echo "${old_dom},${timestamp},default" >> "$EXPIRED_DOMAINS_FILE"
                     log "INFO" "Tracking expired domain: $old_dom" "verbose"
                 fi
             done
         fi
+        
         log "INFO" "Default domains successfully updated" "verbose"
         echo_safe "${GREEN}Default domains successfully updated${NC}"
     else
@@ -599,54 +541,91 @@ check_expired_domains() {
     if [[ "$expire_enabled" != "1" ]]; then
         return 0
     fi
+    
     log "INFO" "Checking for expired domains" "verbose"
+    
     # Get schedule to determine update frequency
     local schedule_minutes=$(grep '^schedule_minutes=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]]; then
         schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
     fi
+    
     # Get expiration multiplier
     local expire_multiplier=$(grep '^expire_multiplier=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$expire_multiplier" || ! "$expire_multiplier" =~ ^[0-9]+$ ]]; then
         expire_multiplier=$DEFAULT_EXPIRE_MULTIPLIER
     fi
-    # Calculate expiration time in minutes
-    local expire_minutes=$((schedule_minutes * expire_multiplier))
-    # Get domains that have expired
-    local expired_domains
-    expired_domains=$(sqlite3 "$DB_FILE" "SELECT domain FROM expired_domains
-                                        WHERE source='default' AND
-                                        datetime(last_seen, '+$expire_minutes minutes') < datetime('now');" 2>/dev/null)
-    # Process expired domains
-    if [[ -n "$expired_domains" ]]; then
-        echo_safe "${YELLOW}Found expired domains to clean up...${NC}"
-        while IFS= read -r domain; do
-            echo_safe "${YELLOW}Removing expired domain:${NC} $domain"
-            # Get IPs associated with this domain
-            local esc_dom=$(sql_escape "$domain")
-            local ips
-            ips=$(sqlite3 "$DB_FILE" "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
-            if [[ -n "$ips" ]]; then
-                IFS=',' read -ra ip_list <<< "$ips"
-                # Unblock each IP
-                for ip in "${ip_list[@]}"; do
-                    if whitelist_ip "$ip" "DNSniper: $domain"; then
-                        echo_safe "  - ${GREEN}Unblocked expired IP:${NC} $ip"
+    
+    # Calculate expiration time in seconds
+    local expire_seconds=$((schedule_minutes * expire_multiplier * 60))
+    local current_time=$(date +%s)
+    
+    # Create temp files
+    local temp_expired=$(mktemp)
+    local temp_keep=$(mktemp)
+    
+    # Process the expired domains file
+    if [[ -f "$EXPIRED_DOMAINS_FILE" ]]; then
+        while IFS=, read -r domain timestamp source || [[ -n "$domain" ]]; do
+            # Skip comments and empty lines
+            [[ -z "$domain" || "$domain" =~ ^[[:space:]]*# ]] && continue
+            
+            # Check if the domain has expired
+            local expiry_time=$((timestamp + expire_seconds))
+            if [[ $current_time -gt $expiry_time && "$source" == "default" ]]; then
+                # Domain has expired
+                echo "$domain" >> "$temp_expired"
+            else
+                # Domain hasn't expired yet
+                echo "$domain,$timestamp,$source" >> "$temp_keep"
+            fi
+        done < "$EXPIRED_DOMAINS_FILE"
+        
+        # Process expired domains
+        if [[ -s "$temp_expired" ]]; then
+            echo_safe "${YELLOW}Found expired domains to clean up...${NC}"
+            while IFS= read -r domain; do
+                echo_safe "${YELLOW}Removing expired domain:${NC} $domain"
+                
+                # Get IPs associated with this domain from history file
+                local domain_history_file="$HISTORY_DIR/${domain//\//_}.txt"
+                if [[ -f "$domain_history_file" ]]; then
+                    # Get the most recent entry (first line)
+                    local latest_entry=$(head -n 1 "$domain_history_file" 2>/dev/null)
+                    if [[ -n "$latest_entry" ]]; then
+                        # Format is: timestamp,ip1,ip2,...
+                        local ips=${latest_entry#*,}  # Remove timestamp
+                        IFS=',' read -ra ip_list <<< "$ips"
+                        
+                        # Unblock each IP
+                        for ip in "${ip_list[@]}"; do
+                            if whitelist_ip "$ip" "DNSniper: $domain"; then
+                                echo_safe "  - ${GREEN}Unblocked expired IP:${NC} $ip"
+                            fi
+                        done
                     fi
-                done
-            fi
-            # Remove from expired domains tracking
-            sqlite3 "$DB_FILE" "DELETE FROM expired_domains WHERE domain='$esc_dom';" 2>/dev/null
-            # If domain was manually added to remove list, honor that
-            if ! grep -Fxq "$domain" "$REMOVE_FILE" 2>/dev/null; then
-                echo "$domain" >> "$REMOVE_FILE"
-            fi
-            log "INFO" "Removed expired domain: $domain" "verbose"
-        done <<< "$expired_domains"
-        # Make rules persistent
-        make_rules_persistent
+                fi
+                
+                # If domain was manually added to remove list, honor that
+                if ! grep -Fxq "$domain" "$REMOVE_FILE" 2>/dev/null; then
+                    echo "$domain" >> "$REMOVE_FILE"
+                fi
+                
+                log "INFO" "Removed expired domain: $domain" "verbose"
+            done < "$temp_expired"
+            
+            # Make rules persistent
+            make_rules_persistent
+        fi
+        
+        # Replace the expired domains file with the updated version
+        mv "$temp_keep" "$EXPIRED_DOMAINS_FILE"
     fi
+    
+    # Clean up
+    rm -f "$temp_expired" "$temp_keep" 2>/dev/null || true
 }
+
 # Merge default + added, minus removed domains
 # Performance optimized version of merge_domains
 merge_domains() {
@@ -682,6 +661,7 @@ merge_domains() {
     # Clean up
     rm -f "$tmpfile"
 }
+
 # Get list of custom IPs to block
 get_custom_ips() {
     log "INFO" "Getting custom IP list"
@@ -719,38 +699,71 @@ get_custom_ips() {
     # Clean up
     rm -f "$tmpfile"
 }
-# Record history and trim to max_ips
+
+# Record history for a domain and trim old entries
 record_history() {
     local domain="$1" ips_csv="$2"
-    # Protect against SQL injection
-    domain=$(sql_escape "$domain")
-    ips_csv=$(sql_escape "$ips_csv")
-    log "INFO" "Recording history for domain: $domain with IPs: $ips_csv"
+    
+    log "INFO" "Recording history for domain: $domain with IPs: $ips_csv" "verbose"
+    
+    # Sanitize domain name for filename
+    local safe_domain="${domain//\//_}" 
+    local history_file="$HISTORY_DIR/${safe_domain}.txt"
     local max_ips=$(grep '^max_ips=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    
     # Validate max_ips
     if [[ -z "$max_ips" || ! "$max_ips" =~ ^[0-9]+$ ]]; then
         log "WARNING" "Invalid max_ips value, using default: $DEFAULT_MAX_IPS"
         max_ips=$DEFAULT_MAX_IPS
     fi
     
-    # Use db_query for better error handling
-    db_query "BEGIN TRANSACTION;
-              INSERT INTO history(domain,ips,ts) VALUES('$domain','$ips_csv',strftime('%s','now'));
-              DELETE FROM history
-              WHERE rowid NOT IN (
-                SELECT rowid FROM history
-                WHERE domain='$domain'
-                ORDER BY ts DESC
-                LIMIT $max_ips
-              );
-              COMMIT;" >/dev/null
+    # Current timestamp
+    local timestamp=$(date +%s)
     
-    local status=$?
-    if [[ $status -ne 0 ]]; then
+    # Create a temporary file
+    local tmpfile=$(mktemp)
+    
+    # Write new entry as first line
+    echo "$timestamp,$ips_csv" > "$tmpfile"
+    
+    # Append existing entries if file exists
+    if [[ -f "$history_file" ]]; then
+        # Only keep up to max_ips-1 previous entries
+        head -n $((max_ips - 1)) "$history_file" >> "$tmpfile"
+    fi
+    
+    # Move tmp file to history file
+    mv "$tmpfile" "$history_file"
+    
+    # Check if successful
+    if [[ $? -eq 0 ]]; then
+        return 0
+    else
         log "ERROR" "Error recording history for domain: $domain"
+        rm -f "$tmpfile" 2>/dev/null || true
         return 1
     fi
-    return 0
+}
+
+# Get domain's most recent IPs
+get_domain_ips() {
+    local domain="$1"
+    local safe_domain="${domain//\//_}"
+    local history_file="$HISTORY_DIR/${safe_domain}.txt"
+    
+    if [[ -f "$history_file" && -s "$history_file" ]]; then
+        # Get first line (most recent) and extract IPs
+        local line=$(head -n 1 "$history_file" 2>/dev/null)
+        if [[ -n "$line" ]]; then
+            # Format: timestamp,ip1,ip2,ip3,...
+            echo "${line#*,}" # Return everything after the first comma
+            return 0
+        fi
+    fi
+    
+    # No history found
+    echo ""
+    return 1
 }
 
 # تشخیص بهبود یافته CDN با گزارش‌دهی بهتر
@@ -763,6 +776,19 @@ detect_cdn() {
     local cdn_domains=()
     log "INFO" "Detecting CDN usage for ${#domains[@]} domains" "verbose"
     
+    # Create temporary files
+    local temp_cdn=$(mktemp)
+    local current_time=$(date +%s)
+    
+    # Load known CDNs
+    if [[ -f "$CDN_DOMAINS_FILE" ]]; then
+        local known_cdns=()
+        while IFS=, read -r domain timestamp || [[ -n "$domain" ]]; do
+            [[ -z "$domain" || "$domain" =~ ^[[:space:]]*# ]] && continue
+            known_cdns+=("$domain")
+        done < "$CDN_DOMAINS_FILE"
+    fi
+    
     # پردازش دامنه‌ها در دسته‌های کوچکتر برای کارایی بهتر
     local batch_size=50
     local total_domains=${#domains[@]}
@@ -773,57 +799,86 @@ detect_cdn() {
         # پردازش این دسته
         for ((j=i; j<end; j++)); do
             local dom="${domains[j]}"
-            # escape کردن کاراکترهای خاص برای SQL
-            local esc_dom=$(sql_escape "$dom")
+            local safe_dom="${dom//\//_}"
             
-            # دریافت آخرین دو مجموعه آی‌پی برای این دامنه
-            local rows
-            rows=$(sqlite3 -separator '|' "$DB_FILE" \
-                "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 2;" 2>/dev/null)
+            # Check if already known as CDN
+            local is_known_cdn=0
+            for known in "${known_cdns[@]}"; do
+                if [[ "$dom" == "$known" ]]; then
+                    is_known_cdn=1
+                    break
+                fi
+            done
             
-            # ادامه اگر تاریخچه کافی نداریم
-            if [[ -z "$rows" || $(echo "$rows" | wc -l) -lt 2 ]]; then
+            if [[ $is_known_cdn -eq 1 ]]; then
+                cdn_domains+=("$dom")
+                continue
+            }
+            
+            # Check history file for IP changes
+            local history_file="$HISTORY_DIR/${safe_dom}.txt"
+            if [[ ! -f "$history_file" ]]; then
                 continue
             fi
             
-            # تجزیه سطرها به آرایه‌ها
-            local last prev
-            IFS='|' read -r last prev <<< "$rows"
+            # We need at least 2 entries to compare
+            local line_count=$(wc -l < "$history_file" 2>/dev/null || echo "0")
+            if [[ $line_count -lt 2 ]]; then
+                continue
+            fi
             
-            # رد کردن اگر یکی خالی است
-            [[ -z "$last" || -z "$prev" ]] && continue
+            # Get the last two entries
+            local entries=($(head -n 2 "$history_file"))
+            local last="${entries[0]}"
+            local prev="${entries[1]}"
             
-            # تبدیل CSV به آرایه‌ها
-            local last_ips prev_ips
-            IFS=',' read -ra last_ips <<< "$last"
-            IFS=',' read -ra prev_ips <<< "$prev"
+            # Extract IPs from each entry
+            local last_ips=(${last#*,}) # Remove timestamp
+            local prev_ips=(${prev#*,}) # Remove timestamp
             
-            # محاسبه شباهت بین مجموعه‌ها (چند آی‌پی یکسان هستند)
-            local common=0 total=$((${#last_ips[@]} + ${#prev_ips[@]}))
-            for ip in "${last_ips[@]}"; do
-                for pip in "${prev_ips[@]}"; do
-                    if [[ "$ip" == "$pip" ]]; then
-                        common=$((common + 2))  # هر دو مورد را شمارش کن
+            # Count IPs
+            IFS=',' read -ra last_ips_array <<< "${last#*,}"
+            IFS=',' read -ra prev_ips_array <<< "${prev#*,}"
+            
+            # Calculate overlap/change
+            local common=0 
+            local total=$((${#last_ips_array[@]} + ${#prev_ips_array[@]}))
+            
+            for last_ip in "${last_ips_array[@]}"; do
+                for prev_ip in "${prev_ips_array[@]}"; do
+                    if [[ "$last_ip" == "$prev_ip" ]]; then
+                        common=$((common + 2))  # Count both occurrences
                         break
                     fi
                 done
             done
             
-            # محاسبه درصد تغییر (0 = مطابق، 100 = کاملاً متفاوت)
+            # Calculate change percentage
             local change_pct=0
             if [[ $total -gt 0 ]]; then
                 change_pct=$(( (100 * (total - common)) / total ))
             fi
             
-            # اگر تغییر قابل توجه است (>30%)، احتمالاً CDN است
+            # If significant change, mark as CDN
             if [[ $change_pct -gt 30 ]]; then
                 cdn_domains+=("$dom")
-                
-                # ذخیره در پایگاه داده برای مراجعات آینده
-                sqlite3 "$DB_FILE" "INSERT OR REPLACE INTO cdn_domains(domain, last_checked) VALUES('$esc_dom', datetime('now'));" 2>/dev/null
+                echo "$dom,$current_time" >> "$temp_cdn"
             fi
         done
     done
+    
+    # Merge with existing CDN domains file
+    if [[ -f "$CDN_DOMAINS_FILE" ]]; then
+        cat "$CDN_DOMAINS_FILE" >> "$temp_cdn"
+    fi
+    
+    # Sort and remove duplicates
+    if [[ -s "$temp_cdn" ]]; then
+        sort -u "$temp_cdn" > "$CDN_DOMAINS_FILE"
+    fi
+    
+    # Clean up
+    rm -f "$temp_cdn"
     
     if [[ ${#cdn_domains[@]} -gt 0 ]]; then
         echo_safe "${YELLOW}${BOLD}[!] دامنه‌های احتمالی استفاده‌کننده از CDN:${NC}"
@@ -952,23 +1007,30 @@ count_blocked_ips() {
     # Return total
     echo $((v4_rules + v6_rules))
 }
+
 # Check if a domain has active IP blocks
 has_active_blocks() {
     local domain="$1"
-    local esc_dom=$(sql_escape "$domain")
+    local safe_domain="${domain//\//_}"
+    local history_file="$HISTORY_DIR/${safe_domain}.txt"
+    
     # First check if domain exists in history
-    local count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM history WHERE domain='$esc_dom';" 2>/dev/null || echo 0)
-    if [[ $count -eq 0 ]]; then
+    if [[ ! -f "$history_file" || ! -s "$history_file" ]]; then
         return 1  # No records found
     fi
+    
     # Get the most recent IPs for this domain
-    local ips=$(sqlite3 "$DB_FILE" "SELECT ips FROM history WHERE domain='$esc_dom' ORDER BY ts DESC LIMIT 1;" 2>/dev/null)
+    local line=$(head -n 1 "$history_file")
+    local ips=${line#*,}  # Remove timestamp
+    
     if [[ -z "$ips" ]]; then
         return 1  # No IPs found
     fi
+    
     # Convert CSV to array
     local ip_list=()
     IFS=',' read -ra ip_list <<< "$ips"
+    
     # Check if any IP is actively blocked
     for ip in "${ip_list[@]}"; do
         local blocked=0
@@ -982,6 +1044,7 @@ has_active_blocks() {
             return 0  # At least one IP is actively blocked
         fi
     done
+    
     return 1  # No active blocks found
 }
 
@@ -997,14 +1060,18 @@ resolve_block() {
         echo_safe "${BLUE}Auto-updating domain lists...${NC}"
         update_default
     fi
+    
     # Check for expired domains
     check_expired_domains
+    
     echo_safe "${BLUE}Resolving domains...${NC}"
+    
     # Get domains
     local domains=()
     # Using temp file approach for better performance with large domain lists
     local tmpdomains=$(mktemp)
     merge_domains > "$tmpdomains"
+    
     # Count domains
     local total=$(wc -l < "$tmpdomains")
     if [[ $total -eq 0 ]]; then
@@ -1013,28 +1080,35 @@ resolve_block() {
         rm -f "$tmpdomains"
     else
         echo_safe "${BLUE}Processing ${total} domains...${NC}"
+        
         # Get timeout from settings
         local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
         if [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]]; then
             log "WARNING" "Invalid timeout value, using default: $DEFAULT_TIMEOUT"
             timeout=$DEFAULT_TIMEOUT
         fi
+        
         local success_count=0
         local ip_count=0
+        
         # Process domains in batches for better performance
         local batch_size=50
         local progress=0
+        
         while IFS= read -r dom || [[ -n "$dom" ]]; do
             progress=$((progress + 1))
+            
             # Show progress for large domain lists
             if [[ $total -gt 100 && $((progress % 10)) -eq 0 ]]; then
                 echo_safe "${BLUE}Progress: $progress/$total domains ($(( (progress * 100) / total ))%)${NC}"
             fi
+            
             # Skip invalid domains
             if ! is_valid_domain "$dom"; then
                 log "WARNING" "Invalid domain format, skipping: $dom"
                 continue
             fi
+            
             log "INFO" "Processing domain: $dom" "verbose"
             
             # Use improved resolve_domain function
@@ -1079,6 +1153,7 @@ resolve_block() {
         
         # Clean up
         rm -f "$tmpdomains"
+        
         echo_safe "${GREEN}Domain resolution complete. $success_count/$total domains processed, $ip_count new IPs blocked.${NC}"
         log "INFO" "Domain resolution complete. $success_count/$total domains processed, $ip_count new IPs blocked." "verbose"
         
@@ -1095,28 +1170,34 @@ resolve_block() {
     local tmpcustomips=$(mktemp)
     get_custom_ips > "$tmpcustomips"
     local custom_total=$(wc -l < "$tmpcustomips")
+    
     if [[ $custom_total -gt 0 ]]; then
         echo_safe "${BLUE}Processing ${custom_total} custom IPs...${NC}"
         local custom_blocked=0
+        
         while IFS= read -r ip || [[ -n "$ip" ]]; do
             # Skip critical IPs
             if is_critical_ip "$ip"; then
                 log "WARNING" "Skipping critical IP: $ip" "verbose"
                 continue
-            fi  # اینجا fi صحیح است، نه }
+            fi
+            
             if block_ip "$ip" "DNSniper: custom"; then
                 log "INFO" "Successfully blocked custom IP: $ip"
                 custom_blocked=$((custom_blocked + 1))
             else
                 log "ERROR" "Error blocking custom IP: $ip"
             fi
+            
             # Periodically make rules persistent for large IP lists
             if [[ $custom_total -gt 100 && $((custom_blocked % 50)) -eq 0 ]]; then
                 make_rules_persistent
             fi
         done < "$tmpcustomips"
+        
         # Clean up
         rm -f "$tmpcustomips"
+        
         echo_safe "${GREEN}Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked.${NC}"
         log "INFO" "Custom IP blocking complete. $custom_blocked/$custom_total IPs blocked." "verbose"
     else
@@ -1125,5 +1206,6 @@ resolve_block() {
     
     # Make sure the rules are persistent
     make_rules_persistent
+    
     return 0
 }
