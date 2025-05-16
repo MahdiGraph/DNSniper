@@ -46,8 +46,9 @@ settings_menu() {
         echo -e "${YELLOW}7.${NC} Rule Expiration Settings"
         echo -e "${YELLOW}8.${NC} Block Rule Types"
         echo -e "${YELLOW}9.${NC} Toggle Logging"
+        echo -e "${YELLOW}S.${NC} Service Management"
+        echo -e "${YELLOW}D.${NC} Database Maintenance"
         echo -e "${YELLOW}0.${NC} Back to Main Menu"
-        echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         read -rp "Select option: " choice
         case "$choice" in
             1) set_schedule ;;
@@ -59,11 +60,195 @@ settings_menu() {
             7) expiration_settings ;;
             8) rule_types_settings ;;
             9) toggle_logging ;;
+            [Ss]) service_management_menu ;;
+            [Dd]) database_maintenance ;;
             0) return ;;
-            *) echo -e "${RED}Invalid selection. Please choose 0-9.${NC}" ;;
+            *) echo -e "${RED}Invalid selection.${NC}" ;;
         esac
         read -rp "Press Enter to continue..."
     done
+}
+service_management_menu() {
+    while true; do
+        show_banner
+        echo -e "${BLUE}${BOLD}SERVICE MANAGEMENT${NC}"
+        echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+        
+        # Get service status
+        local service_status=$(get_service_status)
+        echo -e "${service_status}"
+        echo -e ""
+        
+        echo -e "${YELLOW}1.${NC} Restart Firewall Service"
+        echo -e "${YELLOW}2.${NC} Restart Timer Service"
+        echo -e "${YELLOW}3.${NC} Reload Rules Files"
+        echo -e "${YELLOW}4.${NC} Enable/Start All Services"
+        echo -e "${YELLOW}0.${NC} Back to Settings"
+        
+        echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+        read -rp "Select option: " choice
+        case "$choice" in
+            1)
+                echo -e "${BLUE}Restarting Firewall Service...${NC}"
+                systemctl restart dnsniper-firewall.service
+                echo -e "${GREEN}Done!${NC}"
+                ;;
+            2)
+                echo -e "${BLUE}Restarting Timer Service...${NC}"
+                systemctl restart dnsniper.timer
+                echo -e "${GREEN}Done!${NC}"
+                ;;
+            3)
+                echo -e "${BLUE}Ensuring rules files exist...${NC}"
+                # Make sure rules files exist with minimum valid content
+                echo "*filter" > "$RULES_V4_FILE"
+                echo ":INPUT ACCEPT [0:0]" >> "$RULES_V4_FILE"
+                echo ":FORWARD ACCEPT [0:0]" >> "$RULES_V4_FILE"
+                echo ":OUTPUT ACCEPT [0:0]" >> "$RULES_V4_FILE"
+                echo ":$IPT_CHAIN - [0:0]" >> "$RULES_V4_FILE"
+                echo "COMMIT" >> "$RULES_V4_FILE"
+                
+                echo "*filter" > "$RULES_V6_FILE"
+                echo ":INPUT ACCEPT [0:0]" >> "$RULES_V6_FILE"
+                echo ":FORWARD ACCEPT [0:0]" >> "$RULES_V6_FILE"
+                echo ":OUTPUT ACCEPT [0:0]" >> "$RULES_V6_FILE"
+                echo ":$IPT6_CHAIN - [0:0]" >> "$RULES_V6_FILE"
+                echo "COMMIT" >> "$RULES_V6_FILE"
+                
+                echo -e "${BLUE}Saving current firewall rules...${NC}"
+                make_rules_persistent
+                
+                echo -e "${BLUE}Restarting Firewall Service...${NC}"
+                systemctl restart dnsniper-firewall.service
+                echo -e "${GREEN}Done!${NC}"
+                ;;
+            4)
+                echo -e "${BLUE}Enabling and starting all services...${NC}"
+                systemctl enable dnsniper-firewall.service
+                systemctl start dnsniper-firewall.service
+                systemctl enable dnsniper.service
+                
+                local scheduler_enabled=$(grep '^scheduler_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+                if [[ "$scheduler_enabled" == "1" ]]; then
+                    systemctl enable dnsniper.timer
+                    systemctl start dnsniper.timer
+                fi
+                
+                echo -e "${GREEN}All services enabled and started!${NC}"
+                ;;
+            0) 
+                return
+                ;;
+            *) 
+                echo -e "${RED}Invalid selection. Please choose 0-4.${NC}"
+                ;;
+        esac
+        read -rp "Press Enter to continue..."
+    done
+}
+database_maintenance() {
+    echo -e "${BOLD}=== Database Maintenance ===${NC}"
+    if [[ ! -f "$DB_FILE" ]]; then
+        echo -e "${RED}Database file not found: $DB_FILE${NC}"
+        return 1
+    fi
+    
+    echo -e "${BLUE}Current database information:${NC}"
+    local db_size=$(du -h "$DB_FILE" 2>/dev/null | cut -f1)
+    echo -e "- Size: ${YELLOW}$db_size${NC}"
+    
+    # Check if WAL/SHM files exist (signs of potential lock)
+    if [[ -f "$DB_FILE-wal" || -f "$DB_FILE-shm" ]]; then
+        echo -e "- Status: ${RED}Possibly locked${NC} (WAL/SHM files exist)"
+    else
+        echo -e "- Status: ${GREEN}Normal${NC}"
+    fi
+    
+    echo -e "\n${BOLD}What would you like to do?${NC}"
+    echo -e "1. ${BOLD}Optimize database${NC} (recommended periodic maintenance)"
+    echo -e "2. ${BOLD}Repair database${NC} (if having issues)"
+    echo -e "3. ${BOLD}Vacuum database${NC} (reclaim space)"
+    echo -e "4. ${BOLD}Create backup${NC}"
+    echo -e "5. ${BOLD}Restore from backup${NC}"
+    echo -e "0. ${BOLD}Back${NC}"
+    
+    read -rp "Your choice (0-5): " choice
+    
+    case "$choice" in
+        1)  # Optimize
+            echo -e "${BLUE}Optimizing database...${NC}"
+            if sqlite3 "$DB_FILE" "PRAGMA wal_checkpoint(FULL); PRAGMA optimize; PRAGMA integrity_check;" 2>/dev/null; then
+                echo -e "${GREEN}Database optimized successfully.${NC}"
+            else
+                echo -e "${RED}Error optimizing database.${NC}"
+            fi
+            ;;
+        2)  # Repair
+            echo -e "${YELLOW}Warning: This will attempt to repair the database.${NC}"
+            echo -e "${YELLOW}All active processes using the database should be stopped.${NC}"
+            read -rp "Continue? [y/N]: " confirm
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                echo -e "${BLUE}Creating backup before repair...${NC}"
+                cp "$DB_FILE" "$DB_FILE.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null
+                
+                echo -e "${BLUE}Removing lock files if they exist...${NC}"
+                rm -f "$DB_FILE-wal" "$DB_FILE-shm" 2>/dev/null
+                
+                echo -e "${BLUE}Attempting to recover database...${NC}"
+                if sqlite3 "$DB_FILE" "PRAGMA integrity_check; VACUUM; PRAGMA optimize;" 2>/dev/null; then
+                    echo -e "${GREEN}Database repair attempt completed.${NC}"
+                else
+                    echo -e "${RED}Error during repair attempt.${NC}"
+                fi
+            else
+                echo -e "${YELLOW}Operation cancelled.${NC}"
+            fi
+            ;;
+        3)  # Vacuum
+            echo -e "${BLUE}Vacuuming database to reclaim space...${NC}"
+            if sqlite3 "$DB_FILE" "VACUUM;" 2>/dev/null; then
+                new_size=$(du -h "$DB_FILE" 2>/dev/null | cut -f1)
+                echo -e "${GREEN}Database vacuumed. New size: $new_size${NC}"
+            else
+                echo -e "${RED}Error vacuuming database.${NC}"
+            fi
+            ;;
+        4)  # Backup
+            local backup_file="$DB_FILE.bak_$(date +%Y%m%d_%H%M%S)"
+            echo -e "${BLUE}Creating backup to $backup_file...${NC}"
+            if sqlite3 "$DB_FILE" ".backup '$backup_file'" 2>/dev/null; then
+                echo -e "${GREEN}Backup created successfully.${NC}"
+            else
+                echo -e "${RED}Error creating backup.${NC}"
+            fi
+            ;;
+        5)  # Restore
+            echo -e "${BLUE}Available backups:${NC}"
+            ls -1t "$DB_FILE".bak_* 2>/dev/null | nl || { echo -e "${RED}No backups found.${NC}"; return 1; }
+            
+            read -rp "Enter backup number to restore or 0 to cancel: " backup_num
+            if [[ "$backup_num" =~ ^[0-9]+$ && "$backup_num" -gt 0 ]]; then
+                local backup_to_restore=$(ls -1t "$DB_FILE".bak_* 2>/dev/null | sed -n "${backup_num}p")
+                if [[ -f "$backup_to_restore" ]]; then
+                    echo -e "${YELLOW}Warning: This will overwrite the current database.${NC}"
+                    read -rp "Are you sure? [y/N]: " confirm
+                    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                        cp "$backup_to_restore" "$DB_FILE" 2>/dev/null
+                        echo -e "${GREEN}Database restored from $backup_to_restore.${NC}"
+                    else
+                        echo -e "${YELLOW}Restore cancelled.${NC}"
+                    fi
+                else
+                    echo -e "${RED}Selected backup file not found.${NC}"
+                fi
+            elif [[ "$backup_num" -ne 0 ]]; then
+                echo -e "${RED}Invalid selection.${NC}"
+            fi
+            ;;
+        0|*)
+            return 0
+            ;;
+    esac
 }
 # Toggle logging function
 toggle_logging() {

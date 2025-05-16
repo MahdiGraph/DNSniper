@@ -122,6 +122,26 @@ EOF
         log "INFO" "DNSniper scheduler disabled" "verbose"
     fi
     log "INFO" "DNSniper systemd services created" "verbose"
+    # Ensure rules files exist with minimum content before starting service
+    echo "*filter" > "$RULES_V4_FILE"
+    echo ":INPUT ACCEPT [0:0]" >> "$RULES_V4_FILE"
+    echo ":FORWARD ACCEPT [0:0]" >> "$RULES_V4_FILE"
+    echo ":OUTPUT ACCEPT [0:0]" >> "$RULES_V4_FILE"
+    echo ":$IPT_CHAIN - [0:0]" >> "$RULES_V4_FILE"
+    echo "COMMIT" >> "$RULES_V4_FILE"
+
+    echo "*filter" > "$RULES_V6_FILE"
+    echo ":INPUT ACCEPT [0:0]" >> "$RULES_V6_FILE"
+    echo ":FORWARD ACCEPT [0:0]" >> "$RULES_V6_FILE"
+    echo ":OUTPUT ACCEPT [0:0]" >> "$RULES_V6_FILE"
+    echo ":$IPT6_CHAIN - [0:0]" >> "$RULES_V6_FILE"
+    echo "COMMIT" >> "$RULES_V6_FILE"
+
+    # Always enable and start firewall service
+    systemctl enable dnsniper-firewall.service &>/dev/null
+    systemctl restart dnsniper-firewall.service &>/dev/null
+
+    log "INFO" "Created initial rules files and started firewall service" "verbose"
 }
 
 # Update systemd timer settings

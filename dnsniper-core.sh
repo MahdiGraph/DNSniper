@@ -301,12 +301,25 @@ EOF
             echo "Warning: $cmd is not installed. Some features may not work." >&2
         fi
     done
-    # Initialize SQLite DB with transaction support and better error handling
+    
+    # Initialize SQLite DB with improved transaction and lock handling
     if command -v sqlite3 >/dev/null 2>&1; then
+        # Check if database file is locked
+        if [ -f "$DB_FILE-wal" ] || [ -f "$DB_FILE-shm" ]; then
+            echo_safe "${YELLOW}Warning: Database appears to be locked, attempting to recover...${NC}"
+            # Try to recover using sqlite3 recovery commands
+            sqlite3 "$DB_FILE" "PRAGMA wal_checkpoint(FULL);" 2>/dev/null || true
+            # Remove WAL and SHM files if they still exist
+            rm -f "$DB_FILE-wal" "$DB_FILE-shm" 2>/dev/null || true
+        fi
+
+        # Optimize database settings for better concurrency
         sqlite3 "$DB_FILE" <<SQL
-PRAGMA busy_timeout = 3000;
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;       -- Increase timeout to 5 seconds
+PRAGMA journal_mode = WAL;        -- Use Write-Ahead Logging for better concurrency
+PRAGMA synchronous = NORMAL;      -- Balance between safety and performance
+PRAGMA cache_size = 5000;         -- Increase cache size for better performance
+PRAGMA temp_store = MEMORY;       -- Store temp tables in memory
 
 BEGIN TRANSACTION;
 
@@ -330,9 +343,12 @@ CREATE TABLE IF NOT EXISTS cdn_domains(
 
 COMMIT;
 SQL
+        # مطمئن شوید پایگاه داده به درستی بسته شده
+        sqlite3 "$DB_FILE" "PRAGMA optimize;" 2>/dev/null || true
     else
         echo "Warning: sqlite3 not found, database functionality disabled." >&2
     fi
+
     # Initialize iptables chains
     initialize_chains
     # Initialize ipset if available
