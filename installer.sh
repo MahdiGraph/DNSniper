@@ -216,7 +216,7 @@ if [[ "$installation_type" == "clean" ]]; then
     rm -f "$BIN_PATH" 2>/dev/null || true
     rm -rf "$BASE_DIR" 2>/dev/null || true
     echo -e "${GREEN}Existing installation removed.${NC}"
-}
+fi
 
 # Create directories
 echo -e ""
