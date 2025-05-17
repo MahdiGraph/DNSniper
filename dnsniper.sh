@@ -2574,7 +2574,7 @@ handle_args() {
                 echo -e "${RED}Error: missing domain parameter${NC}"
                 show_help
                 exit 1
-            }
+            fi
             echo "$2" >> "$REMOVE_FILE"
             echo -e "${GREEN}Domain added to whitelist:${NC} $2" # Updated terminology
             log "INFO" "Domain added to whitelist via CLI: $2" "verbose"
