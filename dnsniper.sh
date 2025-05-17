@@ -88,7 +88,7 @@ sanitize_input() {
     local input="$1"
     
     # Remove potentially dangerous characters
-    local sanitized="${input//[;&|<>`$(){}]/}"
+    local sanitized="$(echo "$input" | tr -d ';&|<>`$(){}[]\'\"\\' | tr -cd 'a-zA-Z0-9._-@:')"
     
     # Remove leading/trailing whitespace
     sanitized="$(echo "$sanitized" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
