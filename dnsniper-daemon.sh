@@ -2,6 +2,7 @@
 # DNSniper Service Functions - Domain-based threat mitigation via iptables/ip6tables
 # Repository: https://github.com/MahdiGraph/DNSniper
 # Version: 2.1.2
+
 # Define fallback log function in case sourcing fails
 log() {
     local level="$1" message="$2" verbose="${3:-}"
@@ -13,6 +14,7 @@ log() {
         echo "[$timestamp] [$level] $message" >> "$LOG_FILE" 2>/dev/null || true
     fi
 }
+
 # Now source the core functionality
 if [[ -f /etc/dnsniper/dnsniper-core.sh ]]; then
     source /etc/dnsniper/dnsniper-core.sh
@@ -20,12 +22,34 @@ else
     echo "Error: Core DNSniper functionality not found" >&2
     exit 1
 fi
-# Atomic process locking mechanism
+
+# Improved atomic process locking mechanism with better error handling
 acquire_lock() {
-    # Use atomic file creation to acquire lock
+    # Check for stale lock first
+    if [[ -f "$LOCK_FILE" ]]; then
+        local existing_pid
+        existing_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+        if [[ -n "$existing_pid" ]]; then
+            # Check if process is still running
+            if kill -0 "$existing_pid" 2>/dev/null; then
+                log "WARNING" "Another DNSniper process is already running (PID: $existing_pid)" "verbose"
+                return 1
+            else
+                log "INFO" "Found stale lock file for PID $existing_pid, removing it" "verbose"
+                rm -f "$LOCK_FILE" 2>/dev/null || true
+            fi
+        else
+            # Lock file exists but can't read PID
+            log "WARNING" "Found lock file but couldn't read PID, removing it" "verbose"
+            rm -f "$LOCK_FILE" 2>/dev/null || true
+        fi
+    }
+    
+    # Try to acquire lock with atomic operation
     if ( set -o noclobber; echo "$$" > "$LOCK_FILE") 2> /dev/null; then
         # Lock successfully acquired
         log "INFO" "Lock acquired for process $$" "verbose"
+        
         # Set trap to remove lock file on exit
         trap 'release_lock' EXIT HUP INT QUIT TERM
         return 0
@@ -33,13 +57,14 @@ acquire_lock() {
         # Failed to acquire lock
         local pid
         pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-        # Check if process is active
+        
+        # Double-check if process is active
         if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
             # Process is still running
             log "WARNING" "Another DNSniper process is already running (PID: $pid)" "verbose"
             return 1
         else
-            # Stale lock file, remove and retry
+            # Stale lock file that wasn't caught earlier, remove and retry
             rm -f "$LOCK_FILE" 2>/dev/null || true
             if ( set -o noclobber; echo "$$" > "$LOCK_FILE") 2> /dev/null; then
                 # Lock acquired on second attempt
@@ -48,13 +73,14 @@ acquire_lock() {
                 trap 'release_lock' EXIT HUP INT QUIT TERM
                 return 0
             else
-                # Still failed to acquire lock
+                # Still failed to acquire lock - possible filesystem or permission issue
                 log "WARNING" "Failed to acquire lock after removing stale lock file" "verbose"
                 return 1
             fi
         fi
     fi
 }
+
 # Check if a background process is running without blocking
 is_background_process_running() {
     if [[ -f "$LOCK_FILE" ]]; then
@@ -73,6 +99,8 @@ is_background_process_running() {
     echo "0|0|None|None"
     return 1
 }
+
+# Improved lock release mechanism
 release_lock() {
     # Only remove lock if it belongs to current process
     local pid
@@ -82,10 +110,14 @@ release_lock() {
         log "INFO" "Lock released for process $$" "verbose"
         # Remove trap
         trap - EXIT HUP INT QUIT TERM
+        return 0
+    elif [[ -n "$pid" ]]; then
+        log "WARNING" "Not removing lock file: belongs to PID $pid, not $$" "verbose"
     fi
     return 0
 }
-# Create systemd service and timer
+
+# Create systemd service and timer with better defaults for system impact
 create_systemd_service() {
     log "INFO" "Creating systemd services for DNSniper" "verbose"
     # Create the main service
@@ -100,14 +132,20 @@ RemainAfterExit=no
 TimeoutStartSec=1800
 TimeoutStopSec=90
 KillMode=process
+# Set resource limits to prevent overload
+CPUQuota=40%
+IOWeight=40
+Nice=10
 [Install]
 WantedBy=multi-user.target
 EOF
+
     # Create the timer
     local schedule_minutes=$(grep '^schedule_minutes=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]]; then
         schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
     fi
+    
     cat > /etc/systemd/system/dnsniper.timer << EOF
 [Unit]
 Description=Run DNSniper periodically
@@ -117,9 +155,11 @@ Unit=dnsniper.service
 OnBootSec=60s
 OnUnitActiveSec=${schedule_minutes}m
 AccuracySec=60s
+RandomizedDelaySec=30
 [Install]
 WantedBy=timers.target
 EOF
+
     # Create firewall persistence service
     cat > /etc/systemd/system/dnsniper-firewall.service << EOF
 [Unit]
@@ -133,10 +173,13 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+
     # Reload systemd
     systemctl daemon-reload &>/dev/null || true
+    
     # Enable firewall persistence service
     systemctl enable dnsniper-firewall.service &>/dev/null || true
+    
     # Enable timer if scheduler is enabled
     local scheduler_enabled=$(grep '^scheduler_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ "$scheduler_enabled" == "1" ]]; then
@@ -149,7 +192,9 @@ EOF
         systemctl stop dnsniper.timer &>/dev/null || true
         log "INFO" "DNSniper scheduler disabled" "verbose"
     fi
+    
     log "INFO" "DNSniper systemd services created" "verbose"
+    
     # Ensure rules files exist with minimum content before starting service
     echo "*filter" > "$RULES_V4_FILE"
     echo ":INPUT ACCEPT [0:0]" >> "$RULES_V4_FILE"
@@ -157,17 +202,20 @@ EOF
     echo ":OUTPUT ACCEPT [0:0]" >> "$RULES_V4_FILE"
     echo ":$IPT_CHAIN - [0:0]" >> "$RULES_V4_FILE"
     echo "COMMIT" >> "$RULES_V4_FILE"
+    
     echo "*filter" > "$RULES_V6_FILE"
     echo ":INPUT ACCEPT [0:0]" >> "$RULES_V6_FILE"
     echo ":FORWARD ACCEPT [0:0]" >> "$RULES_V6_FILE"
     echo ":OUTPUT ACCEPT [0:0]" >> "$RULES_V6_FILE"
     echo ":$IPT6_CHAIN - [0:0]" >> "$RULES_V6_FILE"
     echo "COMMIT" >> "$RULES_V6_FILE"
+    
     # Always enable and start firewall service
     systemctl enable dnsniper-firewall.service &>/dev/null
     systemctl restart dnsniper-firewall.service &>/dev/null
     log "INFO" "Created initial rules files and started firewall service" "verbose"
 }
+
 # Update systemd timer settings
 update_systemd_timer() {
     log "INFO" "Updating systemd timer settings" "verbose"
@@ -176,10 +224,12 @@ update_systemd_timer() {
     if [[ -z "$schedule_minutes" || ! "$schedule_minutes" =~ ^[0-9]+$ ]]; then
         schedule_minutes=$DEFAULT_SCHEDULE_MINUTES
     fi
+    
     local scheduler_enabled=$(grep '^scheduler_enabled=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$scheduler_enabled" || ! "$scheduler_enabled" =~ ^[01]$ ]]; then
         scheduler_enabled=$DEFAULT_SCHEDULER_ENABLED
     fi
+    
     # Update timer file with new interval
     if [[ -f /etc/systemd/system/dnsniper.timer ]]; then
         sed -i "s/OnUnitActiveSec=.*m/OnUnitActiveSec=${schedule_minutes}m/" /etc/systemd/system/dnsniper.timer
@@ -188,8 +238,10 @@ update_systemd_timer() {
         create_systemd_service
         return
     fi
+    
     # Reload systemd
     systemctl daemon-reload &>/dev/null || true
+    
     # Enable or disable timer based on settings
     if [[ "$scheduler_enabled" == "1" ]]; then
         systemctl enable dnsniper.service &>/dev/null || true
@@ -202,11 +254,13 @@ update_systemd_timer() {
         log "INFO" "DNSniper scheduler disabled" "verbose"
     fi
 }
+
 # Check systemd service and timer status
 get_service_status() {
     local timer_status="Not installed"
     local service_status="Not installed"
     local firewall_status="Not installed"
+    
     # Check timer status
     if systemctl list-unit-files dnsniper.timer &>/dev/null; then
         if systemctl is-enabled dnsniper.timer &>/dev/null; then
@@ -219,6 +273,7 @@ get_service_status() {
             timer_status="${RED}Disabled${NC}"
         fi
     fi
+    
     # Check service status
     if systemctl list-unit-files dnsniper.service &>/dev/null; then
         if systemctl is-enabled dnsniper.service &>/dev/null; then
@@ -226,12 +281,14 @@ get_service_status() {
         else
             service_status="${YELLOW}Installed but not enabled${NC}"
         fi
+        
         # Check last run
         local last_run=$(systemctl show dnsniper.service -p ActiveEnterTimestamp --value)
         if [[ -n "$last_run" && "$last_run" != "n/a" ]]; then
             service_status="$service_status, Last run: $last_run"
         fi
     fi
+    
     # Check firewall service status
     if systemctl list-unit-files dnsniper-firewall.service &>/dev/null; then
         if systemctl is-enabled dnsniper-firewall.service &>/dev/null; then
@@ -244,14 +301,17 @@ get_service_status() {
             firewall_status="${RED}Disabled${NC}"
         fi
     fi
+    
     # Return status info
     echo "DNSniper Timer: $timer_status"
     echo "DNSniper Service: $service_status"
     echo "Firewall Service: $firewall_status"
 }
-# Run with process locking in foreground
+
+# Improved run with process locking in foreground
 run_with_lock() {
-    if acquire_lock; then
+    # Start with lower priority using nice
+    if nice -n 10 acquire_lock; then
         # Execute command with lock
         resolve_block
         # Release lock when done
@@ -263,22 +323,35 @@ run_with_lock() {
     fi
     return 0
 }
-# Run in background without blocking terminal
+
+# Improved background execution function with better resource constraints
 run_background() {
     # Update status to indicate we're starting
     update_status "starting" "Initializing background operation" "0" "0"
+    
     # Background processes shouldn't ask for user input - always use non-interactive mode
     export DNSniper_NONINTERACTIVE=1
+    
     if acquire_lock; then
         # We got the lock, execute in the background with redirected output
-        resolve_block > /dev/null 2>&1
+        # Use nice to lower priority and ionice to reduce i/o impact
+        if command -v ionice >/dev/null 2>&1; then
+            # Use ionice if available (class 3 = idle)
+            ionice -c3 nice -n 10 resolve_block > /dev/null 2>&1
+        else
+            # Fallback to just nice if ionice isn't available
+            nice -n 10 resolve_block > /dev/null 2>&1
+        fi
+        
         local result=$?
+        
         # Update status and release lock when done
         if [[ $result -eq 0 ]]; then
             update_status "completed" "Background operation completed successfully" "100" "0"
         else
             update_status "error" "Background operation failed with error code $result" "0" "0"
-        fi
+        }
+        
         release_lock
         return $result
     else
@@ -288,6 +361,7 @@ run_background() {
         return 1
     fi
 }
+
 # Clean up any cron jobs from previous versions
 cleanup_cron_jobs() {
     log "INFO" "Checking for old cron jobs" "verbose"

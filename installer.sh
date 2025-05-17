@@ -4,6 +4,7 @@
 # Version: 2.1.2
 # Usage: curl -sSL https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/installer.sh | bash
 set -e
+
 # ANSI color codes
 RED='\e[31m'
 GREEN='\e[32m'
@@ -14,6 +15,7 @@ MAGENTA='\e[35m'
 WHITE='\e[97m'
 BOLD='\e[1m'
 NC='\e[0m'
+
 # Paths
 BASE_DIR="/etc/dnsniper"
 BIN_PATH="/usr/local/bin/dnsniper"
@@ -21,6 +23,7 @@ CORE_SCRIPT="$BASE_DIR/dnsniper-core.sh"
 DAEMON_SCRIPT="$BASE_DIR/dnsniper-daemon.sh"
 MAIN_SCRIPT="$BASE_DIR/dnsniper.sh"
 CONFIG_FILE="$BASE_DIR/config.conf"
+
 # Function to get latest commit with fallback support
 get_latest_commit() {
     if ! command -v git &>/dev/null; then
@@ -37,9 +40,11 @@ get_latest_commit() {
     fi
     echo "$commit"
 }
+
 # Get latest commit
 latest_commit=$(get_latest_commit)
 github_url="https://raw.githubusercontent.com/MahdiGraph/DNSniper/${latest_commit}"
+
 # Display banner
 echo -e "${BLUE}${BOLD}"
 echo -e "    ____  _   _ ____       _                 "
@@ -50,33 +55,36 @@ echo -e "   |____/|_| \\_|____/|_| |_|_| .__/ \\___|_|  "
 echo -e "                             |_|              "
 echo -e "${GREEN}${BOLD} Domain-based Network Threat Mitigation v2.1.2 ${NC}"
 echo -e ""
+
 # Check root
 if [[ $EUID -ne 0 ]]; then
     echo -e "${RED}${BOLD}Error:${NC} This installer must be run as root (sudo)." >&2
     exit 1
 fi
+
 echo -e "${CYAN}${BOLD}SYSTEM DETECTION${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+
 # Detect package manager and set command variables
 if command -v apt &>/dev/null; then
     PKG_MANAGER="apt"
     PKG_UPDATE="apt update"
     PKG_INSTALL="apt install -y"
-    DEPS="iptables iptables-persistent curl dnsutils git"
+    DEPS="iptables iptables-persistent curl dnsutils git ipset"
 elif command -v dnf &>/dev/null; then
     PKG_MANAGER="dnf"
     PKG_UPDATE="dnf check-update || true"
     PKG_INSTALL="dnf install -y"
-    DEPS="iptables iptables-services curl bind-utils git"
+    DEPS="iptables iptables-services curl bind-utils git ipset"
 elif command -v yum &>/dev/null; then
     PKG_MANAGER="yum"
     PKG_UPDATE="yum check-update || true"
     PKG_INSTALL="yum install -y"
-    DEPS="iptables iptables-services curl bind-utils git"
+    DEPS="iptables iptables-services curl bind-utils git ipset"
 else
     echo -e "${YELLOW}${BOLD}Warning:${NC} Unsupported package manager."
     echo -e "You'll need to manually install these dependencies:"
-    echo -e "- iptables\n- ip6tables\n- curl\n- bind-utils/dnsutils (for dig)\n- git"
+    echo -e "- iptables\n- ip6tables\n- curl\n- bind-utils/dnsutils (for dig)\n- git\n- ipset"
     read -rp "Continue anyway? [y/N]: " response
     if [[ ! "$response" =~ ^[Yy]$ ]]; then
         echo -e "${RED}Installation cancelled.${NC}"
@@ -84,7 +92,9 @@ else
     fi
     PKG_MANAGER="manual"
 fi
+
 echo -e "${GREEN}Detected system: ${PKG_MANAGER}${NC}"
+
 # Check for existing installation
 installation_type="install"
 if [[ -d "$BASE_DIR" || -f "$BIN_PATH" ]]; then
@@ -97,6 +107,7 @@ if [[ -d "$BASE_DIR" || -f "$BIN_PATH" ]]; then
     echo -e "2. ${BOLD}Upgrade${NC} - Keep settings and data, upgrade to new version"
     echo -e "3. ${BOLD}Cancel${NC} - Exit without making changes"
     read -rp "Choice (1-3): " choice
+    
     case "$choice" in
         1)
             echo -e "${YELLOW}Proceeding with clean installation...${NC}"
@@ -112,6 +123,7 @@ if [[ -d "$BASE_DIR" || -f "$BIN_PATH" ]]; then
             ;;
     esac
 fi
+
 # Install dependencies
 if [[ "$PKG_MANAGER" != "manual" ]]; then
     echo -e ""
@@ -132,7 +144,7 @@ else
     echo -e "${CYAN}${BOLD}DEPENDENCIES CHECK${NC}"
     echo -e "${MAGENTA}───────────────────────────────────────${NC}"
     missing=()
-    for cmd in iptables ip6tables curl dig git; do
+    for cmd in iptables ip6tables curl dig git ipset; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
@@ -144,11 +156,35 @@ else
     fi
     echo -e "${GREEN}All dependencies present.${NC}"
 fi
+
 # Clean up existing installation if needed
 if [[ "$installation_type" == "clean" ]]; then
     echo -e ""
     echo -e "${CYAN}${BOLD}REMOVING EXISTING INSTALLATION${NC}"
     echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+    
+    # Terminate any running processes first to avoid issues
+    if [[ -f "$BASE_DIR/dnsniper.lock" ]]; then
+        echo -e "${YELLOW}Stopping any running DNSniper processes...${NC}"
+        pid=$(cat "$BASE_DIR/dnsniper.lock" 2>/dev/null || echo "")
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            kill -15 "$pid" 2>/dev/null || true
+            sleep 2
+            # Force kill if still running
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -9 "$pid" 2>/dev/null || true
+            fi
+        fi
+        rm -f "$BASE_DIR/dnsniper.lock" 2>/dev/null || true
+    fi
+    
+    # Clean up ipsets
+    if command -v ipset &>/dev/null; then
+        echo -e "${YELLOW}Removing ipsets...${NC}"
+        ipset destroy dnsniper-ipv4 2>/dev/null || true
+        ipset destroy dnsniper-ipv6 2>/dev/null || true
+    fi
+    
     # Stop and disable systemd services
     if systemctl list-unit-files dnsniper.service &>/dev/null; then
         echo -e "${YELLOW}Stopping and disabling services...${NC}"
@@ -162,8 +198,10 @@ if [[ "$installation_type" == "clean" ]]; then
         systemctl disable dnsniper-firewall.service &>/dev/null || true
         rm -f /etc/systemd/system/dnsniper-firewall.service &>/dev/null || true
     fi
+    
     # Reload systemd
     systemctl daemon-reload &>/dev/null || true
+    
     # Check for and remove cron jobs
     if command -v crontab &>/dev/null; then
         echo -e "${YELLOW}Checking for old cron jobs...${NC}"
@@ -172,12 +210,14 @@ if [[ "$installation_type" == "clean" ]]; then
             echo -e "${GREEN}Removed old cron jobs.${NC}"
         fi
     fi
+    
     # Remove binary and directories
     echo -e "${YELLOW}Removing files...${NC}"
     rm -f "$BIN_PATH" 2>/dev/null || true
     rm -rf "$BASE_DIR" 2>/dev/null || true
     echo -e "${GREEN}Existing installation removed.${NC}"
-fi
+}
+
 # Create directories
 echo -e ""
 echo -e "${CYAN}${BOLD}DIRECTORY SETUP${NC}"
@@ -187,10 +227,12 @@ mkdir -p "$BASE_DIR/history"
 mkdir -p "$BASE_DIR/data"
 mkdir -p "$BASE_DIR/status"
 echo -e "${GREEN}Directories created: $BASE_DIR, $BASE_DIR/history, $BASE_DIR/data, $BASE_DIR/status${NC}"
+
 # Setup firewall persistence according to system type
 echo -e ""
 echo -e "${CYAN}${BOLD}FIREWALL PERSISTENCE${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+
 # Detect OS type
 if [[ -f /etc/debian_version ]]; then
     OS_TYPE="debian"
@@ -219,21 +261,25 @@ else
     OS_TYPE="unknown"
     echo -e "${YELLOW}Unknown OS, will create systemd service for persistence${NC}"
 fi
+
 # Download scripts
 echo -e ""
 echo -e "${CYAN}${BOLD}SCRIPT DOWNLOAD${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
+
 # Function to download a script
 download_script() {
     local script_name="$1"
     local output_file="$2"
     echo -e "${YELLOW}Downloading ${script_name}...${NC}"
+    
     if curl -sfL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 30 "${github_url}/${script_name}" -o "${output_file}.tmp"; then
         if [[ ! -s "${output_file}.tmp" ]]; then
             echo -e "${RED}${BOLD}Error:${NC} Downloaded ${script_name} is empty."
             rm -f "${output_file}.tmp"
             return 1
         fi
+        
         chmod +x "${output_file}.tmp"
         mv "${output_file}.tmp" "${output_file}"
         echo -e "${GREEN}${script_name} successfully downloaded.${NC}"
@@ -244,23 +290,28 @@ download_script() {
         return 1
     fi
 }
+
 # Download the scripts
 if ! download_script "dnsniper-core.sh" "$CORE_SCRIPT"; then
     echo -e "${RED}${BOLD}Failed to download core script. Installation aborted.${NC}"
     exit 1
 fi
+
 if ! download_script "dnsniper-daemon.sh" "$DAEMON_SCRIPT"; then
     echo -e "${RED}${BOLD}Failed to download daemon script. Installation aborted.${NC}"
     exit 1
 fi
+
 if ! download_script "dnsniper.sh" "$MAIN_SCRIPT"; then
     echo -e "${RED}${BOLD}Failed to download main script. Installation aborted.${NC}"
     exit 1
 fi
+
 # Create symlink
 ln -sf "$MAIN_SCRIPT" "$BIN_PATH"
 chmod +x "$BIN_PATH"
 echo -e "${GREEN}Created symlink: $BIN_PATH${NC}"
+
 # Clean up any old cron jobs (migration)
 echo -e ""
 echo -e "${CYAN}${BOLD}CRON JOB CLEANUP${NC}"
@@ -273,6 +324,7 @@ if command -v crontab &>/dev/null; then
         echo -e "${GREEN}No old cron jobs found.${NC}"
     fi
 fi
+
 # Ask about scheduling
 echo -e ""
 echo -e "${CYAN}${BOLD}SCHEDULING${NC}"
@@ -281,9 +333,11 @@ echo -e "${YELLOW}Do you want DNSniper to run automatically on a schedule?${NC}"
 echo -e "1. ${BOLD}Yes${NC} - Run every hour (recommended)"
 echo -e "2. ${BOLD}Yes${NC} - Run every 30 minutes (more frequent)"
 echo -e "3. ${BOLD}No${NC} - I'll manually run it when needed"
+
 read -rp "Choice (1-3): " schedule_choice
 scheduler_enabled=1
 schedule_minutes=60
+
 case "$schedule_choice" in
     1)
         scheduler_enabled=1
@@ -303,6 +357,7 @@ case "$schedule_choice" in
         echo -e "${YELLOW}Invalid choice. Using default: hourly schedule.${NC}"
         ;;
 esac
+
 # Create or update config file
 if [[ "$installation_type" == "upgrade" && -f "$CONFIG_FILE" ]]; then
     # Keep existing config, just update the scheduler settings
@@ -330,6 +385,7 @@ else
     [[ -z "$DEFAULT_BLOCK_DESTINATION" ]] && DEFAULT_BLOCK_DESTINATION=1
     [[ -z "$DEFAULT_LOGGING_ENABLED" ]] && DEFAULT_LOGGING_ENABLED=0
     [[ -z "$DEFAULT_STATUS_ENABLED" ]] && DEFAULT_STATUS_ENABLED=1
+    
     cat > "$CONFIG_FILE" << EOF
 # DNSniper Configuration
 scheduler_enabled=$scheduler_enabled
@@ -347,6 +403,7 @@ status_enabled=$DEFAULT_STATUS_ENABLED
 EOF
     echo -e "${GREEN}Created default configuration file.${NC}"
 fi
+
 # Create empty files if not upgrading
 if [[ "$installation_type" != "upgrade" ]]; then
     echo -e ""
@@ -354,8 +411,10 @@ if [[ "$installation_type" != "upgrade" ]]; then
     echo -e "${MAGENTA}───────────────────────────────────────${NC}"
     touch "$BASE_DIR/domains-default.txt" "$BASE_DIR/domains-add.txt" "$BASE_DIR/domains-remove.txt" \
           "$BASE_DIR/ips-add.txt" "$BASE_DIR/ips-remove.txt" 2>/dev/null
+    
     # Create required data files
     touch "$BASE_DIR/data/cdn_domains.txt" "$BASE_DIR/data/expired_domains.txt" 2>/dev/null
+    
     # Add explanatory comment to default domains file
     cat > "$BASE_DIR/domains-default.txt" << EOF
 # DNSniper Default Domains
@@ -367,42 +426,53 @@ if [[ "$installation_type" != "upgrade" ]]; then
 EOF
     echo -e "${GREEN}Created required files.${NC}"
 fi
+
 # Initialize DNSniper
 echo -e ""
 echo -e "${CYAN}${BOLD}INITIALIZATION${NC}"
 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
-# Source daemon script to create systemd services
-bash -c "source '$DAEMON_SCRIPT' && create_systemd_service" || true
-# IMPROVED SECTION: Enable and start services - without hanging
+
+# Source daemon script to create systemd services with improved error handling
+echo -e "${BLUE}Creating systemd services...${NC}"
+(source "$DAEMON_SCRIPT" && create_systemd_service) || {
+    echo -e "${RED}${BOLD}Warning:${NC} Error creating systemd services. Please check logs."
+}
+
+# IMPROVED SECTION: Enable and start services with proper non-blocking behavior
 if [[ "$scheduler_enabled" -eq 1 ]]; then
-    echo -e "${GREEN}Enabling and starting DNSniper services...${NC}"
-    # Enable services first (this is quick and shouldn't hang)
+    echo -e "${GREEN}Enabling DNSniper services...${NC}"
+    
+    # Enable services (this is quick and shouldn't hang)
     systemctl enable dnsniper-firewall.service &>/dev/null || true
-    systemctl enable dnsniper.service &>/dev/null || true
+    systemctl enable dnsniper.service &>/dev/null || true 
     systemctl enable dnsniper.timer &>/dev/null || true
-    # Start services in background with nohup to ensure they don't hang
+    
+    # Start services in background without waiting for them to complete
     echo -e "${YELLOW}Starting services in background...${NC}"
-    nohup systemctl start dnsniper-firewall.service >/dev/null 2>&1 &
-    nohup systemctl start dnsniper.timer >/dev/null 2>&1 &
-    # Brief pause to allow services to begin startup
-    sleep 1
+    systemctl start dnsniper-firewall.service &>/dev/null &
+    systemctl start dnsniper.timer &>/dev/null &
+    
     echo -e "${GREEN}Services enabled and started in background.${NC}"
     echo -e "${BLUE}Tip: Check service status with: sudo dnsniper --status${NC}"
 fi
-# IMPROVED SECTION: Make sure initialization check doesn't hang
-# Check version instead of doing a full run to avoid hanging
-"$BIN_PATH" --version >/dev/null 2>&1
-if [[ $? -eq 0 ]]; then
+
+# IMPROVED SECTION: Make sure initialization doesn't hang
+# Only check version instead of running a full operation
+echo -e "${BLUE}Verifying installation...${NC}"
+if "$BIN_PATH" --version >/dev/null 2>&1; then
     echo -e "${GREEN}DNSniper successfully initialized.${NC}"
+    
     if [[ "$installation_type" != "upgrade" ]]; then
         echo -e "${YELLOW}Running initial domains update in background...${NC}"
-        # Run update in background to avoid hanging the installer
-        nohup "$BIN_PATH" --update >/dev/null 2>&1 &
+        # Run update in background to avoid blocking the installer
+        nohup bash -c "nice -n 10 $BIN_PATH --update" >/dev/null 2>&1 &
+        echo -e "${BLUE}Initial update will continue in background.${NC}"
     fi
 else
     echo -e "${RED}${BOLD}Warning:${NC} There might be issues with initialization."
     echo -e "${YELLOW}Please check by running: sudo dnsniper --status${NC}"
 fi
+
 # Final instructions
 echo -e ""
 echo -e "${CYAN}${BOLD}INSTALLATION COMPLETE!${NC}"
