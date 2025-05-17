@@ -1195,7 +1195,7 @@ import_ips() {
     
     echo -e "${BLUE}Processing $total IP addresses...${NC}"
     
-    while [[ $processed -lt $total ]]; then
+    while [[ $processed -lt $total ]]; do
         local end=$((processed + batch_size))
         [[ $end -gt $total ]] && end=$total
         
