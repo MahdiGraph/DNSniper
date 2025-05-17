@@ -30,19 +30,16 @@ show_banner() {
         echo -e ""
     fi
 }
-
 # IMPROVED: Check for running process but always allow menu to be shown
 check_background_process() {
     # Check for running background process without blocking
     local bg_status=$(is_background_process_running)
     local IFS="|"
     read -r is_running pid start_time cmd <<< "$bg_status"
-    
     if [[ "$is_running" == "1" ]]; then
         # Show a notification but allow menu to continue
         echo -e "${YELLOW}${BOLD}Note:${NC} A DNSniper process (PID: $pid) is running in the background."
         echo -e "Started: ${YELLOW}$start_time${NC}"
-        
         # Check if we have status information
         if [[ -f "$STATUS_FILE" ]]; then
             local status_data=$(get_status)
@@ -50,7 +47,6 @@ check_background_process() {
             local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
             local progress=$(echo "$status_data" | grep -o '"progress":[^,}]*' | cut -d':' -f2)
             local eta=$(echo "$status_data" | grep -o '"eta":[^,}]*' | cut -d':' -f2)
-            
             # Format ETA if available
             local eta_text=""
             if [[ $eta -gt 0 ]]; then
@@ -63,35 +59,28 @@ check_background_process() {
                 fi
                 eta_text=" (ETA: ${eta_text})"
             fi
-            
             echo -e "Status: ${CYAN}${status}${NC} - ${YELLOW}${message}${NC} - ${GREEN}${progress}%${YELLOW}${eta_text}${NC}"
         fi
-        
         echo -e "${BLUE}You can use the menu while the process is running.${NC}"
         echo -e "${BLUE}Some operations will be limited until the background process completes.${NC}"
         echo -e "${BLUE}Choose '2' to view detailed status.${NC}"
         echo -e ""
-        
         # Return true to indicate a background process is running
         return 0
     fi
-    
     # Return false to indicate no background process is running
     return 1
 }
-
 # IMPROVED MENU: Simplified menu with background process indicator
 main_menu() {
     local bg_running=false
     while true; do
         show_banner
-        
         # Check if a background process is running
         if check_background_process; then
             bg_running=true
             echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         fi
-        
         echo -e "${CYAN}${BOLD}MAIN MENU${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         echo -e "${YELLOW}1.${NC} Run Now              ${YELLOW}2.${NC} Status"
@@ -101,7 +90,6 @@ main_menu() {
         echo -e "${YELLOW}9.${NC} Clear Rules          ${YELLOW}0.${NC} Exit"
         echo -e "${YELLOW}U.${NC} Uninstall"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
-        
         read -rp "Select an option: " choice
         case "$choice" in
             1)
@@ -154,20 +142,17 @@ main_menu() {
         esac
     done
 }
-
 ### Interactive menu functions
 # --- Settings submenu ---
 settings_menu() {
     while true; do
         show_banner
-        
         # Check if a background process is running
         local bg_running=false
         if check_background_process; then
             bg_running=true
             echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         fi
-        
         echo -e "${BLUE}${BOLD}SETTINGS${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         echo -e "${YELLOW}1.${NC} Set Schedule"
@@ -202,41 +187,34 @@ settings_menu() {
         read -rp "Press Enter to continue..."
     done
 }
-
 # NEW: Process management function
 process_management() {
     echo -e "${BOLD}=== Process Management ===${NC}"
-    
     # Check for running background process
     local bg_status=$(is_background_process_running)
     local IFS="|"
     read -r is_running pid start_time cmd <<< "$bg_status"
-    
     if [[ "$is_running" == "1" ]]; then
         echo -e "${YELLOW}Background process is running:${NC}"
         echo -e "  ${BOLD}PID:${NC} $pid"
         echo -e "  ${BOLD}Started:${NC} $start_time"
         echo -e "  ${BOLD}Command:${NC} $cmd"
-        
         # Show status if available
         if [[ -f "$STATUS_FILE" ]]; then
             local status_data=$(get_status)
             local status=$(echo "$status_data" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
             local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
             local progress=$(echo "$status_data" | grep -o '"progress":[^,}]*' | cut -d':' -f2)
-            
             echo -e "  ${BOLD}Status:${NC} $status"
             echo -e "  ${BOLD}Progress:${NC} ${progress}%"
             echo -e "  ${BOLD}Message:${NC} $message"
         fi
-        
         echo -e ""
         echo -e "What would you like to do?"
         echo -e "1. ${BOLD}Monitor${NC} process progress"
         echo -e "2. ${BOLD}Terminate${NC} process"
         echo -e "3. ${BOLD}Back${NC} to settings menu"
         read -rp "Choice (1-3): " proc_choice
-        
         case "$proc_choice" in
             1)
                 echo -e "${BLUE}Monitoring process progress (Press Ctrl+C to stop monitoring)...${NC}"
@@ -285,7 +263,6 @@ process_management() {
         esac
     else
         echo -e "${GREEN}No background processes are currently running.${NC}"
-        
         # Check for stale lock file
         if [[ -f "$LOCK_FILE" ]]; then
             local lock_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "Unknown")
@@ -296,14 +273,12 @@ process_management() {
                 echo -e "${GREEN}Stale lock file removed.${NC}"
             fi
         fi
-        
         # Show recent status if available
         if [[ -f "$STATUS_FILE" ]]; then
             local status_data=$(get_status)
             local status=$(echo "$status_data" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
             local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
             local timestamp=$(echo "$status_data" | grep -o '"formatted_time":"[^"]*"' | cut -d'"' -f4)
-            
             echo -e "${BLUE}Last process status:${NC}"
             echo -e "  ${BOLD}Status:${NC} $status"
             echo -e "  ${BOLD}Message:${NC} $message"
@@ -311,18 +286,15 @@ process_management() {
         fi
     fi
 }
-
 service_management_menu() {
     while true; do
         show_banner
-        
         # Check if a background process is running
         local bg_running=false
         if check_background_process; then
             bg_running=true
             echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         fi
-        
         echo -e "${BLUE}${BOLD}SERVICE MANAGEMENT${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         # Get service status
@@ -405,7 +377,6 @@ service_management_menu() {
         read -rp "Press Enter to continue..."
     done
 }
-
 # Toggle logging function
 toggle_logging() {
     echo -e "${BOLD}=== Toggle Logging ===${NC}"
@@ -457,7 +428,6 @@ toggle_logging() {
         fi
     fi
 }
-
 # Rule expiration settings
 expiration_settings() {
     echo -e "${BOLD}=== Rule Expiration Settings ===${NC}"
@@ -560,7 +530,6 @@ expiration_settings() {
         fi
     fi
 }
-
 # Rule types settings
 rule_types_settings() {
     local need_apply=0
@@ -602,12 +571,10 @@ rule_types_settings() {
     # If changes were made, apply them immediately
     if [[ $need_apply -eq 1 ]]; then
         echo -e "\n${YELLOW}Applying changes...${NC}"
-        
         # Check if a background process is running
         local bg_status=$(is_background_process_running)
         local IFS="|"
         read -r is_running pid start_time cmd <<< "$bg_status"
-        
         if [[ "$is_running" == "1" ]]; then
             echo -e "${RED}Cannot apply rule type changes while a background process is running.${NC}"
             echo -e "${YELLOW}Changes will take effect on the next run.${NC}"
@@ -626,7 +593,6 @@ rule_types_settings() {
         echo -e "${YELLOW}No changes made.${NC}"
     fi
 }
-
 # Set schedule
 set_schedule() {
     echo -e "${BOLD}=== Set Schedule ===${NC}"
@@ -695,7 +661,6 @@ set_schedule() {
             ;;
     esac
 }
-
 # Set max IPs
 set_max_ips() {
     echo -e "${BOLD}=== Set Max IPs Per Domain ===${NC}"
@@ -710,7 +675,6 @@ set_max_ips() {
         echo -e "${RED}Invalid input. Please enter a number between 5 and 50.${NC}"
     fi
 }
-
 # Set timeout
 set_timeout() {
     echo -e "${BOLD}=== Set Timeout ===${NC}"
@@ -725,7 +689,6 @@ set_timeout() {
         echo -e "${RED}Invalid input. Please enter a number between 5 and 60.${NC}"
     fi
 }
-
 # Set update URL
 set_update_url() {
     echo -e "${BOLD}=== Set Update URL ===${NC}"
@@ -745,7 +708,6 @@ set_update_url() {
         echo -e "${YELLOW}No change.${NC}"
     fi
 }
-
 # Toggle auto-update
 toggle_auto_update() {
     echo -e "${BOLD}=== Toggle Auto-Update ===${NC}"
@@ -775,19 +737,16 @@ toggle_auto_update() {
         fi
     fi
 }
-
 # --- Import/Export submenu ---
 import_export_menu() {
     while true; do
         show_banner
-        
         # Check if a background process is running
         local bg_running=false
         if check_background_process; then
             bg_running=true
             echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         fi
-        
         echo -e "${BLUE}${BOLD}IMPORT / EXPORT${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         echo -e "${YELLOW}1.${NC} Import Domains"
@@ -816,7 +775,6 @@ import_export_menu() {
         read -rp "Press Enter to continue..."
     done
 }
-
 # Import domains
 import_domains() {
     echo -e "${BOLD}=== Import Domains ===${NC}"
@@ -864,7 +822,6 @@ import_domains() {
     log "INFO" "Imported $count domains from file: $file" "verbose"
     return 0
 }
-
 # Export domains
 export_domains() {
     echo -e "${BOLD}=== Export Domains ===${NC}"
@@ -906,7 +863,6 @@ export_domains() {
     rm -f "$tmpfile"
     return 0
 }
-
 # Import IPs
 import_ips() {
     echo -e "${BOLD}=== Import IP Addresses ===${NC}"
@@ -967,7 +923,6 @@ import_ips() {
     log "INFO" "Imported $count IPs from file: $file" "verbose"
     return 0
 }
-
 # Export IPs
 export_ips() {
     echo -e "${BOLD}=== Export IP Addresses ===${NC}"
@@ -1009,7 +964,6 @@ export_ips() {
     rm -f "$tmpfile"
     return 0
 }
-
 # Export config
 export_config() {
     echo -e "${BOLD}=== Export Configuration ===${NC}"
@@ -1040,7 +994,6 @@ export_config() {
     log "INFO" "Configuration exported to file: $file" "verbose"
     return 0
 }
-
 # Export firewall rules
 export_firewall_rules() {
     echo -e "${BOLD}=== Export Firewall Rules ===${NC}"
@@ -1069,7 +1022,6 @@ export_firewall_rules() {
     log "INFO" "Exported firewall rules to: $dir" "verbose"
     return 0
 }
-
 # Import all (complete backup)
 import_all() {
     echo -e "${BOLD}=== Import Complete Backup ===${NC}"
@@ -1129,7 +1081,6 @@ import_all() {
     fi
     return 0
 }
-
 # Export all (complete backup)
 export_all() {
     echo -e "${BOLD}=== Export Complete Backup ===${NC}"
@@ -1221,7 +1172,6 @@ export_all() {
     log "INFO" "Complete backup exported to: $export_dir" "verbose"
     return 0
 }
-
 # --- Block/Whitelist Domain/IP Functions ---
 # Block domain
 block_domain() {
@@ -1252,7 +1202,6 @@ block_domain() {
         local bg_status=$(is_background_process_running)
         local IFS="|"
         read -r is_running pid start_time cmd <<< "$bg_status"
-        
         if [[ "$is_running" == "1" ]]; then
             echo -e "${YELLOW}A background process is already running.${NC}"
             echo -e "${YELLOW}The domain will be blocked on the next run or when the current process completes.${NC}"
@@ -1292,7 +1241,6 @@ block_domain() {
     fi
     return 0
 }
-
 # Whitelist domain (renamed from unblock_domain for clarity)
 whitelist_domain() {
     echo -e "${BOLD}=== Add Domain to Whitelist ===${NC}"
@@ -1347,7 +1295,6 @@ whitelist_domain() {
             local bg_status=$(is_background_process_running)
             local IFS="|"
             read -r is_running pid start_time cmd <<< "$bg_status"
-            
             if [[ "$is_running" == "1" ]]; then
                 echo -e "${YELLOW}A background process is already running.${NC}"
                 echo -e "${YELLOW}The domain will be whitelisted on the next run or when the current process completes.${NC}"
@@ -1383,7 +1330,6 @@ whitelist_domain() {
     fi
     return 0
 }
-
 # Block IP
 block_custom_ip() {
     echo -e "${BOLD}=== Block IP Address ===${NC}"
@@ -1419,7 +1365,6 @@ block_custom_ip() {
         local bg_status=$(is_background_process_running)
         local IFS="|"
         read -r is_running pid start_time cmd <<< "$bg_status"
-        
         if [[ "$is_running" == "1" ]]; then
             echo -e "${YELLOW}A background process is already running.${NC}"
             echo -e "${YELLOW}The IP will be blocked on the next run or when the current process completes.${NC}"
@@ -1435,7 +1380,6 @@ block_custom_ip() {
     fi
     return 0
 }
-
 # Whitelist IP (renamed from unblock_custom_ip for clarity)
 whitelist_custom_ip() {
     echo -e "${BOLD}=== Add IP Address to Whitelist ===${NC}"
@@ -1490,7 +1434,6 @@ whitelist_custom_ip() {
             local bg_status=$(is_background_process_running)
             local IFS="|"
             read -r is_running pid start_time cmd <<< "$bg_status"
-            
             if [[ "$is_running" == "1" ]]; then
                 echo -e "${YELLOW}A background process is already running.${NC}"
                 echo -e "${YELLOW}The IP will be whitelisted on the next run or when the current process completes.${NC}"
@@ -1509,7 +1452,6 @@ whitelist_custom_ip() {
     fi
     return 0
 }
-
 # Show status - Performance optimized
 display_status() {
     # Start processing in background for better UI responsiveness
@@ -1520,18 +1462,15 @@ display_status() {
     # Run analysis and data gathering in background
     (
         show_banner > "$tmpout"
-        
         # Check for running background process
         local bg_status=$(is_background_process_running)
         local IFS="|"
         read -r is_running pid start_time cmd <<< "$bg_status"
-        
         if [[ "$is_running" == "1" ]]; then
             echo -e "${YELLOW}${BOLD}Background Process Running${NC}" >> "$tmpout"
             echo -e "${MAGENTA}───────────────────────────────────────${NC}" >> "$tmpout"
             echo -e "${BOLD}PID:${NC} $pid" >> "$tmpout"
             echo -e "${BOLD}Started:${NC} $start_time" >> "$tmpout"
-            
             # Show status if available
             if [[ -f "$STATUS_FILE" ]]; then
                 local status_data=$(get_status)
@@ -1539,7 +1478,6 @@ display_status() {
                 local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
                 local progress=$(echo "$status_data" | grep -o '"progress":[^,}]*' | cut -d':' -f2)
                 local eta=$(echo "$status_data" | grep -o '"eta":[^,}]*' | cut -d':' -f2)
-                
                 # Format ETA if available
                 local eta_text=""
                 if [[ $eta -gt 0 ]]; then
@@ -1552,15 +1490,12 @@ display_status() {
                     fi
                     eta_text=" (ETA: ${eta_text})"
                 fi
-                
                 echo -e "${BOLD}Status:${NC} ${CYAN}$status${NC}" >> "$tmpout"
                 echo -e "${BOLD}Progress:${NC} ${GREEN}$progress%${NC}${YELLOW}$eta_text${NC}" >> "$tmpout"
                 echo -e "${BOLD}Message:${NC} $message" >> "$tmpout"
             fi
-            
             echo -e "${MAGENTA}───────────────────────────────────────${NC}" >> "$tmpout"
         fi
-        
         # Get domains and IPs in a more efficient way
         local domain_count=$(merge_domains | wc -l)
         local blocked_ips=$(count_blocked_ips)
@@ -1782,7 +1717,6 @@ display_status() {
     rm -f "$tmpout"
     return 0
 }
-
 # Clear rules
 clear_rules() {
     echo -e "${BOLD}=== Clear Firewall Rules ===${NC}"
@@ -1809,7 +1743,6 @@ clear_rules() {
     fi
     return 0
 }
-
 # Uninstall
 uninstall() {
     echo -e "${RED}${BOLD}Warning: This will completely remove DNSniper.${NC}"
@@ -1870,7 +1803,6 @@ uninstall() {
     fi
     return 0
 }
-
 # Show help - updated with new option names
 show_help() {
     show_banner
@@ -1898,29 +1830,23 @@ show_help() {
     echo -e ""
     return 0
 }
-
 # NEW: Monitor background process
 monitor_background_process() {
     echo -e "${BOLD}Monitoring DNSniper Background Process${NC}"
     echo -e "${YELLOW}Press Ctrl+C to stop monitoring${NC}"
-    
     # Trap Ctrl+C to exit cleanly
     trap 'echo -e "\n${BLUE}Monitoring stopped by user.${NC}"; exit 0' INT
-    
     while true; do
         clear
         echo -e "${CYAN}${BOLD}DNSniper Process Monitor${NC}"
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
-        
         # Check for running background process
         local bg_status=$(is_background_process_running)
         local IFS="|"
         read -r is_running pid start_time cmd <<< "$bg_status"
-        
         if [[ "$is_running" == "1" ]]; then
             echo -e "${GREEN}Process running:${NC} PID $pid"
             echo -e "${GREEN}Started:${NC} $start_time"
-            
             # Get status information
             if [[ -f "$STATUS_FILE" ]]; then
                 local status_data=$(get_status)
@@ -1928,7 +1854,6 @@ monitor_background_process() {
                 local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
                 local progress=$(echo "$status_data" | grep -o '"progress":[^,}]*' | cut -d':' -f2)
                 local eta=$(echo "$status_data" | grep -o '"eta":[^,}]*' | cut -d':' -f2)
-                
                 # Format ETA if available
                 local eta_text=""
                 if [[ $eta -gt 0 ]]; then
@@ -1941,17 +1866,14 @@ monitor_background_process() {
                     fi
                     eta_text=" (ETA: ${eta_text})"
                 fi
-                
                 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
                 echo -e "${BOLD}Status:${NC} $status"
                 echo -e "${BOLD}Message:${NC} $message"
                 echo -e "${BOLD}Progress:${NC} "
-                
                 # Draw a progress bar
                 local bar_width=50
                 local filled_width=$((progress * bar_width / 100))
                 local empty_width=$((bar_width - filled_width))
-                
                 printf "[%${filled_width}s%${empty_width}s] %d%%${YELLOW}%s${NC}\n" | sed "s/ /=/g; s/\-/ /g" "" "$progress" "$eta_text"
             else
                 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
@@ -1964,7 +1886,6 @@ monitor_background_process() {
                 local status=$(echo "$status_data" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
                 local message=$(echo "$status_data" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
                 local timestamp=$(echo "$status_data" | grep -o '"formatted_time":"[^"]*"' | cut -d'"' -f4)
-                
                 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
                 echo -e "${BOLD}Last known status:${NC} $status"
                 echo -e "${BOLD}Last message:${NC} $message"
@@ -1972,13 +1893,11 @@ monitor_background_process() {
             fi
             echo -e "${YELLOW}Waiting for process to start...${NC}"
         fi
-        
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         echo -e "${YELLOW}Press Ctrl+C to stop monitoring${NC}"
         sleep 2
     done
 }
-
 # Updated argument handling with new option names
 handle_args() {
     case "$1" in
@@ -2061,7 +1980,6 @@ handle_args() {
     esac
     return 0
 }
-
 # Entry point
 main() {
     # Check if running as root
@@ -2082,6 +2000,5 @@ main() {
     # No valid arguments provided, start interactive menu
     main_menu
 }
-
 # Execute main function with all arguments
 main "$@"

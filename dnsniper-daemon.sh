@@ -93,7 +93,6 @@ create_systemd_service() {
 [Unit]
 Description=DNSniper Domain Threat Mitigation
 After=network.target
-
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/dnsniper --run-background
@@ -101,7 +100,6 @@ RemainAfterExit=no
 TimeoutStartSec=1800
 TimeoutStopSec=90
 KillMode=process
-
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -114,13 +112,11 @@ EOF
 [Unit]
 Description=Run DNSniper periodically
 Requires=dnsniper.service
-
 [Timer]
 Unit=dnsniper.service
 OnBootSec=60s
 OnUnitActiveSec=${schedule_minutes}m
 AccuracySec=60s
-
 [Install]
 WantedBy=timers.target
 EOF
@@ -129,13 +125,11 @@ EOF
 [Unit]
 Description=DNSniper Firewall Rules
 After=network.target
-
 [Service]
 Type=oneshot
 ExecStart=/sbin/iptables-restore $RULES_V4_FILE
 ExecStart=/sbin/ip6tables-restore $RULES_V6_FILE
 RemainAfterExit=yes
-
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -273,22 +267,18 @@ run_with_lock() {
 run_background() {
     # Update status to indicate we're starting
     update_status "starting" "Initializing background operation" "0" "0"
-    
     # Background processes shouldn't ask for user input - always use non-interactive mode
     export DNSniper_NONINTERACTIVE=1
-    
     if acquire_lock; then
         # We got the lock, execute in the background with redirected output
         resolve_block > /dev/null 2>&1
         local result=$?
-        
         # Update status and release lock when done
         if [[ $result -eq 0 ]]; then
             update_status "completed" "Background operation completed successfully" "100" "0"
         else
             update_status "error" "Background operation failed with error code $result" "0" "0"
         fi
-        
         release_lock
         return $result
     else
