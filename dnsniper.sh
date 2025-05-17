@@ -2600,7 +2600,7 @@ handle_args() {
                 echo -e "${RED}Error: missing IP parameter${NC}"
                 show_help
                 exit 1
-            }
+            fi
             echo "$2" >> "$IP_REMOVE_FILE"
             echo -e "${GREEN}IP added to whitelist:${NC} $2"  # Updated terminology
             log "INFO" "IP added to whitelist via CLI: $2" "verbose"
