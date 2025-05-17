@@ -309,7 +309,7 @@ process_management() {
             echo -e "  ${BOLD}Status:${NC} $status"
             echo -e "  ${BOLD}Progress:${NC} ${progress}%"
             echo -e "  ${BOLD}Message:${NC} $message"
-        }
+        fi
         
         echo -e ""
         echo -e "What would you like to do?"
@@ -338,7 +338,7 @@ process_management() {
                         echo -e "${YELLOW}Press Ctrl+C to stop monitoring${NC}"
                     else
                         echo -e "${YELLOW}Waiting for status update...${NC}"
-                    }
+                    fi
                     sleep 0.5
                 done
                 
@@ -926,7 +926,7 @@ toggle_auto_update() {
     local current=$(grep '^auto_update=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     if [[ -z "$current" || ! "$current" =~ ^[0-9]+$ ]]; then
         current=$DEFAULT_AUTO_UPDATE
-    }
+    fi
     
     if [[ $current -eq 1 ]]; then
         echo -e "${BLUE}Auto-update is currently:${NC} ${GREEN}Enabled${NC}"
@@ -1048,7 +1048,7 @@ import_domains() {
         sed 's/^[[:space:]]*//;s/[[:space:]]*$//' > "$existing_domains"
     else
         touch "$existing_domains"
-    }
+    fi
     
     # Process the filtered domains in batches for large files
     local total=$(wc -l < "$tmpfile")
@@ -1096,7 +1096,7 @@ export_domains() {
     if [[ -z "$file" ]]; then
         echo -e "${RED}Invalid export path.${NC}"
         return 1
-    }
+    fi
     
     # Check if directory exists
     local dir=$(dirname "$file")
@@ -1144,7 +1144,7 @@ export_domains() {
         log "INFO" "Exported $count domains to file: $file" "verbose"
     else
         echo -e "${YELLOW}No domains to export.${NC}"
-    }
+    fi
     
     # Clean up
     rm -f "$tmpfile"
@@ -1160,13 +1160,13 @@ import_ips() {
     if [[ ! -f "$file" ]]; then
         echo -e "${RED}File not found: $file${NC}"
         return 1
-    }
+    fi
     
     # Validate file is readable
     if [[ ! -r "$file" ]]; then
         echo -e "${RED}Cannot read file: $file (permission denied)${NC}"
         return 1
-    }
+    fi
     
     # Performance optimized import for large files
     local tmpfile=$(mktemp)
@@ -1251,20 +1251,20 @@ export_ips() {
     if [[ -z "$file" ]]; then
         echo -e "${RED}Invalid export path.${NC}"
         return 1
-    }
+    fi
     
     # Check if directory exists
     local dir=$(dirname "$file")
     if [[ ! -d "$dir" ]]; then
         echo -e "${RED}Directory does not exist: $dir${NC}"
         return 1
-    }
+    fi
     
     # Check if directory is writable
     if [[ ! -w "$dir" ]]; then
         echo -e "${RED}Cannot write to directory: $dir (permission denied)${NC}"
         return 1
-    }
+    fi
     
     # Export IPs
     local tmpfile=$(mktemp)
@@ -1314,20 +1314,20 @@ export_config() {
     if [[ -z "$file" ]]; then
         echo -e "${RED}Invalid export path.${NC}"
         return 1
-    }
+    fi
     
     # Check if directory exists
     local dir=$(dirname "$file")
     if [[ ! -d "$dir" ]]; then
         echo -e "${RED}Directory does not exist: $dir${NC}"
         return 1
-    }
+    fi
     
     # Check if directory is writable
     if [[ ! -w "$dir" ]]; then
         echo -e "${RED}Cannot write to directory: $dir (permission denied)${NC}"
         return 1
-    }
+    fi
     
     # Export config file with header
     {
@@ -1350,19 +1350,19 @@ export_firewall_rules() {
     if [[ -z "$dir" ]]; then
         echo -e "${RED}Invalid directory path.${NC}"
         return 1
-    }
+    fi
     
     # Check if directory exists
     if [[ ! -d "$dir" ]]; then
         echo -e "${RED}Directory does not exist: $dir${NC}"
         return 1
-    }
+    fi
     
     # Check if directory is writable
     if [[ ! -w "$dir" ]]; then
         echo -e "${RED}Cannot write to directory: $dir (permission denied)${NC}"
         return 1
-    }
+    fi
     
     local ipv4_rules="${dir}/dnsniper-ipv4-rules.txt"
     local ipv6_rules="${dir}/dnsniper-ipv6-rules.txt"
@@ -1401,19 +1401,19 @@ import_all() {
     if [[ -z "$dir" ]]; then
         echo -e "${RED}Invalid directory path.${NC}"
         return 1
-    }
+    fi
     
     # Check if directory exists
     if [[ ! -d "$dir" ]]; then
         echo -e "${RED}Directory does not exist: $dir${NC}"
         return 1
-    }
+    fi
     
     # Check if directory is readable
     if [[ ! -r "$dir" ]]; then
         echo -e "${RED}Cannot read from directory: $dir (permission denied)${NC}"
         return 1
-    }
+    fi
     
     # Check if backup files exist
     if [[ -f "$dir/domains.txt" || -f "$dir/ips.txt" || -f "$dir/config.conf" ]]; then
@@ -1423,7 +1423,7 @@ import_all() {
             cp "$dir/domains.txt" "$ADD_FILE.tmp"
             mv "$ADD_FILE.tmp" "$ADD_FILE"
             echo -e "${GREEN}Imported domains from backup.${NC}"
-        }
+        fi
         
         # Import IPs if exists
         if [[ -f "$dir/ips.txt" && -r "$dir/ips.txt" ]]; then
@@ -1431,7 +1431,7 @@ import_all() {
             cp "$dir/ips.txt" "$IP_ADD_FILE.tmp"
             mv "$IP_ADD_FILE.tmp" "$IP_ADD_FILE"
             echo -e "${GREEN}Imported IPs from backup.${NC}"
-        }
+        fi
         
         # Import config if exists
         if [[ -f "$dir/config.conf" && -r "$dir/config.conf" ]]; then
@@ -1439,7 +1439,7 @@ import_all() {
             cp "$dir/config.conf" "$CONFIG_FILE.tmp"
             mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
             echo -e "${GREEN}Imported configuration from backup.${NC}"
-        }
+        fi
         
         # Import history files if exist
         if [[ -d "$dir/history" && -r "$dir/history" ]]; then
@@ -1447,7 +1447,7 @@ import_all() {
             mkdir -p "$HISTORY_DIR" 2>/dev/null
             cp -R "$dir/history/"* "$HISTORY_DIR/" 2>/dev/null
             echo -e "${GREEN}Imported history files from backup.${NC}"
-        }
+        fi
         
         # Import data files if exist
         if [[ -d "$dir/data" && -r "$dir/data" ]]; then
@@ -1455,7 +1455,7 @@ import_all() {
             mkdir -p "$DATA_DIR" 2>/dev/null
             cp -R "$dir/data/"* "$DATA_DIR/" 2>/dev/null
             echo -e "${GREEN}Imported data files from backup.${NC}"
-        }
+        fi
         
         # Re-initialize environment with imported settings
         echo -e "${BLUE}Reinitializing with imported settings...${NC}"
@@ -1464,7 +1464,7 @@ import_all() {
         log "INFO" "Imported complete backup from: $dir" "verbose"
     else
         echo -e "${RED}No valid backup files found in directory.${NC}"
-    }
+    fi
     
     return 0
 }
@@ -1477,19 +1477,19 @@ export_all() {
     if [[ -z "$dir" ]]; then
         echo -e "${RED}Invalid directory path.${NC}"
         return 1
-    }
+    fi
     
     # Check if directory exists
     if [[ ! -d "$dir" ]]; then
         echo -e "${RED}Directory does not exist: $dir${NC}"
         return 1
-    }
+    fi
     
     # Check if directory is writable
     if [[ ! -w "$dir" ]]; then
         echo -e "${RED}Cannot write to directory: $dir (permission denied)${NC}"
         return 1
-    }
+    fi
     
     # Export directory confirmed
     local export_dir="${dir%/}/dnsniper-backup-$(date +%Y%m%d-%H%M%S)"
@@ -1532,7 +1532,7 @@ export_all() {
                 echo ""
                 cat "$tmpips"
             } > "$export_dir/ips.txt"
-        }
+        fi
         rm -f "$tmpips"
         
         # Export config
@@ -1610,19 +1610,19 @@ block_domain() {
     if [[ -z "$domain" ]]; then
         echo -e "${RED}Domain cannot be empty.${NC}"
         return 1
-    }
+    fi
     
     # Validate domain format
     if ! is_valid_domain "$domain"; then
         echo -e "${RED}Invalid domain format.${NC}"
         return 1
-    }
+    fi
     
     # Check if domain already exists in block list
     if grep -Fxq "$domain" "$ADD_FILE" 2>/dev/null; then
         echo -e "${YELLOW}Domain already in block list.${NC}"
         return 0
-    }
+    fi
     
     # Add to custom domains file
     echo "$domain" >> "$ADD_FILE"
@@ -1646,7 +1646,7 @@ block_domain() {
             local timeout=$(grep '^timeout=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
             if [[ -z "$timeout" || ! "$timeout" =~ ^[0-9]+$ ]]; then
                 timeout=$DEFAULT_TIMEOUT
-            }
+            fi
             
             # Use improved resolve_domain function
             local unique=()
@@ -1655,7 +1655,7 @@ block_domain() {
             if [[ ${#unique[@]} -eq 0 ]]; then
                 echo -e "  ${YELLOW}No valid IP addresses found${NC}"
                 return 0
-            }
+            fi
             
             # Convert array to CSV for storage
             local ips_csv=$(IFS=,; echo "${unique[*]}")
@@ -1669,7 +1669,7 @@ block_domain() {
                 if is_critical_ip "$ip"; then
                     echo -e "  - ${YELLOW}Skipped critical IP${NC}: $ip"
                     continue
-                }
+                fi
                 
                 if block_ip "$ip" "DNSniper: $domain"; then
                     echo -e "  - ${RED}Blocked${NC}: $ip"
@@ -1712,7 +1712,7 @@ whitelist_domain() {
         echo -e "${YELLOW}No active domains to whitelist.${NC}"
         rm -f "$tmpdomains"
         return 0
-    }
+    fi
     
     # Display domains in a paginated way for large lists
     echo -e "${BLUE}Current blocked domains:${NC}"
@@ -1742,13 +1742,13 @@ whitelist_domain() {
     if [[ -z "$domain_to_whitelist" ]]; then
         echo -e "${RED}Invalid selection.${NC}"
         return 1
-    }
+    fi
     
     # Validate domain format
     if ! is_valid_domain "$domain_to_whitelist"; then
         echo -e "${RED}Invalid domain format: $domain_to_whitelist${NC}"
         return 1
-    }
+    fi
     
     # Add to remove file if not already there
     if ! grep -Fxq "$domain_to_whitelist" "$REMOVE_FILE" 2>/dev/null; then
@@ -1817,26 +1817,26 @@ block_custom_ip() {
     if [[ -z "$ip" ]]; then
         echo -e "${RED}IP cannot be empty.${NC}"
         return 1
-    }
+    fi
     
     # Validate IP format with range support
     if ! is_ipv6 "$ip" && ! is_valid_ipv4 "$ip"; then
         echo -e "${RED}Invalid IP format.${NC}"
         return 1
-    }
+    fi
     
     # Check if it's a critical IP
     if is_critical_ip "$ip"; then
         echo -e "${RED}Cannot block critical IP address or range: $ip${NC}"
         log "WARNING" "Attempted to block critical IP: $ip" "verbose"
         return 1
-    }
+    fi
     
     # Check if IP already exists in block list
     if grep -Fxq "$ip" "$IP_ADD_FILE" 2>/dev/null; then
         echo -e "${YELLOW}IP already in block list.${NC}"
         return 0
-    }
+    fi
     
     # Add to custom IPs file
     echo "$ip" >> "$IP_ADD_FILE"
@@ -1894,7 +1894,7 @@ whitelist_custom_ip() {
         echo -e "${YELLOW}No custom IPs to whitelist.${NC}"
         rm -f "$tmpips"
         return 0
-    }
+    fi
     
     # Display IPs in a paginated way for large lists
     echo -e "${BLUE}Current blocked IPs:${NC}"
@@ -1925,13 +1925,13 @@ whitelist_custom_ip() {
     if [[ -z "$ip_to_whitelist" ]]; then
         echo -e "${RED}Invalid selection.${NC}"
         return 1
-    }
+    fi
     
     # Validate IP format with range support
     if ! is_ipv6 "$ip_to_whitelist" && ! is_valid_ipv4 "$ip_to_whitelist"; then
         echo -e "${RED}Invalid IP format.${NC}"
         return 1
-    }
+    fi
     
     # Add to remove file if not already there
     if ! grep -Fxq "$ip_to_whitelist" "$IP_REMOVE_FILE" 2>/dev/null; then
@@ -2211,7 +2211,7 @@ display_status() {
                         echo -e "${YELLOW}- $dom${NC}"
                     done < "$CDN_DOMAINS_FILE"
                 fi
-            }
+            fi
             
             # Domain and IP sections only for moderate list sizes
             if [[ $domain_count -gt 0 && $domain_count -le 500 ]]; then
@@ -2316,7 +2316,7 @@ clear_rules() {
         # Flush our custom chains
         if iptables -F "$IPT_CHAIN" 2>/dev/null && ip6tables -F "$IPT6_CHAIN" 2>/dev/null; then
             success=1
-        }
+        fi
         
         # Make rules persistent
         make_rules_persistent
@@ -2331,7 +2331,7 @@ clear_rules() {
         fi
     else
         echo -e "${YELLOW}Operation canceled.${NC}"
-    }
+    fi
     
     return 0
 }
@@ -2371,9 +2371,9 @@ uninstall() {
             
             # Make changes persistent
             make_rules_persistent
-        } else {
+        else
             echo -e "${YELLOW}Keeping DNSniper firewall rules.${NC}"
-        }
+        fi
         
         # Stop and remove systemd services
         echo -e "${BLUE}Removing system services...${NC}"
@@ -2409,16 +2409,16 @@ uninstall() {
         if [[ "$remove_data" =~ ^[Yy] ]]; then
             rm -rf "$BASE_DIR" 2>/dev/null || true
             echo -e "${GREEN}All DNSniper data removed.${NC}"
-        } else {
+        else
             # Remove just the scripts but keep data
             echo -e "${YELLOW}Keeping DNSniper data at $BASE_DIR${NC}"
-        }
+        fi
         
         echo -e "${GREEN}DNSniper successfully uninstalled.${NC}"
         exit 0
-    } else {
+    else
         echo -e "${YELLOW}Uninstall canceled.${NC}"
-    }
+    fi
     
     return 0
 }
@@ -2490,7 +2490,7 @@ monitor_background_process() {
                         eta_text="$(($eta / 60))m $(($eta % 60))s"
                     else
                         eta_text="${eta}s"
-                    }
+                    fi
                     eta_text=" (ETA: ${eta_text})"
                 fi
                 
@@ -2504,11 +2504,11 @@ monitor_background_process() {
                 local filled_width=$((progress * bar_width / 100))
                 local empty_width=$((bar_width - filled_width))
                 printf "[%${filled_width}s%${empty_width}s] %d%%${YELLOW}%s${NC}\n" | sed "s/ /=/g; s/\-/ /g" "" "$progress" "$eta_text"
-            } else {
+            else
                 echo -e "${MAGENTA}───────────────────────────────────────${NC}"
                 echo -e "${YELLOW}Status information not available${NC}"
-            }
-        } else {
+            fi
+        else
             echo -e "${RED}No background process is currently running.${NC}"
             
             if [[ -f "$STATUS_FILE" ]]; then
@@ -2521,10 +2521,10 @@ monitor_background_process() {
                 echo -e "${BOLD}Last known status:${NC} $status"
                 echo -e "${BOLD}Last message:${NC} $message"
                 echo -e "${BOLD}Time:${NC} $timestamp"
-            }
+            fi
             
             echo -e "${YELLOW}Waiting for process to start...${NC}"
-        }
+        fi
         
         echo -e "${MAGENTA}───────────────────────────────────────${NC}"
         echo -e "${YELLOW}Press Ctrl+C to stop monitoring${NC}"
@@ -2563,7 +2563,7 @@ handle_args() {
                 echo -e "${RED}Error: missing domain parameter${NC}"
                 show_help
                 exit 1
-            }
+            fi
             echo "$2" >> "$ADD_FILE"
             echo -e "${GREEN}Domain added to block list:${NC} $2"
             log "INFO" "Domain added via CLI: $2" "verbose"
@@ -2585,11 +2585,11 @@ handle_args() {
                 echo -e "${RED}Error: missing IP parameter${NC}"
                 show_help
                 exit 1
-            }
+            fi
             if is_critical_ip "$2"; then
                 echo -e "${RED}Cannot block critical IP:${NC} $2"
                 exit 1
-            }
+            fi
             echo "$2" >> "$IP_ADD_FILE"
             echo -e "${GREEN}IP added to block list:${NC} $2"
             log "INFO" "IP added via CLI: $2" "verbose"

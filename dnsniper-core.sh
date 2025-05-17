@@ -1314,7 +1314,7 @@ whitelist_ip() {
         # Make rules persistent if we made changes
         if [[ $success -eq 1 ]]; then
             make_rules_persistent
-        }
+        fi
         
         return $((1 - success))
     fi
@@ -1324,7 +1324,7 @@ whitelist_ip() {
     if is_ipv6 "$ip"; then
         tbl="ip6tables"
         chain="$IPT6_CHAIN"
-    }
+    fi
     
     # Get rule type settings to know what to unblock
     local block_source=$(grep '^block_source=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
@@ -1417,7 +1417,7 @@ has_active_blocks() {
     # First check if domain exists in history
     if [[ ! -f "$history_file" || ! -s "$history_file" ]]; then
         return 1  # No records found
-    }
+    fi
     
     # Get the most recent IPs for this domain
     local line=$(head -n 1 "$history_file")
@@ -1465,7 +1465,7 @@ resolve_block() {
         (nice -n 10 update_default &)
         # Brief pause to allow update to start
         sleep 1
-    }
+    fi
     
     # Check for expired domains
     update_status "running" "Checking for expired domains" "10" "0"
@@ -1510,7 +1510,7 @@ resolve_block() {
     if kill -0 $expired_pid 2>/dev/null; then
         kill $expired_pid 2>/dev/null || true
         log "WARNING" "Expired domains check took too long and was killed" "verbose"
-    }
+    fi
     
     # Count domains
     local total=$(wc -l < "$tmpdomains")
@@ -1564,13 +1564,13 @@ resolve_block() {
                     if [[ $progress -gt 10 ]]; then
                         local elapsed=$(($(date +%s) - start_time))
                         eta=$(( (elapsed * (total - progress)) / progress ))
-                    }
+                    fi
                     
                     # Skip invalid domains
                     if ! is_valid_domain "$batch_dom"; then
                         log "WARNING" "Invalid domain format, skipping: $batch_dom"
                         continue
-                    }
+                    fi
                     
                     log "INFO" "Processing domain: $batch_dom" "verbose"
                     
@@ -1590,7 +1590,7 @@ resolve_block() {
                     # Record in history
                     if record_history "$batch_dom" "$ips_csv"; then
                         success_count=$((success_count + 1))
-                    }
+                    fi
                     
                     # Block each IP
                     for ip in "${unique[@]}"; do
@@ -1684,7 +1684,7 @@ resolve_block() {
                 if is_critical_ip "$ip"; then
                     log "WARNING" "Skipping critical IP: $ip" "verbose"
                     continue
-                }
+                fi
                 
                 if block_ip "$ip" "DNSniper: custom"; then
                     log "INFO" "Successfully blocked custom IP: $ip"

@@ -43,7 +43,7 @@ acquire_lock() {
             log "WARNING" "Found lock file but couldn't read PID, removing it" "verbose"
             rm -f "$LOCK_FILE" 2>/dev/null || true
         fi
-    }
+    fi
     
     # Try to acquire lock with atomic operation
     if ( set -o noclobber; echo "$$" > "$LOCK_FILE") 2> /dev/null; then
@@ -350,7 +350,7 @@ run_background() {
             update_status "completed" "Background operation completed successfully" "100" "0"
         else
             update_status "error" "Background operation failed with error code $result" "0" "0"
-        }
+        fi
         
         release_lock
         return $result
