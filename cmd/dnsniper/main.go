@@ -37,10 +37,14 @@ func init() {
 
 func main() {
 	// Initialize database if not exists
-	if err := database.Initialize(); err != nil {
+	dbConn, err := database.Initialize()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Set the database connection for the config package
+	config.SetDatabase(dbConn)
 
 	var rootCmd = &cobra.Command{
 		Use:   "dnsniper",
