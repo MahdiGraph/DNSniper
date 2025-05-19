@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv" // Added for Atoi function
 	"syscall"
 
 	"github.com/MahdiGraph/DNSniper/internal/config"
 	"github.com/MahdiGraph/DNSniper/internal/database"
 	"github.com/MahdiGraph/DNSniper/internal/dns"
 	"github.com/MahdiGraph/DNSniper/internal/firewall"
+	"github.com/MahdiGraph/DNSniper/internal/models" // Added for Settings type
 	"github.com/MahdiGraph/DNSniper/internal/utils"
 	"github.com/nightlyone/lockfile"
 	"github.com/sirupsen/logrus"
@@ -110,9 +112,16 @@ func acquireLock() error {
 			}
 
 			// Check if process with the PID exists
-			if !utils.ProcessExists(pid) {
-				// Process doesn't exist, break the lock
-				if err := lock.Break(); err != nil {
+			// Fixed: Converting string pid to int
+			pidInt, err := strconv.Atoi(pid)
+			if err != nil {
+				return err
+			}
+
+			if !utils.ProcessExists(pidInt) {
+				// Process doesn't exist, unlock the stale lock
+				// Fixed: using Unlock instead of Break
+				if err := lock.Unlock(); err != nil {
 					return err
 				}
 				return lock.TryLock()
@@ -172,7 +181,8 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 	return nil
 }
 
-func processDomain(domain string, settings config.Settings, runID int64) error {
+// Fixed: Changed config.Settings to models.Settings
+func processDomain(domain string, settings models.Settings, runID int64) error {
 	// Check whitelist
 	isWhitelisted, err := database.IsDomainWhitelisted(domain)
 	if err != nil {
