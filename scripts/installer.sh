@@ -240,8 +240,7 @@ echo "1) Every 3 hours (default)"
 echo "2) Hourly"
 echo "3) Every 6 hours"
 echo "4) Daily"
-echo "5) Every 1 minute (for testing)"
-echo "6) Custom interval"
+echo "5) Custom interval"
 
 read -p "Select an option [1-6]: " interval_choice
 
@@ -263,10 +262,6 @@ case $interval_choice in
         FRIENDLY_INTERVAL="1 day"
         ;;
     5)
-        INTERVAL="1m"
-        FRIENDLY_INTERVAL="1 minute"
-        ;;
-    6)
         read -p "Enter custom interval (format: 1h, 30m, 12h, etc): " INTERVAL
         FRIENDLY_INTERVAL="$INTERVAL"
         ;;
