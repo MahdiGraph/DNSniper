@@ -34,32 +34,6 @@ func init() {
 
 	// By default, log to stderr with minimum info
 	log.SetLevel(logrus.ErrorLevel)
-
-	// If logging is enabled via flag or database setting, configure properly
-	if enableLogging {
-		setupLogger(true)
-	} else {
-		// Check settings only if not enabled by flag
-		dbLoggingEnabled, err := checkDatabaseLoggingEnabled()
-		if err == nil && dbLoggingEnabled {
-			setupLogger(true)
-		}
-	}
-}
-
-func checkDatabaseLoggingEnabled() (bool, error) {
-	// Initialize database first
-	if err := database.Initialize(); err != nil {
-		return false, err
-	}
-
-	// Get settings from database
-	settings, err := config.GetSettings()
-	if err != nil {
-		return false, err
-	}
-
-	return settings.LoggingEnabled, nil
 }
 
 func setupLogger(enabled bool) {
@@ -92,10 +66,27 @@ func setupLogger(enabled bool) {
 
 func main() {
 	// Initialize database if not exists
-	if err := database.Initialize(); err != nil {
+	dbConn, err := database.Initialize()
+	if err != nil {
 		log.Errorf("Failed to initialize database: %v", err)
 		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Set database connection for config package
+	config.SetDatabase(dbConn)
+
+	// Check if logging is enabled in settings if not explicitly set by flag
+	if !enableLogging {
+		settings, err := config.GetSettings()
+		if err == nil && settings.LoggingEnabled {
+			enableLogging = true
+		}
+	}
+
+	// Setup logging based on the final decision
+	if enableLogging {
+		setupLogger(true)
 	}
 
 	// Acquire lock to ensure only one instance is running
@@ -227,7 +218,7 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 			return fmt.Errorf("processing interrupted")
 		default:
 			processedCount++
-			if processedCount%100 == 0 {
+			if processedCount%100 == 0 || processedCount == totalDomains {
 				fmt.Printf("Progress: %d/%d domains processed\n", processedCount, totalDomains)
 			}
 

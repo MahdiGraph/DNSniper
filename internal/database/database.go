@@ -18,30 +18,30 @@ const (
 var db *sql.DB
 
 // Initialize creates the database and tables if they don't exist
-func Initialize() error {
+func Initialize() (*sql.DB, error) {
 	// Ensure directory exists
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create database directory: %w", err)
+		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
 	var err error
 	db, err = sql.Open("sqlite3", dbPath)
 	if err != nil {
-		return fmt.Errorf("failed to open database: %w", err)
+		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	// Create tables if they don't exist
 	if err := createTables(); err != nil {
-		return fmt.Errorf("failed to create tables: %w", err)
+		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
 	// Initialize default settings if not present
 	if err := initializeDefaultSettings(); err != nil {
-		return fmt.Errorf("failed to initialize default settings: %w", err)
+		return nil, fmt.Errorf("failed to initialize default settings: %w", err)
 	}
 
-	return nil
+	return db, nil
 }
 
 // createTables creates the necessary database tables
