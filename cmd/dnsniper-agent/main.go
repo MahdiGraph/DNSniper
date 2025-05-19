@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv" // Added for Atoi function
 	"syscall"
 
 	"github.com/MahdiGraph/DNSniper/internal/config"
 	"github.com/MahdiGraph/DNSniper/internal/database"
 	"github.com/MahdiGraph/DNSniper/internal/dns"
 	"github.com/MahdiGraph/DNSniper/internal/firewall"
-	"github.com/MahdiGraph/DNSniper/internal/models" // Added for Settings type
+	"github.com/MahdiGraph/DNSniper/internal/models"
 	"github.com/MahdiGraph/DNSniper/internal/utils"
 	"github.com/nightlyone/lockfile"
 	"github.com/sirupsen/logrus"
@@ -106,21 +105,15 @@ func acquireLock() error {
 	if err := lock.TryLock(); err != nil {
 		if err == lockfile.ErrBusy {
 			// Check if the lock is stale
-			pid, err := lock.GetOwner()
+			process, err := lock.GetOwner()
 			if err != nil {
 				return err
 			}
 
 			// Check if process with the PID exists
-			// Fixed: Converting string pid to int
-			pidInt, err := strconv.Atoi(pid)
-			if err != nil {
-				return err
-			}
-
-			if !utils.ProcessExists(pidInt) {
+			// The process is already an *os.Process, so check directly
+			if process == nil || !processExists(process) {
 				// Process doesn't exist, unlock the stale lock
-				// Fixed: using Unlock instead of Break
 				if err := lock.Unlock(); err != nil {
 					return err
 				}
@@ -131,6 +124,14 @@ func acquireLock() error {
 		return err
 	}
 	return nil
+}
+
+// Helper function to check if a process exists
+func processExists(process *os.Process) bool {
+	// Send signal 0, which doesn't actually send a signal,
+	// but checks if the process exists
+	err := process.Signal(syscall.Signal(0))
+	return err == nil
 }
 
 func setupSignalHandling(cancel context.CancelFunc) {
@@ -181,7 +182,6 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 	return nil
 }
 
-// Fixed: Changed config.Settings to models.Settings
 func processDomain(domain string, settings models.Settings, runID int64) error {
 	// Check whitelist
 	isWhitelisted, err := database.IsDomainWhitelisted(domain)
