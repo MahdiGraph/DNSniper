@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -19,22 +20,57 @@ import (
 )
 
 var log = logrus.New()
+var enableLogging bool
 
 func init() {
-	// Configure logger
+	// Parse command line flags
+	flag.BoolVar(&enableLogging, "log", false, "Enable logging")
+	flag.Parse()
+
+	// Configure logger for basic formatting
 	log.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp: true,
 	})
 
-	// Setup log rotation
-	setupLogger(true)
+	// By default, log to stderr with minimum info
+	log.SetLevel(logrus.ErrorLevel)
+
+	// If logging is enabled via flag or database setting, configure properly
+	if enableLogging {
+		setupLogger(true)
+	} else {
+		// Check settings only if not enabled by flag
+		dbLoggingEnabled, err := checkDatabaseLoggingEnabled()
+		if err == nil && dbLoggingEnabled {
+			setupLogger(true)
+		}
+	}
+}
+
+func checkDatabaseLoggingEnabled() (bool, error) {
+	// Initialize database first
+	if err := database.Initialize(); err != nil {
+		return false, err
+	}
+
+	// Get settings from database
+	settings, err := config.GetSettings()
+	if err != nil {
+		return false, err
+	}
+
+	return settings.LoggingEnabled, nil
 }
 
 func setupLogger(enabled bool) {
 	if !enabled {
 		log.SetOutput(os.Stderr)
+		log.SetLevel(logrus.ErrorLevel)
 		return
 	}
+
+	// Set to info level for detailed logging
+	log.SetLevel(logrus.InfoLevel)
 
 	// Ensure log directory exists
 	err := os.MkdirAll("/var/log/dnsniper", 0755)
@@ -57,15 +93,21 @@ func setupLogger(enabled bool) {
 func main() {
 	// Initialize database if not exists
 	if err := database.Initialize(); err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		log.Errorf("Failed to initialize database: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Acquire lock to ensure only one instance is running
 	if err := acquireLock(); err != nil {
 		if err == lockfile.ErrBusy {
-			log.Fatal("Another instance of DNSniper agent is already running")
+			log.Error("Another instance of DNSniper agent is already running")
+			fmt.Fprintf(os.Stderr, "Another instance of DNSniper agent is already running\n")
+			os.Exit(1)
 		}
-		log.Fatalf("Failed to acquire lock: %v", err)
+		log.Errorf("Failed to acquire lock: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to acquire lock: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Create context that can be cancelled
@@ -78,60 +120,74 @@ func main() {
 	// Log agent start
 	runID, err := database.LogAgentStart()
 	if err != nil {
-		log.Fatalf("Failed to log agent start: %v", err)
+		log.Errorf("Failed to log agent start: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to log agent start: %v\n", err)
+		os.Exit(1)
 	}
+
+	fmt.Println("DNSniper agent started")
+	log.Info("DNSniper agent started")
 
 	// Run agent process
 	if err := runAgentProcess(ctx, runID); err != nil {
 		database.LogAgentError(runID, err)
-		log.Fatalf("Agent process failed: %v", err)
+		log.Errorf("Agent process failed: %v", err)
+		fmt.Fprintf(os.Stderr, "Agent process failed: %v\n", err)
+		os.Exit(1)
 	}
 
 	// Log agent completion
 	if err := database.LogAgentCompletion(runID); err != nil {
-		log.Fatalf("Failed to log agent completion: %v", err)
+		log.Errorf("Failed to log agent completion: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to log agent completion: %v\n", err)
+		os.Exit(1)
 	}
 
 	log.Info("DNSniper agent completed successfully")
+	fmt.Println("DNSniper agent completed successfully")
 }
 
 func acquireLock() error {
-	lock, err := lockfile.New("/var/run/dnsniper.lock")
+	lockPath := "/var/run/dnsniper.lock"
+
+	// Ensure directory exists
+	if err := os.MkdirAll("/var/run", 0755); err != nil {
+		return fmt.Errorf("failed to create lock directory: %w", err)
+	}
+
+	lock, err := lockfile.New(lockPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create lock: %w", err)
 	}
 
 	// Check current lock status
 	if err := lock.TryLock(); err != nil {
 		if err == lockfile.ErrBusy {
-			// Check if the lock is stale
-			process, err := lock.GetOwner()
+			// Try to get owner PID
+			pidStr, err := lock.GetOwner()
 			if err != nil {
-				return err
+				return fmt.Errorf("lock is busy but can't determine owner: %w", err)
 			}
 
-			// Check if process with the PID exists
-			// The process is already an *os.Process, so check directly
-			if process == nil || !processExists(process) {
-				// Process doesn't exist, unlock the stale lock
-				if err := lock.Unlock(); err != nil {
-					return err
+			// Check if PID exists
+			pid := os.Process{Pid: pidStr.Pid}
+			err = pid.Signal(syscall.Signal(0))
+
+			// If process doesn't exist, try to unlock the stale lock
+			if err != nil {
+				log.Warn("Found stale lock, attempting to remove it")
+				if err := os.Remove(lockPath); err != nil {
+					return fmt.Errorf("failed to remove stale lock: %w", err)
 				}
+				// Try to lock again
 				return lock.TryLock()
 			}
+
 			return lockfile.ErrBusy
 		}
 		return err
 	}
 	return nil
-}
-
-// Helper function to check if a process exists
-func processExists(process *os.Process) bool {
-	// Send signal 0, which doesn't actually send a signal,
-	// but checks if the process exists
-	err := process.Signal(syscall.Signal(0))
-	return err == nil
 }
 
 func setupSignalHandling(cancel context.CancelFunc) {
@@ -148,29 +204,43 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 	// Get settings
 	settings, err := config.GetSettings()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get settings: %w", err)
 	}
 
 	// Download domain list
 	domains, err := utils.DownloadDomainList(settings.UpdateURL)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to download domain list: %w", err)
 	}
 
 	log.Infof("Processing %d domains", len(domains))
+	fmt.Printf("Processing %d domains...\n", len(domains))
 
-	// Process domains
-	for i, domain := range domains {
+	// Process domains with progress tracking
+	totalDomains := len(domains)
+	processedCount := 0
+	blockedIPs := 0
+
+	for _, domain := range domains {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("processing interrupted")
 		default:
-			log.Infof("Processing domain %d/%d: %s", i+1, len(domains), domain)
-			if err := processDomain(domain, settings, runID); err != nil {
+			processedCount++
+			if processedCount%100 == 0 {
+				fmt.Printf("Progress: %d/%d domains processed\n", processedCount, totalDomains)
+			}
+
+			log.Infof("Processing domain %d/%d: %s", processedCount, totalDomains, domain)
+
+			result, err := processDomain(domain, settings, runID)
+			if err != nil {
 				log.Errorf("Failed to process domain %s: %v", domain, err)
 				// Continue with the next domain
 				continue
 			}
+
+			blockedIPs += result.IPsBlocked
 		}
 	}
 
@@ -179,36 +249,46 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
 
+	fmt.Printf("Completed: %d domains processed, %d IPs blocked\n", processedCount, blockedIPs)
+	log.Infof("Completed: %d domains processed, %d IPs blocked", processedCount, blockedIPs)
+
 	return nil
 }
 
-func processDomain(domain string, settings models.Settings, runID int64) error {
+// Result holds processing statistics
+type Result struct {
+	IPsBlocked int
+}
+
+func processDomain(domain string, settings models.Settings, runID int64) (Result, error) {
+	result := Result{}
+
 	// Check whitelist
 	isWhitelisted, err := database.IsDomainWhitelisted(domain)
 	if err != nil {
-		return err
+		return result, err
 	}
 	if isWhitelisted {
 		log.Infof("Domain %s is whitelisted, skipping", domain)
-		return nil
+		return result, nil
 	}
 
 	// Resolve domain
 	resolver := dns.NewStandardResolver()
 	ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
 	if err != nil {
-		return err
+		return result, err
 	}
 
 	if len(ips) == 0 {
 		log.Infof("No IPs found for domain %s", domain)
-		return nil
+		return result, nil
 	}
 
 	// Save domain in database
 	domainID, err := database.SaveDomain(domain, settings.RuleExpiration)
 	if err != nil {
-		return err
+		return result, err
 	}
 
 	// Process IPs
@@ -223,7 +303,7 @@ func processDomain(domain string, settings models.Settings, runID int64) error {
 		// Check IP whitelist
 		isIPWhitelisted, err := database.IsIPWhitelisted(ip)
 		if err != nil {
-			return err
+			return result, err
 		}
 		if isIPWhitelisted {
 			log.Infof("IP %s is whitelisted, skipping", ip)
@@ -232,17 +312,17 @@ func processDomain(domain string, settings models.Settings, runID int64) error {
 
 		// Add IP to database with rotation mechanism
 		if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain); err != nil {
-			return err
+			return result, err
 		}
 
 		// Apply iptables rules
 		fwManager, err := firewall.NewIPTablesManager()
 		if err != nil {
-			return err
+			return result, err
 		}
 
 		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-			return err
+			return result, err
 		}
 
 		// Log action
@@ -251,16 +331,17 @@ func processDomain(domain string, settings models.Settings, runID int64) error {
 		}
 
 		log.Infof("Blocked IP %s for domain %s", ip, domain)
+		result.IPsBlocked++
 	}
 
 	// Check for CDN
 	isCDN, err := database.CheckForCDN(domainID, settings.MaxIPsPerDomain)
 	if err != nil {
-		return err
+		return result, err
 	}
 	if isCDN {
 		log.Infof("Domain %s flagged as potential CDN (has %d+ IPs)", domain, settings.MaxIPsPerDomain)
 	}
 
-	return nil
+	return result, nil
 }

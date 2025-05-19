@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -48,6 +49,97 @@ func GetAgentStatus() (models.AgentStatus, error) {
 	}
 
 	return status, nil
+}
+
+// UpdateServiceLogging updates the systemd service file to enable/disable logging
+func UpdateServiceLogging(enable bool) error {
+	// Path to the systemd service file
+	serviceFile := "/etc/systemd/system/dnsniper-agent.service"
+
+	// Read the current content
+	content, err := os.ReadFile(serviceFile)
+	if err != nil {
+		return fmt.Errorf("failed to read service file: %w", err)
+	}
+
+	// Convert to string for easier manipulation
+	contentStr := string(content)
+
+	// Look for ExecStart line
+	execStartIdx := strings.Index(contentStr, "ExecStart=")
+	if execStartIdx == -1 {
+		return fmt.Errorf("could not find ExecStart line in service file")
+	}
+
+	// Find the end of the line
+	lineEndIdx := strings.Index(contentStr[execStartIdx:], "\n")
+	if lineEndIdx == -1 {
+		lineEndIdx = len(contentStr) - execStartIdx
+	} else {
+		lineEndIdx += execStartIdx
+	}
+
+	// Extract the current ExecStart line
+	execStartLine := contentStr[execStartIdx:lineEndIdx]
+
+	// Check if it already has the logging flag
+	hasLogFlag := strings.Contains(execStartLine, "-log")
+
+	// Prepare the new line
+	var newLine string
+	if enable && !hasLogFlag {
+		// Add the log flag
+		newLine = execStartLine + " -log"
+	} else if !enable && hasLogFlag {
+		// Remove the log flag
+		newLine = strings.Replace(execStartLine, " -log", "", -1)
+	} else {
+		// No change needed
+		return nil
+	}
+
+	// Replace the line in the content
+	newContent := contentStr[:execStartIdx] + newLine + contentStr[lineEndIdx:]
+
+	// Write back to the file
+	if err := os.WriteFile(serviceFile, []byte(newContent), 0644); err != nil {
+		return fmt.Errorf("failed to write service file: %w", err)
+	}
+
+	// Reload systemd daemon
+	cmd := exec.Command("systemctl", "daemon-reload")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to reload systemd: %w", err)
+	}
+
+	// Restart the service if it's running
+	isActive, err := isServiceActive("dnsniper-agent.service")
+	if err != nil {
+		return fmt.Errorf("failed to check service status: %w", err)
+	}
+
+	if isActive {
+		cmd = exec.Command("systemctl", "restart", "dnsniper-agent.service")
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to restart service: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func isServiceActive(serviceName string) (bool, error) {
+	cmd := exec.Command("systemctl", "is-active", serviceName)
+	output, err := cmd.Output()
+	if err != nil {
+		// If the command failed but we got output, check it
+		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return strings.TrimSpace(string(output)) == "active", nil
 }
 
 // getSystemdServiceStatus returns the status of a systemd service
