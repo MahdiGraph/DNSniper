@@ -131,6 +131,7 @@ func UpdateServiceLogging(enable bool) error {
 func isServiceActive(serviceName string) (bool, error) {
 	cmd := exec.Command("systemctl", "is-active", serviceName)
 	output, err := cmd.Output()
+
 	if err != nil {
 		// If the command failed but we got output, check it
 		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
@@ -146,6 +147,7 @@ func isServiceActive(serviceName string) (bool, error) {
 func getSystemdServiceStatus(serviceName string) (string, error) {
 	cmd := exec.Command("systemctl", "is-active", serviceName)
 	output, err := cmd.Output()
+
 	if err != nil {
 		// If the command fails, check if it's because the service is inactive
 		if _, ok := err.(*exec.ExitError); ok {
@@ -160,7 +162,7 @@ func getSystemdServiceStatus(serviceName string) (string, error) {
 
 // RunAgentOnce runs the agent once
 func RunAgentOnce() error {
-	cmd := exec.Command("/usr/local/bin/dnsniper-agent")
+	cmd := exec.Command("/usr/bin/dnsniper-agent")
 	return cmd.Run()
 }
 

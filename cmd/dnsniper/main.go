@@ -7,23 +7,38 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/MahdiGraph/DNSniper/internal/config"
 	"github.com/MahdiGraph/DNSniper/internal/database"
 	"github.com/MahdiGraph/DNSniper/internal/firewall"
 	"github.com/MahdiGraph/DNSniper/internal/service"
+	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
 var log = logrus.New()
 
+// Color definitions for UI
+var (
+	titleColor     = color.New(color.FgHiCyan, color.Bold)
+	subtitleColor  = color.New(color.FgCyan)
+	successColor   = color.New(color.FgGreen)
+	errorColor     = color.New(color.FgRed)
+	warningColor   = color.New(color.FgYellow)
+	infoColor      = color.New(color.FgBlue)
+	menuColor      = color.New(color.FgHiWhite)
+	optionColor    = color.New(color.FgWhite)
+	highlightColor = color.New(color.FgHiYellow)
+	promptColor    = color.New(color.FgHiGreen)
+)
+
 func init() {
 	// Configure logger
 	log.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp: true,
 	})
-
 	// Check logging settings
 	if config.IsLoggingEnabled() {
 		logFile, err := config.GetLogFile()
@@ -39,10 +54,9 @@ func main() {
 	// Initialize database if not exists
 	dbConn, err := database.Initialize()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
+		errorColor.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
 		os.Exit(1)
 	}
-
 	// Set the database connection for the config package
 	config.SetDatabase(dbConn)
 
@@ -63,71 +77,83 @@ func main() {
 	rootCmd.AddCommand(createSettingsCommand())
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		errorColor.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// clearScreen clears the terminal screen
+func clearScreen() {
+	cmd := exec.Command("clear")
+	cmd.Stdout = os.Stdout
+	cmd.Run()
 }
 
 // showMainMenu displays the main menu and handles user input
 func showMainMenu() {
 	reader := bufio.NewReader(os.Stdin)
-
 	for {
-		fmt.Println("\n===============================")
-		fmt.Println("      D N S n i p e r")
-		fmt.Println("  Domain Threat Neutralizer")
-		fmt.Println("===============================")
-		fmt.Println("1. Run agent now")
-		fmt.Println("2. Show status")
-		fmt.Println("3. Manage domain blocklist")
-		fmt.Println("4. Manage domain whitelist")
-		fmt.Println("5. Manage IP blocklist")
-		fmt.Println("6. Manage IP whitelist")
-		fmt.Println("7. Settings")
-		fmt.Println("8. Clear firewall rules")
-		fmt.Println("0. Exit")
-		fmt.Println("U. Uninstall DNSniper")
-		fmt.Print("\nSelect an option: ")
+		clearScreen()
+		titleColor.Println("\n===============================")
+		titleColor.Println("      D N S n i p e r")
+		subtitleColor.Println("  Domain Threat Neutralizer")
+		titleColor.Println("===============================")
 
+		menuColor.Println("1. Run agent now")
+		menuColor.Println("2. Show status")
+		menuColor.Println("3. Manage domain blocklist")
+		menuColor.Println("4. Manage domain whitelist")
+		menuColor.Println("5. Manage IP blocklist")
+		menuColor.Println("6. Manage IP whitelist")
+		menuColor.Println("7. Settings")
+		menuColor.Println("8. Clear firewall rules")
+		menuColor.Println("0. Exit")
+		warningColor.Println("U. Uninstall DNSniper")
+
+		promptColor.Print("\nSelect an option: ")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
 		switch input {
 		case "1":
+			clearScreen()
 			runAgentNow()
 			pressEnterToContinue(reader)
 		case "2":
+			clearScreen()
 			showStatus()
 			pressEnterToContinue(reader)
 		case "3":
-			manageDomainBlocklist(reader)
+			manageDomainList("Domain Blocklist", false, reader)
 		case "4":
-			manageDomainWhitelist(reader)
+			manageDomainList("Domain Whitelist", true, reader)
 		case "5":
-			manageIPBlocklist(reader)
+			manageIPList("IP Blocklist", false, reader)
 		case "6":
-			manageIPWhitelist(reader)
+			manageIPList("IP Whitelist", true, reader)
 		case "7":
 			manageSettings(reader)
 		case "8":
+			clearScreen()
 			clearRules()
 			pressEnterToContinue(reader)
 		case "0":
-			fmt.Println("Exiting DNSniper. Goodbye!")
+			clearScreen()
+			successColor.Println("Exiting DNSniper. Goodbye!")
 			return
 		case "u", "U":
 			if confirmUninstall(reader) {
 				return
 			}
 		default:
-			fmt.Println("Invalid option. Please try again.")
-			pressEnterToContinue(reader)
+			errorColor.Println("Invalid option. Please try again.")
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
 
 func pressEnterToContinue(reader *bufio.Reader) {
-	fmt.Print("\nPress Enter to continue...")
+	promptColor.Print("\nPress Enter to continue...")
 	_, _ = reader.ReadString('\n')
 }
 
@@ -233,433 +259,613 @@ func createSettingsCommand() *cobra.Command {
 }
 
 func runAgentNow() {
-	fmt.Println("Running DNSniper agent...")
+	infoColor.Println("Running DNSniper agent...")
 	err := service.RunAgentOnce()
 	if err != nil {
-		fmt.Printf("Failed to run agent: %v\n", err)
+		errorColor.Printf("Failed to run agent: %v\n", err)
 		return
 	}
-	fmt.Println("Agent run completed successfully")
+	successColor.Println("Agent run completed successfully")
 }
 
 func showStatus() {
 	status, err := service.GetAgentStatus()
 	if err != nil {
-		fmt.Printf("Failed to get status: %v\n", err)
+		errorColor.Printf("Failed to get status: %v\n", err)
 		return
 	}
 
-	fmt.Println("\nDNSniper Status:")
-	fmt.Println("================")
-	fmt.Printf("Service status: %s\n", status.ServiceStatus)
+	// Get statistics
+	stats, err := database.GetStatistics()
+	if err != nil {
+		errorColor.Printf("Failed to get statistics: %v\n", err)
+	}
+
+	titleColor.Println("\nDNSniper Status:")
+	titleColor.Println("================")
+
+	// Service Status
+	subtitleColor.Println("\nService Information:")
+	fmt.Printf("Service status: ")
+	if status.ServiceStatus == "active" {
+		successColor.Println(status.ServiceStatus)
+	} else {
+		warningColor.Println(status.ServiceStatus)
+	}
 	fmt.Printf("Last run: %s\n", status.LastRun)
+
+	// Protection Statistics
+	subtitleColor.Println("\nProtection Statistics:")
 	fmt.Printf("Blocked domains: %d\n", status.BlockedDomains)
 	fmt.Printf("Blocked IPs: %d\n", status.BlockedIPs)
 	fmt.Printf("Whitelisted domains: %d\n", status.WhitelistedDomains)
 	fmt.Printf("Whitelisted IPs: %d\n", status.WhitelistedIPs)
-}
 
-func manageDomainBlocklist(reader *bufio.Reader) {
-	for {
-		fmt.Println("\nDomain Blocklist Management:")
-		fmt.Println("1. List blocked domains")
-		fmt.Println("2. Add domain to blocklist")
-		fmt.Println("3. Remove domain from blocklist")
-		fmt.Println("0. Back to main menu")
-		fmt.Print("\nSelect an option: ")
+	// Recent Activity
+	if stats != nil {
+		subtitleColor.Println("\nRecent Activity:")
+		fmt.Printf("Domains processed in last 24h: %d\n", stats.DomainsProcessed24h)
+		fmt.Printf("IPs blocked in last 24h: %d\n", stats.IPsBlocked24h)
+		fmt.Printf("Domains processed in last 7d: %d\n", stats.DomainsProcessed7d)
+		fmt.Printf("IPs blocked in last 7d: %d\n", stats.IPsBlocked7d)
 
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-
-		switch input {
-		case "1":
-			listBlockedDomains()
-			pressEnterToContinue(reader)
-		case "2":
-			addDomainToBlocklist(reader)
-			pressEnterToContinue(reader)
-		case "3":
-			removeDomainFromBlocklist(reader)
-			pressEnterToContinue(reader)
-		case "0":
-			return
-		default:
-			fmt.Println("Invalid option. Please try again.")
+		// Top 5 recently blocked domains
+		if len(stats.RecentBlockedDomains) > 0 {
+			subtitleColor.Println("\nRecently Blocked Domains:")
+			for i, domain := range stats.RecentBlockedDomains {
+				if i >= 5 {
+					break
+				}
+				fmt.Printf("- %s\n", domain)
+			}
 		}
 	}
 }
 
-func manageDomainWhitelist(reader *bufio.Reader) {
-	for {
-		fmt.Println("\nDomain Whitelist Management:")
-		fmt.Println("1. List whitelisted domains")
-		fmt.Println("2. Add domain to whitelist")
-		fmt.Println("3. Remove domain from whitelist")
-		fmt.Println("0. Back to main menu")
-		fmt.Print("\nSelect an option: ")
+// manageDomainList handles both blocklist and whitelist domains with pagination
+func manageDomainList(listType string, isWhitelist bool, reader *bufio.Reader) {
+	page := 1
+	itemsPerPage := 10
 
+	for {
+		clearScreen()
+		titleColor.Printf("\n%s Management:\n", listType)
+
+		// Get domains for current page
+		domains, totalDomains, err := database.GetDomainsList(isWhitelist, page, itemsPerPage)
+		if err != nil {
+			errorColor.Printf("Error retrieving domains: %v\n", err)
+			pressEnterToContinue(reader)
+			return
+		}
+
+		totalPages := (totalDomains + itemsPerPage - 1) / itemsPerPage
+
+		if len(domains) == 0 {
+			infoColor.Println("No domains found.")
+		} else {
+			// Display domains with their expiration time if applicable
+			for i, domain := range domains {
+				domainStr := domain.Domain
+				if !domain.IsCustom && domain.ExpiresAt.Valid {
+					expiresIn := time.Until(domain.ExpiresAt.Time).Round(time.Hour)
+					if expiresIn > 0 {
+						domainStr = fmt.Sprintf("%s (expires in %s)", domainStr, expiresIn)
+					} else {
+						domainStr = fmt.Sprintf("%s (expired)", domainStr)
+					}
+				} else if domain.IsCustom {
+					domainStr = fmt.Sprintf("%s (custom)", domainStr)
+				}
+
+				if domain.FlaggedAsCDN {
+					warningColor.Printf("%d. %s [CDN]\n", (page-1)*itemsPerPage+i+1, domainStr)
+				} else {
+					fmt.Printf("%d. %s\n", (page-1)*itemsPerPage+i+1, domainStr)
+				}
+			}
+
+			if totalPages > 1 {
+				infoColor.Printf("\nPage %d of %d (Total domains: %d)\n", page, totalPages, totalDomains)
+			}
+		}
+
+		subtitleColor.Println("\nOptions:")
+		if totalPages > 1 {
+			menuColor.Println("1. Next page")
+			menuColor.Println("2. Previous page")
+			menuColor.Println("3. Add domain")
+			menuColor.Println("4. Remove domain")
+			menuColor.Println("0. Back to main menu")
+		} else {
+			menuColor.Println("1. Add domain")
+			menuColor.Println("2. Remove domain")
+			menuColor.Println("0. Back to main menu")
+		}
+
+		promptColor.Print("\nSelect an option: ")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
-		switch input {
-		case "1":
-			listWhitelistedDomains()
-			pressEnterToContinue(reader)
-		case "2":
-			addDomainToWhitelist(reader)
-			pressEnterToContinue(reader)
-		case "3":
-			removeDomainFromWhitelist(reader)
-			pressEnterToContinue(reader)
-		case "0":
-			return
-		default:
-			fmt.Println("Invalid option. Please try again.")
+		if totalPages > 1 {
+			switch input {
+			case "1": // Next page
+				if page < totalPages {
+					page++
+				}
+			case "2": // Previous page
+				if page > 1 {
+					page--
+				}
+			case "3": // Add domain
+				addDomainToList(isWhitelist, reader)
+			case "4": // Remove domain
+				removeDomainFromList(isWhitelist, reader)
+			case "0": // Back
+				return
+			default:
+				errorColor.Println("Invalid option. Please try again.")
+				time.Sleep(1 * time.Second)
+			}
+		} else {
+			switch input {
+			case "1": // Add domain
+				addDomainToList(isWhitelist, reader)
+			case "2": // Remove domain
+				removeDomainFromList(isWhitelist, reader)
+			case "0": // Back
+				return
+			default:
+				errorColor.Println("Invalid option. Please try again.")
+				time.Sleep(1 * time.Second)
+			}
 		}
 	}
 }
 
-func manageIPBlocklist(reader *bufio.Reader) {
+// manageIPList handles both blocklist and whitelist IPs with pagination
+func manageIPList(listType string, isWhitelist bool, reader *bufio.Reader) {
+	page := 1
+	itemsPerPage := 10
+
 	for {
-		fmt.Println("\nIP Blocklist Management:")
-		fmt.Println("1. List blocked IPs")
-		fmt.Println("2. Add IP to blocklist")
-		fmt.Println("3. Remove IP from blocklist")
-		fmt.Println("0. Back to main menu")
-		fmt.Print("\nSelect an option: ")
+		clearScreen()
+		titleColor.Printf("\n%s Management:\n", listType)
 
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-
-		switch input {
-		case "1":
-			listBlockedIPs()
+		// Get IPs for current page
+		ips, totalIPs, err := database.GetIPsList(isWhitelist, page, itemsPerPage)
+		if err != nil {
+			errorColor.Printf("Error retrieving IPs: %v\n", err)
 			pressEnterToContinue(reader)
-		case "2":
-			addIPToBlocklist(reader)
-			pressEnterToContinue(reader)
-		case "3":
-			removeIPFromBlocklist(reader)
-			pressEnterToContinue(reader)
-		case "0":
 			return
-		default:
-			fmt.Println("Invalid option. Please try again.")
 		}
-	}
-}
 
-func manageIPWhitelist(reader *bufio.Reader) {
-	for {
-		fmt.Println("\nIP Whitelist Management:")
-		fmt.Println("1. List whitelisted IPs")
-		fmt.Println("2. Add IP to whitelist")
-		fmt.Println("3. Remove IP from whitelist")
-		fmt.Println("0. Back to main menu")
-		fmt.Print("\nSelect an option: ")
+		totalPages := (totalIPs + itemsPerPage - 1) / itemsPerPage
 
+		if len(ips) == 0 {
+			infoColor.Println("No IPs found.")
+		} else {
+			// Display IPs with their expiration time if applicable
+			for i, ip := range ips {
+				ipStr := ip.IPAddress
+				if !ip.IsCustom && ip.ExpiresAt.Valid {
+					expiresIn := time.Until(ip.ExpiresAt.Time).Round(time.Hour)
+					if expiresIn > 0 {
+						ipStr = fmt.Sprintf("%s (expires in %s)", ipStr, expiresIn)
+					} else {
+						ipStr = fmt.Sprintf("%s (expired)", ipStr)
+					}
+				} else if ip.IsCustom {
+					ipStr = fmt.Sprintf("%s (custom)", ipStr)
+				}
+
+				fmt.Printf("%d. %s\n", (page-1)*itemsPerPage+i+1, ipStr)
+			}
+
+			if totalPages > 1 {
+				infoColor.Printf("\nPage %d of %d (Total IPs: %d)\n", page, totalPages, totalIPs)
+			}
+		}
+
+		subtitleColor.Println("\nOptions:")
+		if totalPages > 1 {
+			menuColor.Println("1. Next page")
+			menuColor.Println("2. Previous page")
+			menuColor.Println("3. Add IP")
+			menuColor.Println("4. Remove IP")
+			menuColor.Println("0. Back to main menu")
+		} else {
+			menuColor.Println("1. Add IP")
+			menuColor.Println("2. Remove IP")
+			menuColor.Println("0. Back to main menu")
+		}
+
+		promptColor.Print("\nSelect an option: ")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
-		switch input {
-		case "1":
-			listWhitelistedIPs()
-			pressEnterToContinue(reader)
-		case "2":
-			addIPToWhitelist(reader)
-			pressEnterToContinue(reader)
-		case "3":
-			removeIPFromWhitelist(reader)
-			pressEnterToContinue(reader)
-		case "0":
-			return
-		default:
-			fmt.Println("Invalid option. Please try again.")
+		if totalPages > 1 {
+			switch input {
+			case "1": // Next page
+				if page < totalPages {
+					page++
+				}
+			case "2": // Previous page
+				if page > 1 {
+					page--
+				}
+			case "3": // Add IP
+				addIPToList(isWhitelist, reader)
+			case "4": // Remove IP
+				removeIPFromList(isWhitelist, reader)
+			case "0": // Back
+				return
+			default:
+				errorColor.Println("Invalid option. Please try again.")
+				time.Sleep(1 * time.Second)
+			}
+		} else {
+			switch input {
+			case "1": // Add IP
+				addIPToList(isWhitelist, reader)
+			case "2": // Remove IP
+				removeIPFromList(isWhitelist, reader)
+			case "0": // Back
+				return
+			default:
+				errorColor.Println("Invalid option. Please try again.")
+				time.Sleep(1 * time.Second)
+			}
 		}
 	}
 }
 
 func manageSettings(reader *bufio.Reader) {
 	for {
-		fmt.Println("\nSettings Management:")
-		fmt.Println("1. View current settings")
-		fmt.Println("2. Change DNS resolver")
-		fmt.Println("3. Change block rule type")
-		fmt.Println("4. Toggle logging")
-		fmt.Println("5. Set rules expiration time")
-		fmt.Println("6. Set update URL")
-		fmt.Println("0. Back to main menu")
-		fmt.Print("\nSelect an option: ")
+		clearScreen()
+		titleColor.Println("\nSettings Management:")
 
+		menuColor.Println("1. View current settings")
+		menuColor.Println("2. Change DNS resolver")
+		menuColor.Println("3. Change block rule type")
+		menuColor.Println("4. Toggle logging")
+		menuColor.Println("5. Set rules expiration time")
+		menuColor.Println("6. Manage update URLs")
+		menuColor.Println("0. Back to main menu")
+
+		promptColor.Print("\nSelect an option: ")
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
 		switch input {
 		case "1":
+			clearScreen()
 			viewSettings()
 			pressEnterToContinue(reader)
 		case "2":
+			clearScreen()
 			changeDNSResolver(reader)
 			pressEnterToContinue(reader)
 		case "3":
+			clearScreen()
 			changeBlockRuleType(reader)
 			pressEnterToContinue(reader)
 		case "4":
+			clearScreen()
 			toggleLogging()
 			pressEnterToContinue(reader)
 		case "5":
+			clearScreen()
 			setRulesExpiration(reader)
 			pressEnterToContinue(reader)
 		case "6":
-			setUpdateURL(reader)
-			pressEnterToContinue(reader)
+			manageUpdateURLs(reader)
 		case "0":
 			return
 		default:
-			fmt.Println("Invalid option. Please try again.")
+			errorColor.Println("Invalid option. Please try again.")
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
 
 func clearRules() {
-	fmt.Println("Clearing all firewall rules...")
-
+	infoColor.Println("Clearing all firewall rules...")
 	// Clear rules in memory
 	fwManager, err := firewall.NewIPTablesManager()
 	if err != nil {
-		fmt.Printf("Error initializing firewall manager: %v\n", err)
+		errorColor.Printf("Error initializing firewall manager: %v\n", err)
 		return
 	}
 
 	if err := fwManager.ClearRules(); err != nil {
-		fmt.Printf("Error clearing rules: %v\n", err)
+		errorColor.Printf("Error clearing rules: %v\n", err)
 		return
 	}
 
-	// Save changes to persistent files
-	if err := saveIPTablesRules(); err != nil {
-		fmt.Printf("Error saving rules: %v\n", err)
-		return
-	}
-
-	fmt.Println("Rules cleared successfully and saved permanently")
-}
-
-func saveIPTablesRules() error {
-	// Detect OS
-	_, err := os.Stat("/etc/debian_version")
-	isDebian := err == nil
-
-	if isDebian {
-		// Debian/Ubuntu - Use shell command with proper redirection
-		cmd := exec.Command("sh", "-c", "iptables-save > /etc/iptables/rules.v4")
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to save IPv4 rules: %w", err)
-		}
-
-		cmd = exec.Command("sh", "-c", "ip6tables-save > /etc/iptables/rules.v6")
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to save IPv6 rules: %w", err)
-		}
-	} else {
-		// RHEL/CentOS
-		if err := exec.Command("service", "iptables", "save").Run(); err != nil {
-			return fmt.Errorf("failed to save IPv4 rules: %w", err)
-		}
-
-		if err := exec.Command("service", "ip6tables", "save").Run(); err != nil {
-			return fmt.Errorf("failed to save IPv6 rules: %w", err)
-		}
-	}
-
-	return nil
+	successColor.Println("Rules cleared successfully and saved permanently")
 }
 
 func confirmUninstall(reader *bufio.Reader) bool {
-	fmt.Print("\nAre you sure you want to uninstall DNSniper? (yes/no): ")
+	clearScreen()
+	warningColor.Println("\n⚠️  WARNING: You are about to uninstall DNSniper ⚠️")
+	fmt.Println("This will remove all DNSniper components, including:")
+	fmt.Println("- All executable files")
+	fmt.Println("- All firewall rules")
+	fmt.Println("- All systemd services")
+	fmt.Println("- All configuration files")
+
+	promptColor.Print("\nAre you sure you want to uninstall DNSniper? (yes/no): ")
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
 	if strings.ToLower(input) == "yes" {
-		fmt.Println("Uninstalling DNSniper...")
+		infoColor.Println("Uninstalling DNSniper...")
 		// Execute uninstall script
 		cmd := exec.Command("sh", "-c", "cd /etc/dnsniper && ./scripts/installer.sh uninstall")
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("Error during uninstallation: %v\n", err)
+			errorColor.Printf("Error during uninstallation: %v\n", err)
 		} else {
-			fmt.Println("DNSniper has been uninstalled.")
+			successColor.Println("DNSniper has been uninstalled.")
 		}
 		return true
 	}
 
-	fmt.Println("Uninstallation cancelled")
+	infoColor.Println("Uninstallation cancelled")
+	time.Sleep(1 * time.Second)
 	return false
 }
 
 // Domain management functions
-func listBlockedDomains() {
-	fmt.Println("Listing blocked domains...")
-	// Implementation would go here - query from database
-	fmt.Println("Domain1.example.com")
-	fmt.Println("Domain2.example.com")
-}
+func addDomainToList(isWhitelist bool, reader *bufio.Reader) {
+	clearScreen()
+	if isWhitelist {
+		subtitleColor.Println("Add Domain to Whitelist")
+	} else {
+		subtitleColor.Println("Add Domain to Blocklist")
+	}
 
-func addDomainToBlocklist(reader *bufio.Reader) {
-	fmt.Print("Enter domain to block: ")
+	promptColor.Print("Enter domain: ")
 	domain, _ := reader.ReadString('\n')
 	domain = strings.TrimSpace(domain)
 
 	if domain == "" {
-		fmt.Println("Domain cannot be empty.")
+		errorColor.Println("Domain cannot be empty.")
+		time.Sleep(1 * time.Second)
 		return
 	}
 
-	blockDomain(domain)
+	// Save domain to database
+	_, err := database.SaveCustomDomain(domain, isWhitelist)
+	if err != nil {
+		errorColor.Printf("Failed to add domain: %v\n", err)
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	if isWhitelist {
+		successColor.Printf("Domain %s added to whitelist\n", domain)
+	} else {
+		successColor.Printf("Domain %s added to blocklist\n", domain)
+	}
+
+	time.Sleep(1 * time.Second)
+}
+
+func removeDomainFromList(isWhitelist bool, reader *bufio.Reader) {
+	clearScreen()
+	if isWhitelist {
+		subtitleColor.Println("Remove Domain from Whitelist")
+	} else {
+		subtitleColor.Println("Remove Domain from Blocklist")
+	}
+
+	promptColor.Print("Enter domain: ")
+	domain, _ := reader.ReadString('\n')
+	domain = strings.TrimSpace(domain)
+
+	if domain == "" {
+		errorColor.Println("Domain cannot be empty.")
+		time.Sleep(1 * time.Second)
+		return
+	}
+
+	// Remove domain from database
+	err := database.RemoveDomain(domain, isWhitelist)
+	if err != nil {
+		errorColor.Printf("Failed to remove domain: %v\n", err)
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	if isWhitelist {
+		successColor.Printf("Domain %s removed from whitelist\n", domain)
+	} else {
+		successColor.Printf("Domain %s removed from blocklist\n", domain)
+	}
+
+	time.Sleep(1 * time.Second)
 }
 
 func blockDomain(domain string) {
-	fmt.Printf("Blocking domain: %s\n", domain)
-	// Implementation would go here - add to database
-}
-
-func removeDomainFromBlocklist(reader *bufio.Reader) {
-	fmt.Print("Enter domain to remove from blocklist: ")
-	domain, _ := reader.ReadString('\n')
-	domain = strings.TrimSpace(domain)
-
-	if domain == "" {
-		fmt.Println("Domain cannot be empty.")
+	_, err := database.SaveCustomDomain(domain, false)
+	if err != nil {
+		errorColor.Printf("Failed to block domain: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Removing domain from blocklist: %s\n", domain)
-	// Implementation would go here - remove from database
-}
-
-func listWhitelistedDomains() {
-	fmt.Println("Listing whitelisted domains...")
-	// Implementation would go here - query from database
-	fmt.Println("trusted-domain1.com")
-	fmt.Println("trusted-domain2.com")
-}
-
-func addDomainToWhitelist(reader *bufio.Reader) {
-	fmt.Print("Enter domain to whitelist: ")
-	domain, _ := reader.ReadString('\n')
-	domain = strings.TrimSpace(domain)
-
-	if domain == "" {
-		fmt.Println("Domain cannot be empty.")
-		return
-	}
-
-	whitelistDomain(domain)
+	successColor.Printf("Domain %s blocked\n", domain)
 }
 
 func whitelistDomain(domain string) {
-	fmt.Printf("Whitelisting domain: %s\n", domain)
-	// Implementation would go here - add to database
-}
-
-func removeDomainFromWhitelist(reader *bufio.Reader) {
-	fmt.Print("Enter domain to remove from whitelist: ")
-	domain, _ := reader.ReadString('\n')
-	domain = strings.TrimSpace(domain)
-
-	if domain == "" {
-		fmt.Println("Domain cannot be empty.")
+	_, err := database.SaveCustomDomain(domain, true)
+	if err != nil {
+		errorColor.Printf("Failed to whitelist domain: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Removing domain from whitelist: %s\n", domain)
-	// Implementation would go here - remove from database
+	successColor.Printf("Domain %s whitelisted\n", domain)
 }
 
 // IP management functions
-func listBlockedIPs() {
-	fmt.Println("Listing blocked IPs...")
-	// Implementation would go here - query from database
-	fmt.Println("192.168.1.1")
-	fmt.Println("10.0.0.1")
-}
+func addIPToList(isWhitelist bool, reader *bufio.Reader) {
+	clearScreen()
+	if isWhitelist {
+		subtitleColor.Println("Add IP to Whitelist")
+	} else {
+		subtitleColor.Println("Add IP to Blocklist")
+	}
 
-func addIPToBlocklist(reader *bufio.Reader) {
-	fmt.Print("Enter IP to block: ")
+	promptColor.Print("Enter IP address: ")
 	ip, _ := reader.ReadString('\n')
 	ip = strings.TrimSpace(ip)
 
 	if ip == "" {
-		fmt.Println("IP cannot be empty.")
+		errorColor.Println("IP cannot be empty.")
+		time.Sleep(1 * time.Second)
 		return
 	}
 
-	blockIP(ip)
+	// Validate IP format
+	if !database.IsValidIP(ip) {
+		errorColor.Printf("Invalid IP address format: %s\n", ip)
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	// Save IP to database
+	err := database.SaveCustomIP(ip, isWhitelist)
+	if err != nil {
+		errorColor.Printf("Failed to add IP: %v\n", err)
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	// If it's a blocklist IP, apply firewall rule
+	if !isWhitelist {
+		settings, err := config.GetSettings()
+		if err != nil {
+			errorColor.Printf("Failed to get settings: %v\n", err)
+			time.Sleep(2 * time.Second)
+			return
+		}
+
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			errorColor.Printf("Failed to initialize firewall: %v\n", err)
+			time.Sleep(2 * time.Second)
+			return
+		}
+
+		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+			errorColor.Printf("Failed to apply firewall rule: %v\n", err)
+			time.Sleep(2 * time.Second)
+			return
+		}
+	}
+
+	if isWhitelist {
+		successColor.Printf("IP %s added to whitelist\n", ip)
+	} else {
+		successColor.Printf("IP %s added to blocklist\n", ip)
+	}
+
+	time.Sleep(1 * time.Second)
+}
+
+func removeIPFromList(isWhitelist bool, reader *bufio.Reader) {
+	clearScreen()
+	if isWhitelist {
+		subtitleColor.Println("Remove IP from Whitelist")
+	} else {
+		subtitleColor.Println("Remove IP from Blocklist")
+	}
+
+	promptColor.Print("Enter IP address: ")
+	ip, _ := reader.ReadString('\n')
+	ip = strings.TrimSpace(ip)
+
+	if ip == "" {
+		errorColor.Println("IP cannot be empty.")
+		time.Sleep(1 * time.Second)
+		return
+	}
+
+	// Remove IP from database
+	err := database.RemoveIP(ip, isWhitelist)
+	if err != nil {
+		errorColor.Printf("Failed to remove IP: %v\n", err)
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	// If it's a blocklist IP, remove firewall rule
+	if !isWhitelist {
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			errorColor.Printf("Failed to initialize firewall: %v\n", err)
+			time.Sleep(2 * time.Second)
+			return
+		}
+
+		if err := fwManager.UnblockIP(ip); err != nil {
+			errorColor.Printf("Failed to remove firewall rule: %v\n", err)
+			time.Sleep(2 * time.Second)
+			return
+		}
+	}
+
+	if isWhitelist {
+		successColor.Printf("IP %s removed from whitelist\n", ip)
+	} else {
+		successColor.Printf("IP %s removed from blocklist\n", ip)
+	}
+
+	time.Sleep(1 * time.Second)
 }
 
 func blockIP(ip string) {
-	fmt.Printf("Blocking IP: %s\n", ip)
-	// Implementation would go here - add to database and iptables
-}
-
-func removeIPFromBlocklist(reader *bufio.Reader) {
-	fmt.Print("Enter IP to remove from blocklist: ")
-	ip, _ := reader.ReadString('\n')
-	ip = strings.TrimSpace(ip)
-
-	if ip == "" {
-		fmt.Println("IP cannot be empty.")
+	if err := database.SaveCustomIP(ip, false); err != nil {
+		errorColor.Printf("Failed to add IP to database: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Removing IP from blocklist: %s\n", ip)
-	// Implementation would go here - remove from database and iptables
-}
-
-func listWhitelistedIPs() {
-	fmt.Println("Listing whitelisted IPs...")
-	// Implementation would go here - query from database
-	fmt.Println("8.8.8.8")
-	fmt.Println("1.1.1.1")
-}
-
-func addIPToWhitelist(reader *bufio.Reader) {
-	fmt.Print("Enter IP to whitelist: ")
-	ip, _ := reader.ReadString('\n')
-	ip = strings.TrimSpace(ip)
-
-	if ip == "" {
-		fmt.Println("IP cannot be empty.")
+	settings, err := config.GetSettings()
+	if err != nil {
+		errorColor.Printf("Failed to get settings: %v\n", err)
 		return
 	}
 
-	whitelistIP(ip)
+	fwManager, err := firewall.NewIPTablesManager()
+	if err != nil {
+		errorColor.Printf("Failed to initialize firewall: %v\n", err)
+		return
+	}
+
+	if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+		errorColor.Printf("Failed to block IP: %v\n", err)
+		return
+	}
+
+	successColor.Printf("IP %s blocked\n", ip)
 }
 
 func whitelistIP(ip string) {
-	fmt.Printf("Whitelisting IP: %s\n", ip)
-	// Implementation would go here - add to database
-}
-
-func removeIPFromWhitelist(reader *bufio.Reader) {
-	fmt.Print("Enter IP to remove from whitelist: ")
-	ip, _ := reader.ReadString('\n')
-	ip = strings.TrimSpace(ip)
-
-	if ip == "" {
-		fmt.Println("IP cannot be empty.")
+	if err := database.SaveCustomIP(ip, true); err != nil {
+		errorColor.Printf("Failed to whitelist IP: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Removing IP from whitelist: %s\n", ip)
-	// Implementation would go here - remove from database
+	successColor.Printf("IP %s whitelisted\n", ip)
 }
 
 // Settings functions
 func viewSettings() {
-	fmt.Println("\nCurrent settings:")
+	subtitleColor.Println("\nCurrent settings:")
+
 	settings, err := config.GetSettings()
 	if err != nil {
-		fmt.Printf("Failed to get settings: %v\n", err)
+		errorColor.Printf("Failed to get settings: %v\n", err)
 		return
 	}
 
@@ -667,12 +873,36 @@ func viewSettings() {
 	fmt.Printf("Block Rule Type: %s\n", settings.BlockRuleType)
 	fmt.Printf("Logging Enabled: %v\n", settings.LoggingEnabled)
 	fmt.Printf("Rule Expiration: %s\n", settings.RuleExpiration.String())
-	fmt.Printf("Update URL: %s\n", settings.UpdateURL)
 	fmt.Printf("Max IPs per Domain: %d\n", settings.MaxIPsPerDomain)
+
+	// Display update URLs
+	urls, err := database.GetUpdateURLs()
+	if err != nil {
+		errorColor.Printf("Failed to get update URLs: %v\n", err)
+	} else {
+		subtitleColor.Println("\nUpdate URLs:")
+		if len(urls) == 0 {
+			fmt.Println("No update URLs configured")
+		} else {
+			for i, url := range urls {
+				fmt.Printf("%d. %s\n", i+1, url)
+			}
+		}
+	}
 }
 
 func changeDNSResolver(reader *bufio.Reader) {
-	fmt.Print("Enter new DNS resolver (default 8.8.8.8): ")
+	subtitleColor.Println("Change DNS Resolver")
+
+	settings, err := config.GetSettings()
+	if err != nil {
+		errorColor.Printf("Failed to get current settings: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Current DNS resolver: %s\n", settings.DNSResolver)
+	promptColor.Print("Enter new DNS resolver (default 8.8.8.8): ")
+
 	resolver, _ := reader.ReadString('\n')
 	resolver = strings.TrimSpace(resolver)
 
@@ -681,22 +911,24 @@ func changeDNSResolver(reader *bufio.Reader) {
 	}
 
 	// Save to database
-	err := config.SaveSetting("dns_resolver", resolver)
+	err = config.SaveSetting("dns_resolver", resolver)
 	if err != nil {
-		fmt.Printf("Failed to save DNS resolver: %v\n", err)
+		errorColor.Printf("Failed to save DNS resolver: %v\n", err)
 		return
 	}
 
-	fmt.Printf("DNS resolver set to: %s\n", resolver)
+	successColor.Printf("DNS resolver set to: %s\n", resolver)
 }
 
 func changeBlockRuleType(reader *bufio.Reader) {
+	subtitleColor.Println("Change Block Rule Type")
+
 	fmt.Println("Select block rule type:")
 	fmt.Println("1. source (block as source only)")
 	fmt.Println("2. destination (block as destination only)")
 	fmt.Println("3. both (block as both source and destination)")
-	fmt.Print("\nEnter choice [1-3]: ")
 
+	promptColor.Print("\nEnter choice [1-3]: ")
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
@@ -709,25 +941,27 @@ func changeBlockRuleType(reader *bufio.Reader) {
 	case "3":
 		ruleType = "both"
 	default:
-		fmt.Println("Invalid choice. Using default (both).")
+		errorColor.Println("Invalid choice. Using default (both).")
 		ruleType = "both"
 	}
 
 	// Save to database
 	err := config.SaveSetting("block_rule_type", ruleType)
 	if err != nil {
-		fmt.Printf("Failed to save block rule type: %v\n", err)
+		errorColor.Printf("Failed to save block rule type: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Block rule type set to: %s\n", ruleType)
+	successColor.Printf("Block rule type set to: %s\n", ruleType)
 }
 
 func toggleLogging() {
+	subtitleColor.Println("Toggle Logging")
+
 	// Get current logging state
 	settings, err := config.GetSettings()
 	if err != nil {
-		fmt.Printf("Failed to get settings: %v\n", err)
+		errorColor.Printf("Failed to get settings: %v\n", err)
 		return
 	}
 
@@ -737,26 +971,36 @@ func toggleLogging() {
 	// Save to database
 	err = config.SaveSetting("logging_enabled", strconv.FormatBool(newState))
 	if err != nil {
-		fmt.Printf("Failed to update logging setting: %v\n", err)
+		errorColor.Printf("Failed to update logging setting: %v\n", err)
 		return
 	}
 
 	// Update service file
 	err = service.UpdateServiceLogging(newState)
 	if err != nil {
-		fmt.Printf("Failed to update service file: %v\n", err)
+		errorColor.Printf("Failed to update service file: %v\n", err)
 		return
 	}
 
 	if newState {
-		fmt.Println("Logging has been enabled")
+		successColor.Println("Logging has been enabled")
 	} else {
-		fmt.Println("Logging has been disabled")
+		successColor.Println("Logging has been disabled")
 	}
 }
 
 func setRulesExpiration(reader *bufio.Reader) {
-	fmt.Print("Enter rules expiration time in days (default 30): ")
+	subtitleColor.Println("Set Rules Expiration Time")
+
+	settings, err := config.GetSettings()
+	if err != nil {
+		errorColor.Printf("Failed to get current settings: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Current rule expiration: %s\n", settings.RuleExpiration.String())
+	promptColor.Print("Enter rules expiration time in days (default 30): ")
+
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
@@ -765,50 +1009,220 @@ func setRulesExpiration(reader *bufio.Reader) {
 		var err error
 		days, err = strconv.Atoi(input)
 		if err != nil || days <= 0 {
-			fmt.Println("Invalid input. Using default (30 days).")
+			errorColor.Println("Invalid input. Using default (30 days).")
 			days = 30
 		}
 	}
 
 	// Save to database
-	err := config.SaveSetting("rule_expiration", fmt.Sprintf("%dd", days))
+	err = config.SaveSetting("rule_expiration", fmt.Sprintf("%dd", days))
 	if err != nil {
-		fmt.Printf("Failed to save rule expiration: %v\n", err)
+		errorColor.Printf("Failed to save rule expiration: %v\n", err)
 		return
 	}
 
-	fmt.Printf("Rules expiration set to: %d days\n", days)
+	successColor.Printf("Rules expiration set to: %d days\n", days)
 }
 
-func setUpdateURL(reader *bufio.Reader) {
-	fmt.Println("Enter update URL (default: https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt):")
+func manageUpdateURLs(reader *bufio.Reader) {
+	for {
+		clearScreen()
+		titleColor.Println("\nManage Update URLs:")
+
+		// Get all URLs
+		urls, err := database.GetUpdateURLs()
+		if err != nil {
+			errorColor.Printf("Failed to get update URLs: %v\n", err)
+			pressEnterToContinue(reader)
+			return
+		}
+
+		if len(urls) == 0 {
+			infoColor.Println("No update URLs configured.")
+		} else {
+			for i, url := range urls {
+				fmt.Printf("%d. %s\n", i+1, url)
+			}
+		}
+
+		subtitleColor.Println("\nOptions:")
+		menuColor.Println("1. Add update URL")
+		menuColor.Println("2. Remove update URL")
+		menuColor.Println("0. Back to settings")
+
+		promptColor.Print("\nSelect an option: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		switch input {
+		case "1":
+			addUpdateURL(reader)
+		case "2":
+			removeUpdateURL(reader)
+		case "0":
+			return
+		default:
+			errorColor.Println("Invalid option. Please try again.")
+			time.Sleep(1 * time.Second)
+		}
+	}
+}
+
+func addUpdateURL(reader *bufio.Reader) {
+	clearScreen()
+	subtitleColor.Println("Add Update URL")
+
+	promptColor.Println("Enter URL for domain list (e.g., https://example.com/domains.txt):")
 	url, _ := reader.ReadString('\n')
 	url = strings.TrimSpace(url)
 
 	if url == "" {
-		url = "https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"
-	}
-
-	// Save to database
-	err := config.SaveSetting("update_url", url)
-	if err != nil {
-		fmt.Printf("Failed to save update URL: %v\n", err)
+		errorColor.Println("URL cannot be empty.")
+		time.Sleep(1 * time.Second)
 		return
 	}
 
-	fmt.Printf("Update URL set to: %s\n", url)
+	// Add URL to database
+	if err := database.AddUpdateURL(url); err != nil {
+		errorColor.Printf("Failed to add update URL: %v\n", err)
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	successColor.Printf("Update URL added: %s\n", url)
+	time.Sleep(1 * time.Second)
+}
+
+func removeUpdateURL(reader *bufio.Reader) {
+	clearScreen()
+	subtitleColor.Println("Remove Update URL")
+
+	// Get all URLs
+	urls, err := database.GetUpdateURLs()
+	if err != nil {
+		errorColor.Printf("Failed to get update URLs: %v\n", err)
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	if len(urls) == 0 {
+		errorColor.Println("No update URLs to remove.")
+		time.Sleep(1 * time.Second)
+		return
+	}
+
+	for i, url := range urls {
+		fmt.Printf("%d. %s\n", i+1, url)
+	}
+
+	promptColor.Print("\nEnter the number of the URL to remove (0 to cancel): ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	if input == "0" {
+		return
+	}
+
+	index, err := strconv.Atoi(input)
+	if err != nil || index < 1 || index > len(urls) {
+		errorColor.Println("Invalid selection.")
+		time.Sleep(1 * time.Second)
+		return
+	}
+
+	urlToRemove := urls[index-1]
+
+	// Check if this is the last URL
+	if len(urls) == 1 {
+		warningColor.Println("Warning: This is the last update URL. Removing it will mean no domains will be automatically blocked.")
+		promptColor.Print("Are you sure you want to continue? (yes/no): ")
+		confirm, _ := reader.ReadString('\n')
+		confirm = strings.TrimSpace(confirm)
+
+		if strings.ToLower(confirm) != "yes" {
+			infoColor.Println("Operation cancelled.")
+			time.Sleep(1 * time.Second)
+			return
+		}
+	}
+
+	// Remove URL from database
+	if err := database.RemoveUpdateURL(urlToRemove); err != nil {
+		errorColor.Printf("Failed to remove update URL: %v\n", err)
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	successColor.Printf("Update URL removed: %s\n", urlToRemove)
+	time.Sleep(1 * time.Second)
 }
 
 func listDomains() {
 	fmt.Println("Listing all domains...")
-	listBlockedDomains()
+
+	// Get domains
+	blockedDomains, _, err := database.GetDomainsList(false, 1, 1000)
+	if err != nil {
+		errorColor.Printf("Error retrieving blocked domains: %v\n", err)
+		return
+	}
+
+	whitelistedDomains, _, err := database.GetDomainsList(true, 1, 1000)
+	if err != nil {
+		errorColor.Printf("Error retrieving whitelisted domains: %v\n", err)
+		return
+	}
+
+	fmt.Println("\nBlocked domains:")
+	if len(blockedDomains) == 0 {
+		fmt.Println("No blocked domains")
+	} else {
+		for _, domain := range blockedDomains {
+			fmt.Println(domain.Domain)
+		}
+	}
+
 	fmt.Println("\nWhitelisted domains:")
-	listWhitelistedDomains()
+	if len(whitelistedDomains) == 0 {
+		fmt.Println("No whitelisted domains")
+	} else {
+		for _, domain := range whitelistedDomains {
+			fmt.Println(domain.Domain)
+		}
+	}
 }
 
 func listIPs() {
 	fmt.Println("Listing all IPs...")
-	listBlockedIPs()
+
+	// Get IPs
+	blockedIPs, _, err := database.GetIPsList(false, 1, 1000)
+	if err != nil {
+		errorColor.Printf("Error retrieving blocked IPs: %v\n", err)
+		return
+	}
+
+	whitelistedIPs, _, err := database.GetIPsList(true, 1, 1000)
+	if err != nil {
+		errorColor.Printf("Error retrieving whitelisted IPs: %v\n", err)
+		return
+	}
+
+	fmt.Println("\nBlocked IPs:")
+	if len(blockedIPs) == 0 {
+		fmt.Println("No blocked IPs")
+	} else {
+		for _, ip := range blockedIPs {
+			fmt.Println(ip.IPAddress)
+		}
+	}
+
 	fmt.Println("\nWhitelisted IPs:")
-	listWhitelistedIPs()
+	if len(whitelistedIPs) == 0 {
+		fmt.Println("No whitelisted IPs")
+	} else {
+		for _, ip := range whitelistedIPs {
+			fmt.Println(ip.IPAddress)
+		}
+	}
 }

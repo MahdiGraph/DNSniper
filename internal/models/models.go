@@ -11,7 +11,7 @@ type Settings struct {
 	BlockRuleType   string        // Type of blocking rule (source, destination, both)
 	LoggingEnabled  bool          // Whether to enable logging
 	RuleExpiration  time.Duration // Expiration time for rules
-	UpdateURL       string        // URL to download domain list from
+	UpdateURL       string        // URL to download domain list from (deprecated, kept for backward compatibility)
 	MaxIPsPerDomain int           // Maximum number of IPs to track per domain
 }
 
@@ -82,4 +82,13 @@ type DomainStats struct {
 type IPStats struct {
 	Blocked     int
 	Whitelisted int
+}
+
+// Statistics represents usage statistics for the dashboard
+type Statistics struct {
+	DomainsProcessed24h  int
+	IPsBlocked24h        int
+	DomainsProcessed7d   int
+	IPsBlocked7d         int
+	RecentBlockedDomains []string
 }

@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # DNSniper Installation Script
 
 # ANSI color codes
@@ -71,8 +70,8 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
     echo "2) Clean install (remove existing installation and reinstall)"
     echo "3) Uninstall DNSniper"
     echo "4) Cancel"
-    
     read -p "Enter choice [1-4]: " choice
+    
     case $choice in
         1)
             print_info "Reinstalling with existing settings..."
@@ -99,6 +98,7 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
             rm -f "$SERVICE_FILE" "$TIMER_FILE"
             rm -f "$BIN_DIR/dnsniper" "$BIN_DIR/dnsniper-agent"
             rm -rf "$INSTALL_DIR"
+            
             # Optionally, ask if logs should be kept
             read -p "Would you like to keep log files? (y/n): " keep_logs
             if [[ "$keep_logs" =~ ^[Nn]$ ]]; then
@@ -126,8 +126,11 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
             
             # Save iptables rules
             if [ "$OS" = "debian" ]; then
+                mkdir -p /etc/iptables
                 iptables-save > /etc/iptables/rules.v4 2>/dev/null
                 ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+                systemctl disable netfilter-persistent 2>/dev/null
+                systemctl stop netfilter-persistent 2>/dev/null
             else
                 service iptables save 2>/dev/null
                 service ip6tables save 2>/dev/null
@@ -165,7 +168,6 @@ if [ "$OS" = "debian" ]; then
     
     # Check for required tools
     PACKAGES_TO_INSTALL=""
-    
     if ! command_exists iptables; then
         PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL iptables"
     fi
@@ -181,7 +183,6 @@ if [ "$OS" = "debian" ]; then
         echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
         apt-get install -y $PACKAGES_TO_INSTALL
     fi
-    
 elif [ "$OS" = "redhat" ]; then
     # Check for package manager
     if command_exists dnf; then
@@ -191,7 +192,6 @@ elif [ "$OS" = "redhat" ]; then
     fi
     
     PACKAGES_TO_INSTALL=""
-    
     if ! command_exists iptables; then
         PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL iptables"
     fi
@@ -210,10 +210,14 @@ fi
 print_info "Creating required directories..."
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$LOG_DIR"
+mkdir -p "$INSTALL_DIR/scripts"
+
+# Copy this script to scripts directory
+cp "$0" "$INSTALL_DIR/scripts/installer.sh"
+chmod +x "$INSTALL_DIR/scripts/installer.sh"
 
 # 6. Copy executables to install directory and create symlinks
 print_info "Installing DNSniper executables..."
-
 if [ -f "../dnsniper" ] && [ -f "../dnsniper-agent" ]; then
     # Copy executables to install directory
     cp ../dnsniper "$INSTALL_DIR/dnsniper"
@@ -242,8 +246,7 @@ echo "3) Every 6 hours"
 echo "4) Daily"
 echo "5) Custom interval"
 
-read -p "Select an option [1-6]: " interval_choice
-
+read -p "Select an option [1-5]: " interval_choice
 case $interval_choice in
     1)
         INTERVAL="3h"
@@ -326,6 +329,11 @@ if [ "$OS" = "debian" ]; then
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
     ip6tables-save > /etc/iptables/rules.v6
+    
+    # Enable and start netfilter-persistent
+    print_info "Enabling netfilter-persistent service..."
+    systemctl enable netfilter-persistent
+    systemctl start netfilter-persistent
 else
     print_info "Saving iptables rules..."
     service iptables save

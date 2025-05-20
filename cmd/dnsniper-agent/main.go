@@ -89,6 +89,11 @@ func main() {
 		setupLogger(true)
 	}
 
+	// Clean up expired records before acquiring lock
+	if err := database.CleanupExpiredRecords(); err != nil {
+		log.Warnf("Failed to cleanup expired records: %v", err)
+	}
+
 	// Acquire lock to ensure only one instance is running
 	if err := acquireLock(); err != nil {
 		if err == lockfile.ErrBusy {
@@ -119,6 +124,11 @@ func main() {
 	fmt.Println("DNSniper agent started")
 	log.Info("DNSniper agent started")
 
+	// Apply existing IP blocklist rules from database
+	if err := applyExistingRules(); err != nil {
+		log.Warnf("Failed to apply existing rules: %v", err)
+	}
+
 	// Run agent process
 	if err := runAgentProcess(ctx, runID); err != nil {
 		database.LogAgentError(runID, err)
@@ -140,7 +150,6 @@ func main() {
 
 func acquireLock() error {
 	lockPath := "/var/run/dnsniper.lock"
-
 	// Ensure directory exists
 	if err := os.MkdirAll("/var/run", 0755); err != nil {
 		return fmt.Errorf("failed to create lock directory: %w", err)
@@ -173,7 +182,6 @@ func acquireLock() error {
 				// Try to lock again
 				return lock.TryLock()
 			}
-
 			return lockfile.ErrBusy
 		}
 		return err
@@ -184,11 +192,52 @@ func acquireLock() error {
 func setupSignalHandling(cancel context.CancelFunc) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
 	go func() {
 		<-sigCh
 		log.Info("Received termination signal, shutting down gracefully...")
 		cancel()
 	}()
+}
+
+func applyExistingRules() error {
+	// Get existing blocked IPs from database
+	blockedIPs, err := database.GetAllBlockedIPs()
+	if err != nil {
+		return fmt.Errorf("failed to get blocked IPs: %w", err)
+	}
+
+	if len(blockedIPs) == 0 {
+		log.Info("No existing IPs to block")
+		return nil
+	}
+
+	log.Infof("Applying rules for %d existing blocked IPs", len(blockedIPs))
+
+	// Get block rule type from settings
+	settings, err := config.GetSettings()
+	if err != nil {
+		return fmt.Errorf("failed to get settings: %w", err)
+	}
+
+	// Initialize firewall manager
+	fwManager, err := firewall.NewIPTablesManager()
+	if err != nil {
+		return fmt.Errorf("failed to initialize firewall manager: %w", err)
+	}
+
+	// Apply rules
+	appliedCount := 0
+	for _, ip := range blockedIPs {
+		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+			log.Warnf("Failed to block IP %s: %v", ip, err)
+			continue
+		}
+		appliedCount++
+	}
+
+	log.Infof("Applied firewall rules for %d IPs", appliedCount)
+	return nil
 }
 
 func runAgentProcess(ctx context.Context, runID int64) error {
@@ -198,51 +247,86 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 		return fmt.Errorf("failed to get settings: %w", err)
 	}
 
-	// Download domain list
-	domains, err := utils.DownloadDomainList(settings.UpdateURL)
+	// Get all update URLs
+	urls, err := database.GetUpdateURLs()
 	if err != nil {
-		return fmt.Errorf("failed to download domain list: %w", err)
+		return fmt.Errorf("failed to get update URLs: %w", err)
 	}
 
-	log.Infof("Processing %d domains", len(domains))
-	fmt.Printf("Processing %d domains...\n", len(domains))
+	if len(urls) == 0 {
+		log.Warn("No update URLs configured. Adding default URL.")
+		if err := database.AddUpdateURL("https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"); err != nil {
+			return fmt.Errorf("failed to add default URL: %w", err)
+		}
+		urls = append(urls, "https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt")
+	}
 
-	// Process domains with progress tracking
-	totalDomains := len(domains)
-	processedCount := 0
-	blockedIPs := 0
+	// Track domains we've seen this run
+	seenDomains := make(map[string]bool)
+	totalDomains := 0
+	totalProcessed := 0
+	totalBlocked := 0
 
-	for _, domain := range domains {
+	// Process each URL
+	for _, url := range urls {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("processing interrupted")
 		default:
-			processedCount++
-			if processedCount%100 == 0 || processedCount == totalDomains {
-				fmt.Printf("Progress: %d/%d domains processed\n", processedCount, totalDomains)
-			}
+			log.Infof("Processing domains from URL: %s", url)
+			fmt.Printf("Processing domains from URL: %s\n", url)
 
-			log.Infof("Processing domain %d/%d: %s", processedCount, totalDomains, domain)
-
-			result, err := processDomain(domain, settings, runID)
+			// Download domain list from this URL
+			domains, err := utils.DownloadDomainList(url)
 			if err != nil {
-				log.Errorf("Failed to process domain %s: %v", domain, err)
-				// Continue with the next domain
-				continue
+				log.Errorf("Failed to download domain list from %s: %v", url, err)
+				fmt.Printf("Failed to download domain list from %s: %v\n", url, err)
+				continue // Try next URL
 			}
 
-			blockedIPs += result.IPsBlocked
+			totalDomains += len(domains)
+			log.Infof("Downloaded %d domains from %s", len(domains), url)
+			fmt.Printf("Downloaded %d domains from %s\n", len(domains), url)
+
+			// Process domains
+			for _, domain := range domains {
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("processing interrupted")
+				default:
+					// Skip if we've already seen this domain in this run
+					if seenDomains[domain] {
+						continue
+					}
+					seenDomains[domain] = true
+
+					totalProcessed++
+					if totalProcessed%100 == 0 || totalProcessed == totalDomains {
+						fmt.Printf("Progress: %d/%d domains processed\n", totalProcessed, totalDomains)
+					}
+
+					log.Infof("Processing domain %d/%d: %s", totalProcessed, totalDomains, domain)
+
+					result, err := processDomain(domain, settings, runID, url)
+					if err != nil {
+						log.Errorf("Failed to process domain %s: %v", domain, err)
+						// Continue with the next domain
+						continue
+					}
+
+					totalBlocked += result.IPsBlocked
+				}
+			}
 		}
 	}
 
-	// Cleanup expired records
-	if err := database.CleanupExpiredRecords(); err != nil {
-		return fmt.Errorf("cleanup failed: %w", err)
+	// Update expiration for domains that weren't seen in this run
+	if err := database.ExpireUnseenDomains(seenDomains); err != nil {
+		log.Warnf("Failed to update expiration for unseen domains: %v", err)
 	}
 
-	fmt.Printf("Completed: %d domains processed, %d IPs blocked\n", processedCount, blockedIPs)
-	log.Infof("Completed: %d domains processed, %d IPs blocked", processedCount, blockedIPs)
-
+	fmt.Printf("Completed: %d domains processed, %d IPs blocked\n", totalProcessed, totalBlocked)
+	log.Infof("Completed: %d domains processed, %d IPs blocked", totalProcessed, totalBlocked)
 	return nil
 }
 
@@ -251,7 +335,7 @@ type Result struct {
 	IPsBlocked int
 }
 
-func processDomain(domain string, settings models.Settings, runID int64) (Result, error) {
+func processDomain(domain string, settings models.Settings, runID int64, sourceURL string) (Result, error) {
 	result := Result{}
 
 	// Check whitelist
@@ -259,6 +343,7 @@ func processDomain(domain string, settings models.Settings, runID int64) (Result
 	if err != nil {
 		return result, err
 	}
+
 	if isWhitelisted {
 		log.Infof("Domain %s is whitelisted, skipping", domain)
 		return result, nil
@@ -276,8 +361,8 @@ func processDomain(domain string, settings models.Settings, runID int64) (Result
 		return result, nil
 	}
 
-	// Save domain in database
-	domainID, err := database.SaveDomain(domain, settings.RuleExpiration)
+	// Save domain in database (with source URL for auto-downloaded domains)
+	domainID, err := database.SaveDomain(domain, settings.RuleExpiration, sourceURL)
 	if err != nil {
 		return result, err
 	}
@@ -296,13 +381,14 @@ func processDomain(domain string, settings models.Settings, runID int64) (Result
 		if err != nil {
 			return result, err
 		}
+
 		if isIPWhitelisted {
 			log.Infof("IP %s is whitelisted, skipping", ip)
 			continue
 		}
 
 		// Add IP to database with rotation mechanism
-		if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain); err != nil {
+		if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, settings.RuleExpiration); err != nil {
 			return result, err
 		}
 
@@ -330,6 +416,7 @@ func processDomain(domain string, settings models.Settings, runID int64) (Result
 	if err != nil {
 		return result, err
 	}
+
 	if isCDN {
 		log.Infof("Domain %s flagged as potential CDN (has %d+ IPs)", domain, settings.MaxIPsPerDomain)
 	}

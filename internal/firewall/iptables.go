@@ -3,6 +3,9 @@ package firewall
 import (
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
 )
@@ -24,7 +27,6 @@ type IPTablesManager struct {
 const (
 	// Chain name for IPv4 rules
 	ChainNameIPv4 = "DNSniper"
-
 	// Chain name for IPv6 rules
 	ChainNameIPv6 = "DNSniper6"
 )
@@ -121,17 +123,26 @@ func (m *IPTablesManager) BlockIP(ip string, blockType string) error {
 	// Apply rules based on block type
 	switch blockType {
 	case "source":
-		return ipt.AppendUnique("filter", chain, "-s", ip, "-j", "DROP")
+		if err := ipt.AppendUnique("filter", chain, "-s", ip, "-j", "DROP"); err != nil {
+			return err
+		}
 	case "destination":
-		return ipt.AppendUnique("filter", chain, "-d", ip, "-j", "DROP")
+		if err := ipt.AppendUnique("filter", chain, "-d", ip, "-j", "DROP"); err != nil {
+			return err
+		}
 	case "both":
 		if err := ipt.AppendUnique("filter", chain, "-s", ip, "-j", "DROP"); err != nil {
 			return err
 		}
-		return ipt.AppendUnique("filter", chain, "-d", ip, "-j", "DROP")
+		if err := ipt.AppendUnique("filter", chain, "-d", ip, "-j", "DROP"); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("invalid block type: %s", blockType)
 	}
+
+	// Save changes to persistent files
+	return m.saveRulesToPersistentFiles()
 }
 
 // UnblockIP removes blocking rules for an IP
@@ -168,7 +179,8 @@ func (m *IPTablesManager) UnblockIP(ip string) error {
 		}
 	}
 
-	return nil
+	// Save changes to persistent files
+	return m.saveRulesToPersistentFiles()
 }
 
 // ClearRules clears all rules in the DNSniper chains
@@ -187,6 +199,29 @@ func (m *IPTablesManager) ClearRules() error {
 		}
 	}
 
+	// Save changes to persistent files
+	return m.saveRulesToPersistentFiles()
+}
+
+// saveRulesToPersistentFiles saves the current iptables rules to persistent files
+func (m *IPTablesManager) saveRulesToPersistentFiles() error {
+	// Create directories if they don't exist
+	if err := os.MkdirAll("/etc/iptables", 0755); err != nil {
+		return fmt.Errorf("failed to create iptables directory: %w", err)
+	}
+
+	// Save IPv4 rules
+	cmdIPv4 := exec.Command("sh", "-c", "iptables-save > /etc/iptables/rules.v4")
+	if err := cmdIPv4.Run(); err != nil {
+		return fmt.Errorf("failed to save IPv4 rules: %w", err)
+	}
+
+	// Save IPv6 rules
+	cmdIPv6 := exec.Command("sh", "-c", "ip6tables-save > /etc/iptables/rules.v6")
+	if err := cmdIPv6.Run(); err != nil {
+		return fmt.Errorf("failed to save IPv6 rules: %w", err)
+	}
+
 	return nil
 }
 
@@ -203,7 +238,7 @@ func isRuleNotExistsError(err error) bool {
 	}
 
 	for _, str := range errorStrings {
-		if fmt.Sprint(err) == str {
+		if strings.Contains(fmt.Sprint(err), str) {
 			return true
 		}
 	}
@@ -217,5 +252,5 @@ func isChainNotExistsError(err error) bool {
 		return false
 	}
 
-	return fmt.Sprint(err) == "No chain/target/match by that name"
+	return strings.Contains(fmt.Sprint(err), "No chain/target/match by that name")
 }

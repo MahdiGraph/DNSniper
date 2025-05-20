@@ -31,7 +31,7 @@ func GetSettings() (models.Settings, error) {
 	settings = models.Settings{
 		DNSResolver:     "8.8.8.8",
 		BlockRuleType:   "both",
-		LoggingEnabled:  true,
+		LoggingEnabled:  false,               // Default to disabled
 		RuleExpiration:  30 * 24 * time.Hour, // 30 days
 		UpdateURL:       "https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt",
 		MaxIPsPerDomain: 5,
@@ -118,9 +118,10 @@ func parseExpiration(expStr string) time.Duration {
 func IsLoggingEnabled() bool {
 	settings, err := GetSettings()
 	if err != nil {
-		// Default to true if can't determine
-		return true
+		// Default to false if can't determine
+		return false
 	}
+
 	return settings.LoggingEnabled
 }
 

@@ -30,11 +30,20 @@ func DownloadDomainList(url string) ([]string, error) {
 
 	var domains []string
 	scanner := bufio.NewScanner(resp.Body)
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+
 		// Process lines and filter comments
 		if line != "" && !strings.HasPrefix(line, "#") {
-			domains = append(domains, line)
+			// Handle possible host file format (127.0.0.1 domain.com)
+			fields := strings.Fields(line)
+			if len(fields) > 1 && net.ParseIP(fields[0]) != nil {
+				// This might be a hosts file format, take the domain part
+				domains = append(domains, fields[1])
+			} else {
+				domains = append(domains, line)
+			}
 		}
 	}
 
@@ -53,6 +62,7 @@ func IsValidIPToBlock(ip string) (bool, error) {
 	}
 
 	// Check non-blockable addresses
+
 	// Loopback
 	if parsedIP.IsLoopback() {
 		return false, nil
@@ -70,6 +80,7 @@ func IsValidIPToBlock(ip string) (bool, error) {
 		if err != nil {
 			continue
 		}
+
 		if ipNet.Contains(parsedIP) {
 			return false, nil
 		}
@@ -101,6 +112,7 @@ func GetDNSServers() []string {
 
 	var servers []string
 	scanner := bufio.NewScanner(file)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "nameserver") {
