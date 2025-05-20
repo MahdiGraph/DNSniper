@@ -49,6 +49,12 @@ func Initialize() (*sql.DB, error) {
 	return db, nil
 }
 
+// GetDomainID gets the ID of a domain
+func GetDomainID(domain string, id *int64) error {
+	err := db.QueryRow("SELECT id FROM domains WHERE domain = ?", domain).Scan(id)
+	return err
+}
+
 // createTables creates the necessary database tables
 func createTables() error {
 	// Create domains table
@@ -329,20 +335,28 @@ func SaveCustomDomain(domain string, isWhitelisted bool) (int64, error) {
 
 // AddIPWithRotation adds an IP with rotation mechanism
 func AddIPWithRotation(domainID int64, ip string, maxIPsPerDomain int, expiration time.Duration) error {
+	// Check if the domain is custom
+	var isCustomDomain bool
+	err := db.QueryRow("SELECT is_custom FROM domains WHERE id = ?", domainID).Scan(&isCustomDomain)
+	if err != nil {
+		return err
+	}
+
 	// Check if IP already exists
 	var id int64
 	var isCustom bool
-	err := db.QueryRow("SELECT id, is_custom FROM ips WHERE ip_address = ?", ip).Scan(&id, &isCustom)
-
+	err = db.QueryRow("SELECT id, is_custom FROM ips WHERE ip_address = ?", ip).Scan(&id, &isCustom)
 	if err == nil {
 		// IP exists
 		if isCustom {
 			// Don't update custom IPs
 			return nil
 		}
-
-		// Update expiration for auto IPs
-		expiresAt := time.Now().Add(expiration)
+		// Update expiration for auto IPs, but keep NULL for custom domains
+		var expiresAt interface{} = nil
+		if !isCustomDomain {
+			expiresAt = time.Now().Add(expiration)
+		}
 		_, err = db.Exec(
 			"UPDATE ips SET domain_id = ?, expires_at = ? WHERE id = ?",
 			domainID, expiresAt, id)
@@ -356,13 +370,11 @@ func AddIPWithRotation(domainID int64, ip string, maxIPsPerDomain int, expiratio
 		ID        int64
 		IPAddress string
 	}
-
 	rows, err := db.Query("SELECT id, ip_address FROM ips WHERE domain_id = ? AND is_custom = 0 ORDER BY added_at ASC", domainID)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-
 	for rows.Next() {
 		var ipData struct {
 			ID        int64
@@ -378,19 +390,16 @@ func AddIPWithRotation(domainID int64, ip string, maxIPsPerDomain int, expiratio
 	if len(ipIDs) >= maxIPsPerDomain {
 		// Get oldest IP(s) to remove
 		ipsToRemove := ipIDs[:len(ipIDs)-(maxIPsPerDomain-1)]
-
 		for _, oldIP := range ipsToRemove {
 			// First remove from firewall if needed
 			fwManager, err := firewall.NewIPTablesManager()
 			if err != nil {
 				return err
 			}
-
 			if err := fwManager.UnblockIP(oldIP.IPAddress); err != nil {
 				// Just log the error, but continue
 				log.Warnf("Failed to remove firewall rule for IP %s: %v", oldIP.IPAddress, err)
 			}
-
 			// Then remove from database
 			_, err = db.Exec("DELETE FROM ips WHERE id = ?", oldIP.ID)
 			if err != nil {
@@ -399,15 +408,29 @@ func AddIPWithRotation(domainID int64, ip string, maxIPsPerDomain int, expiratio
 		}
 	}
 
-	// Calculate expiration time
-	expiresAt := time.Now().Add(expiration)
+	// Calculate expiration time (NULL for custom domains)
+	var expiresAt interface{} = nil
+	if !isCustomDomain {
+		expiresAt = time.Now().Add(expiration)
+	}
+
+	// Determine if this IP should be marked as custom
+	isCustomIP := isCustomDomain
+	source := "auto"
+	if isCustomDomain {
+		source = "custom_domain"
+	}
 
 	// Add new IP
 	_, err = db.Exec(
-		"INSERT INTO ips (ip_address, domain_id, source, is_custom, expires_at) VALUES (?, ?, 'auto', 0, ?)",
-		ip, domainID, expiresAt)
-
+		"INSERT INTO ips (ip_address, domain_id, source, is_custom, expires_at) VALUES (?, ?, ?, ?, ?)",
+		ip, domainID, source, isCustomIP, expiresAt)
 	return err
+}
+
+// GetDomainCustomStatus gets the custom status of a domain
+func GetDomainCustomStatus(domainID int64, isCustom *bool) error {
+	return db.QueryRow("SELECT is_custom FROM domains WHERE id = ?", domainID).Scan(isCustom)
 }
 
 // SaveCustomIP saves a custom IP to the database

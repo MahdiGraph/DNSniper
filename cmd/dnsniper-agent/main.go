@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/MahdiGraph/DNSniper/internal/config"
 	"github.com/MahdiGraph/DNSniper/internal/database"
@@ -375,14 +376,36 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		return result, nil
 	}
 
+	// Check if any of the resolved IPs are already whitelisted
+	whitelistedIPs := make(map[string]bool)
+	for _, ip := range ips {
+		isIPWhitelisted, err := database.IsIPWhitelisted(ip)
+		if err == nil && isIPWhitelisted {
+			whitelistedIPs[ip] = true
+		}
+	}
+
 	// Save domain in database (with source URL for auto-downloaded domains)
 	domainID, err := database.SaveDomain(domain, settings.RuleExpiration, sourceURL)
 	if err != nil {
 		return result, err
 	}
 
+	// Get domain custom status
+	var isCustomDomain bool
+	err = database.GetDomainCustomStatus(domainID, &isCustomDomain)
+	if err != nil {
+		log.Warnf("Failed to get domain custom status: %v", err)
+	}
+
 	// Process IPs
 	for _, ip := range ips {
+		// Skip if the IP is whitelisted
+		if whitelistedIPs[ip] {
+			log.Infof("IP %s is whitelisted, skipping", ip)
+			continue
+		}
+
 		// Validate IP
 		valid, err := utils.IsValidIPToBlock(ip)
 		if err != nil || !valid {
@@ -401,7 +424,15 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		}
 
 		// Add IP to database with rotation mechanism (will handle FIFO)
-		if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, settings.RuleExpiration); err != nil {
+		// Use 0 expiration for custom domains
+		var expirationToUse time.Duration
+		if isCustomDomain {
+			expirationToUse = 0
+		} else {
+			expirationToUse = settings.RuleExpiration
+		}
+
+		if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, expirationToUse); err != nil {
 			return result, err
 		}
 
