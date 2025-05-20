@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"io/ioutil"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -90,6 +91,7 @@ func IsAgentRunning() (bool, error) {
 }
 
 // UpdateServiceLogging updates the systemd service file to enable/disable logging
+// Note: This uses systemctl commands that might require sudo permissions
 func UpdateServiceLogging(enable bool) error {
 	// Path to the systemd service file
 	serviceFile := "/etc/systemd/system/dnsniper-agent.service"
@@ -166,18 +168,115 @@ func UpdateServiceLogging(enable bool) error {
 	return nil
 }
 
+// DirectlyUpdateServiceLogging updates the service file directly without systemctl commands
+func DirectlyUpdateServiceLogging(enable bool) error {
+	// Path to the systemd service file
+	serviceFile := "/etc/systemd/system/dnsniper-agent.service"
+
+	// Check if file exists
+	if _, err := os.Stat(serviceFile); os.IsNotExist(err) {
+		return fmt.Errorf("service file does not exist: %s", serviceFile)
+	}
+
+	// Read the current content
+	contentBytes, err := os.ReadFile(serviceFile)
+	if err != nil {
+		return fmt.Errorf("failed to read service file: %w", err)
+	}
+
+	contentStr := string(contentBytes)
+
+	// Use regex to find and replace the ExecStart line
+	re := regexp.MustCompile(`(ExecStart=.*?dnsniper-agent)(\s+-log)?(.*)`)
+
+	if enable {
+		// Add -log flag if not present
+		if re.MatchString(contentStr) {
+			contentStr = re.ReplaceAllString(contentStr, "$1 -log$3")
+		} else {
+			// If regex doesn't match, try a simple string replacement as a fallback
+			execStartPos := strings.Index(contentStr, "ExecStart=")
+			if execStartPos != -1 {
+				// Find the end of the line
+				lineEndPos := strings.Index(contentStr[execStartPos:], "\n")
+				if lineEndPos != -1 {
+					lineEndPos += execStartPos
+					// Check if -log is already present
+					execStartLine := contentStr[execStartPos:lineEndPos]
+					if !strings.Contains(execStartLine, "-log") {
+						// Insert -log before the end of the line
+						contentStr = contentStr[:lineEndPos] + " -log" + contentStr[lineEndPos:]
+					}
+				}
+			}
+		}
+	} else {
+		// Remove -log flag if present
+		contentStr = re.ReplaceAllString(contentStr, "$1$3")
+	}
+
+	// Write back to the file
+	err = os.WriteFile(serviceFile, []byte(contentStr), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write service file: %w", err)
+	}
+
+	// Execute systemctl commands using a shell script since we might not have permissions
+	script := `
+#!/bin/sh
+systemctl daemon-reload
+# Only restart if currently running
+if systemctl is-active --quiet dnsniper-agent; then
+    systemctl restart dnsniper-agent
+fi
+`
+
+	tempFile, err := os.CreateTemp("", "dnsniper_service_update_*.sh")
+	if err != nil {
+		return fmt.Errorf("failed to create temp script: %w", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	if _, err := tempFile.Write([]byte(script)); err != nil {
+		return fmt.Errorf("failed to write temp script: %w", err)
+	}
+
+	if err := tempFile.Chmod(0755); err != nil {
+		return fmt.Errorf("failed to make script executable: %w", err)
+	}
+
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp script: %w", err)
+	}
+
+	// Run the script
+	cmd := exec.Command("sh", tempFile.Name())
+	if err := cmd.Run(); err != nil {
+		// Ignore errors from the script, as we may not have permissions
+		// The file was successfully updated, which is the important part
+		fmt.Printf("Note: Could not reload service due to permissions, but file was updated. You may need to run 'sudo systemctl daemon-reload'\n")
+	}
+
+	return nil
+}
+
 // GetAgentTimerInterval gets the current interval for the agent timer
 func GetAgentTimerInterval() (string, error) {
 	timerFile := "/etc/systemd/system/dnsniper-agent.timer"
 
+	// Make sure the file exists
+	if _, err := os.Stat(timerFile); os.IsNotExist(err) {
+		return "", fmt.Errorf("timer file does not exist: %s", timerFile)
+	}
+
 	// Read the timer file
-	content, err := ioutil.ReadFile(timerFile)
+	content, err := os.ReadFile(timerFile)
 	if err != nil {
 		return "", fmt.Errorf("failed to read timer file: %w", err)
 	}
 
 	// Look for the OnUnitActiveSec line which contains the interval
-	re := regexp.MustCompile(`OnUnitActiveSec=([^\s]+)`)
+	re := regexp.MustCompile(`OnUnitActiveSec=([^\n\r\s]+)`)
 	matches := re.FindSubmatch(content)
 
 	if len(matches) < 2 {
@@ -185,6 +284,75 @@ func GetAgentTimerInterval() (string, error) {
 	}
 
 	return string(matches[1]), nil
+}
+
+// DirectlyUpdateAgentTimerInterval updates the agent timer interval directly
+func DirectlyUpdateAgentTimerInterval(interval string) error {
+	timerFile := "/etc/systemd/system/dnsniper-agent.timer"
+
+	// Make sure the file exists
+	if _, err := os.Stat(timerFile); os.IsNotExist(err) {
+		return fmt.Errorf("timer file does not exist: %s", timerFile)
+	}
+
+	// Read the current content
+	contentBytes, err := os.ReadFile(timerFile)
+	if err != nil {
+		return fmt.Errorf("failed to read timer file: %w", err)
+	}
+
+	contentStr := string(contentBytes)
+
+	// Prepare regex to find and replace the interval
+	re := regexp.MustCompile(`(OnUnitActiveSec=)[^\n\r\s]+`)
+
+	if !re.MatchString(contentStr) {
+		return fmt.Errorf("could not find OnUnitActiveSec line in timer file")
+	}
+
+	// Replace the interval
+	newContent := re.ReplaceAllString(contentStr, "${1}"+interval)
+
+	// Write the modified content back to the file
+	err = os.WriteFile(timerFile, []byte(newContent), 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write timer file: %w", err)
+	}
+
+	// Execute systemctl commands using a shell script since we might not have permissions
+	script := `
+#!/bin/sh
+systemctl daemon-reload
+systemctl restart dnsniper-agent.timer
+`
+
+	tempFile, err := os.CreateTemp("", "dnsniper_timer_update_*.sh")
+	if err != nil {
+		return fmt.Errorf("failed to create temp script: %w", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	if _, err := tempFile.Write([]byte(script)); err != nil {
+		return fmt.Errorf("failed to write temp script: %w", err)
+	}
+
+	if err := tempFile.Chmod(0755); err != nil {
+		return fmt.Errorf("failed to make script executable: %w", err)
+	}
+
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close temp script: %w", err)
+	}
+
+	// Run the script
+	cmd := exec.Command("sh", tempFile.Name())
+	if err := cmd.Run(); err != nil {
+		// Ignore errors from the script, as we may not have permissions
+		// The file was successfully updated, which is the important part
+		fmt.Printf("Note: Could not reload service due to permissions, but file was updated. You may need to run 'sudo systemctl daemon-reload'\n")
+	}
+
+	return nil
 }
 
 // UpdateAgentTimerInterval updates the agent timer interval

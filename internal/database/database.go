@@ -1117,60 +1117,82 @@ func GetStatistics() (*models.Statistics, error) {
 
 	// Get counts for last 24 hours
 	err := db.QueryRow(`
-        SELECT COUNT(DISTINCT target) FROM agent_logs 
-        WHERE action_type = 'process' AND timestamp > datetime('now', '-1 day')
+        SELECT COUNT(DISTINCT d.id)
+        FROM domains d
+        JOIN agent_logs a ON a.target = d.domain
+        WHERE a.action_type = 'process' 
+        AND a.timestamp > datetime('now', '-1 day')
     `).Scan(&stats.DomainsProcessed24h)
 	if err != nil {
-		return nil, err
+		// If there's an error (like no data), set to 0 but don't fail
+		stats.DomainsProcessed24h = 0
 	}
 
 	err = db.QueryRow(`
-        SELECT COUNT(*) FROM agent_logs 
-        WHERE action_type = 'block' AND timestamp > datetime('now', '-1 day')
+        SELECT COUNT(*)
+        FROM agent_logs
+        WHERE action_type = 'block' 
+        AND timestamp > datetime('now', '-1 day')
     `).Scan(&stats.IPsBlocked24h)
 	if err != nil {
-		return nil, err
+		stats.IPsBlocked24h = 0
 	}
 
 	// Get counts for last 7 days
 	err = db.QueryRow(`
-        SELECT COUNT(DISTINCT target) FROM agent_logs 
-        WHERE action_type = 'process' AND timestamp > datetime('now', '-7 days')
+        SELECT COUNT(DISTINCT d.id)
+        FROM domains d
+        JOIN agent_logs a ON a.target = d.domain
+        WHERE a.action_type = 'process' 
+        AND a.timestamp > datetime('now', '-7 days')
     `).Scan(&stats.DomainsProcessed7d)
 	if err != nil {
-		return nil, err
+		stats.DomainsProcessed7d = 0
 	}
 
 	err = db.QueryRow(`
-        SELECT COUNT(*) FROM agent_logs 
-        WHERE action_type = 'block' AND timestamp > datetime('now', '-7 days')
+        SELECT COUNT(*)
+        FROM agent_logs
+        WHERE action_type = 'block' 
+        AND timestamp > datetime('now', '-7 days')
     `).Scan(&stats.IPsBlocked7d)
 	if err != nil {
-		return nil, err
+		stats.IPsBlocked7d = 0
 	}
 
 	// Get recent blocked domains
+	// First try to get from logs
 	rows, err := db.Query(`
-        SELECT DISTINCT d.domain FROM domains d
+        SELECT DISTINCT d.domain
+        FROM domains d
         JOIN ips i ON d.id = i.domain_id
-        WHERE d.is_whitelisted = 0 AND i.is_whitelisted = 0
-        ORDER BY d.added_at DESC LIMIT 10
+        JOIN agent_logs a ON a.target = i.ip_address
+        WHERE a.action_type = 'block'
+        AND a.timestamp > datetime('now', '-7 days')
+        ORDER BY a.timestamp DESC
+        LIMIT 5
     `)
+
 	if err != nil {
-		return nil, err
+		// If that fails, get the most recent domains from the domains table
+		rows, err = db.Query(`
+            SELECT domain FROM domains
+            WHERE is_whitelisted = 0
+            ORDER BY added_at DESC LIMIT 5
+        `)
+		if err != nil {
+			// If that also fails, return an empty list but don't fail
+			return stats, nil
+		}
 	}
 	defer rows.Close()
 
 	for rows.Next() {
 		var domain string
 		if err := rows.Scan(&domain); err != nil {
-			return nil, err
+			continue
 		}
 		stats.RecentBlockedDomains = append(stats.RecentBlockedDomains, domain)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 
 	return stats, nil

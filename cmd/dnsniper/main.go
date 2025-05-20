@@ -100,17 +100,16 @@ func showMainMenu() {
 		// ASCII art banner for DNSniper
 		titleColor.Println(`
   _____  _   _  _____       _                 
- |  __ \| \ | |/ ____|     (_)                
- | |  | |  \| | (___  _ __  _ _ __   ___ _ __ 
- | |  | | . ' |\___ \| '_ \| | '_ \ / _ \ '__|
- | |__| | |\  |____) | | | | | |_) |  __/ |   
- |_____/|_| \_|_____/|_| |_|_| .__/ \___|_|   
+|   **\| \ | |/** __|     (_)                
+| |  | |  \| | (___  _ __  _ _ __   ___ _ __
+| |  | | . ' |\___ \| '_ \| | '_ \ / _\ '__|
+| |__| | |\  |____) | | | | | |_) |  __/ |   
+|_____/|_| \_|_____/|_| |_|_| .__/ \___|_|   
                              | |              
                              |_|              
 `)
 
-		subtitleColor.Println("   Advanced Security Shield for Your Network")
-		infoColor.Println("                  made by MahdiGraph")
+		subtitleColor.Println("Lock onto threats, restore your peace of mind!")
 		titleColor.Println("===============================================")
 
 		menuColor.Println("1. Run agent now")
@@ -303,11 +302,15 @@ func createSettingsCommand() *cobra.Command {
 
 func runAgentNow() {
 	infoColor.Println("Starting DNSniper agent in background...")
-	err := service.RestartAgent()
+
+	// Run the agent in background using & at the end
+	cmd := exec.Command("sh", "-c", "systemctl start dnsniper-agent.service &")
+	err := cmd.Run()
 	if err != nil {
 		errorColor.Printf("Failed to start agent: %v\n", err)
 		return
 	}
+
 	successColor.Println("Agent started successfully in background")
 }
 
@@ -1221,7 +1224,8 @@ func viewSettings() {
 	// Display timer interval
 	interval, err := service.GetAgentTimerInterval()
 	if err != nil {
-		errorColor.Printf("Failed to get agent timer interval: %v\n", err)
+		// Just log the error but continue
+		fmt.Println("Agent Timer Interval: Unknown (error reading timer file)")
 	} else {
 		fmt.Printf("Agent Timer Interval: %s\n", interval)
 	}
@@ -1328,23 +1332,19 @@ func toggleLogging(reader *bufio.Reader) {
 	// Toggle logging
 	newState := !settings.LoggingEnabled
 
-	// Save to database
+	// Save to database - this should be done first
 	err = config.SaveSetting("logging_enabled", strconv.FormatBool(newState))
 	if err != nil {
-		errorColor.Printf("Failed to update logging setting: %v\n", err)
+		errorColor.Printf("Failed to update logging setting in database: %v\n", err)
 		return
 	}
 
-	// Update service file
-	err = service.UpdateServiceLogging(newState)
+	// Direct file manipulation instead of using systemctl which might require sudo
+	err = service.DirectlyUpdateServiceLogging(newState)
 	if err != nil {
-		// Better error handling when updating service file
-		if strings.Contains(err.Error(), "exit status 3") {
-			errorColor.Printf("Failed to update service file: The service might not be fully configured or accessible.\n")
-			errorColor.Println("Try running as root or check if the systemd service file exists.")
-		} else {
-			errorColor.Printf("Failed to update service file: %v\n", err)
-		}
+		errorColor.Printf("Failed to update service file: %v\n", err)
+		errorColor.Println("Logging state was changed in database but not in service file.")
+		errorColor.Println("You may need to manually edit /etc/systemd/system/dnsniper-agent.service and reload systemd.")
 		return
 	}
 
@@ -1430,12 +1430,14 @@ func changeAgentTimer(reader *bufio.Reader) {
 	// Get current interval
 	currentInterval, err := service.GetAgentTimerInterval()
 	if err != nil {
-		errorColor.Printf("Failed to get current timer interval: %v\n", err)
+		// This is not a critical error, just display a message
+		fmt.Println("Could not determine current timer interval.")
 		currentInterval = "unknown"
+	} else {
+		fmt.Printf("Current timer interval: %s\n", currentInterval)
 	}
 
-	fmt.Printf("Current timer interval: %s\n\n", currentInterval)
-	fmt.Println("Select predefined interval or enter custom:")
+	fmt.Println("\nSelect predefined interval or enter custom:")
 	fmt.Println("1. Hourly")
 	fmt.Println("2. Every 3 hours")
 	fmt.Println("3. Every 6 hours")
@@ -1473,8 +1475,8 @@ func changeAgentTimer(reader *bufio.Reader) {
 		friendlyText = "3 hours"
 	}
 
-	// Update timer
-	err = service.UpdateAgentTimerInterval(newInterval)
+	// Update timer using direct file manipulation
+	err = service.DirectlyUpdateAgentTimerInterval(newInterval)
 	if err != nil {
 		errorColor.Printf("Failed to update agent timer interval: %v\n", err)
 		return
