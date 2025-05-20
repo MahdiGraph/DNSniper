@@ -327,71 +327,6 @@ func SaveCustomDomain(domain string, isWhitelisted bool) (int64, error) {
 	return result.LastInsertId()
 }
 
-// RemoveDomain removes a domain from the database and associated firewall rules
-func RemoveDomain(domain string, isWhitelist bool) error {
-	// Get IDs of IPs related to this domain before deleting
-	var domainID int64
-
-	// First get the domain ID
-	err := db.QueryRow("SELECT id FROM domains WHERE domain = ? AND is_whitelisted = ?",
-		domain, isWhitelist).Scan(&domainID)
-
-	if err == sql.ErrNoRows {
-		return fmt.Errorf("domain not found: %s", domain)
-	} else if err != nil {
-		return err
-	}
-
-	// Get all IPs associated with this domain for firewall rule removal
-	rows, err := db.Query("SELECT ip_address FROM ips WHERE domain_id = ?", domainID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var ips []string
-	for rows.Next() {
-		var ip string
-		if err := rows.Scan(&ip); err != nil {
-			return err
-		}
-		ips = append(ips, ip)
-	}
-
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	// Remove firewall rules for all IPs if domain is in blocklist
-	if !isWhitelist && len(ips) > 0 {
-		fwManager, err := firewall.NewIPTablesManager()
-		if err != nil {
-			log.Warnf("Failed to initialize firewall manager: %v", err)
-		} else {
-			for _, ip := range ips {
-				if err := fwManager.UnblockIP(ip); err != nil {
-					log.Warnf("Failed to remove firewall rule for IP %s: %v", ip, err)
-				}
-			}
-
-			// Save changes to persistent files after all rules are removed
-			if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
-				log.Warnf("Failed to save firewall rules: %v", err)
-			}
-		}
-	}
-
-	// Delete domain's IPs
-	_, err = db.Exec("DELETE FROM ips WHERE domain_id = ?", domainID)
-	if err != nil {
-		return err
-	}
-
-	// Delete the domain
-	_, err = db.Exec("DELETE FROM domains WHERE id = ?", domainID)
-	return err
-}
-
 // AddIPWithRotation adds an IP with rotation mechanism
 func AddIPWithRotation(domainID int64, ip string, maxIPsPerDomain int, expiration time.Duration) error {
 	// Check if IP already exists
@@ -526,6 +461,71 @@ func SaveCustomIPRange(cidr string, isWhitelisted bool) error {
 		"INSERT INTO ip_ranges (cidr, is_whitelisted, is_custom, source) VALUES (?, ?, 1, 'custom')",
 		cidr, isWhitelisted)
 
+	return err
+}
+
+// RemoveDomain removes a domain from the database and associated firewall rules
+func RemoveDomain(domain string, isWhitelist bool) error {
+	// Get IDs of IPs related to this domain before deleting
+	var domainID int64
+
+	// First get the domain ID
+	err := db.QueryRow("SELECT id FROM domains WHERE domain = ? AND is_whitelisted = ?",
+		domain, isWhitelist).Scan(&domainID)
+
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("domain not found: %s", domain)
+	} else if err != nil {
+		return err
+	}
+
+	// Get all IPs associated with this domain for firewall rule removal
+	rows, err := db.Query("SELECT ip_address FROM ips WHERE domain_id = ?", domainID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var ips []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return err
+		}
+		ips = append(ips, ip)
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Remove firewall rules for all IPs if domain is in blocklist
+	if !isWhitelist && len(ips) > 0 {
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			log.Warnf("Failed to initialize firewall manager: %v", err)
+		} else {
+			for _, ip := range ips {
+				if err := fwManager.UnblockIP(ip); err != nil {
+					log.Warnf("Failed to remove firewall rule for IP %s: %v", ip, err)
+				}
+			}
+
+			// Save changes to persistent files after all rules are removed
+			if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+				log.Warnf("Failed to save firewall rules: %v", err)
+			}
+		}
+	}
+
+	// Delete domain's IPs
+	_, err = db.Exec("DELETE FROM ips WHERE domain_id = ?", domainID)
+	if err != nil {
+		return err
+	}
+
+	// Delete the domain
+	_, err = db.Exec("DELETE FROM domains WHERE id = ?", domainID)
 	return err
 }
 

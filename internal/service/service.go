@@ -17,12 +17,19 @@ import (
 func GetAgentStatus() (models.AgentStatus, error) {
 	var status models.AgentStatus
 
-	// Get service status
-	serviceStatus, err := getSystemdServiceStatus("dnsniper-agent")
-	if err != nil {
-		return status, err
+	// Check if the timer is active first
+	cmd := exec.Command("systemctl", "is-active", "dnsniper-agent.timer")
+	output, err := cmd.Output()
+	if err == nil && strings.TrimSpace(string(output)) == "active" {
+		status.ServiceStatus = "active"
+	} else {
+		// If timer isn't active, check if the service is currently running
+		if running, _ := IsAgentRunning(); running {
+			status.ServiceStatus = "active"
+		} else {
+			status.ServiceStatus = "inactive"
+		}
 	}
-	status.ServiceStatus = serviceStatus
 
 	// Get last run info
 	lastRun, err := database.GetLastRunInfo()
