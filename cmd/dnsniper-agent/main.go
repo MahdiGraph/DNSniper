@@ -150,6 +150,7 @@ func main() {
 
 func acquireLock() error {
 	lockPath := "/var/run/dnsniper.lock"
+
 	// Ensure directory exists
 	if err := os.MkdirAll("/var/run", 0755); err != nil {
 		return fmt.Errorf("failed to create lock directory: %w", err)
@@ -186,6 +187,7 @@ func acquireLock() error {
 		}
 		return err
 	}
+
 	return nil
 }
 
@@ -207,51 +209,51 @@ func applyExistingRules() error {
 		return fmt.Errorf("failed to get blocked IPs: %w", err)
 	}
 
-	if len(ips) == 0 && len(ranges) == 0 {
+	if len(ips) > 0 || len(ranges) > 0 {
+		log.Infof("Applying rules for %d IPs and %d IP ranges", len(ips), len(ranges))
+
+		// Get block rule type from settings
+		settings, err := config.GetSettings()
+		if err != nil {
+			return fmt.Errorf("failed to get settings: %w", err)
+		}
+
+		// Initialize firewall manager
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			return fmt.Errorf("failed to initialize firewall manager: %w", err)
+		}
+
+		// First clear all existing rules to prevent duplicates
+		if err := fwManager.ClearRules(); err != nil {
+			return fmt.Errorf("failed to clear existing rules: %w", err)
+		}
+
+		// Apply individual IP rules
+		appliedCount := 0
+		for _, ip := range ips {
+			if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+				log.Warnf("Failed to block IP %s: %v", ip, err)
+				continue
+			}
+			appliedCount++
+		}
+
+		// Apply IP range rules
+		rangeCount := 0
+		for _, cidr := range ranges {
+			if err := fwManager.BlockIPRange(cidr, settings.BlockRuleType); err != nil {
+				log.Warnf("Failed to block IP range %s: %v", cidr, err)
+				continue
+			}
+			rangeCount++
+		}
+
+		log.Infof("Applied firewall rules for %d IPs and %d IP ranges", appliedCount, rangeCount)
+	} else {
 		log.Info("No existing rules to apply")
-		return nil
 	}
 
-	log.Infof("Applying rules for %d IPs and %d IP ranges", len(ips), len(ranges))
-
-	// Get block rule type from settings
-	settings, err := config.GetSettings()
-	if err != nil {
-		return fmt.Errorf("failed to get settings: %w", err)
-	}
-
-	// Initialize firewall manager
-	fwManager, err := firewall.NewIPTablesManager()
-	if err != nil {
-		return fmt.Errorf("failed to initialize firewall manager: %w", err)
-	}
-
-	// First clear all existing rules to prevent duplicates
-	if err := fwManager.ClearRules(); err != nil {
-		return fmt.Errorf("failed to clear existing rules: %w", err)
-	}
-
-	// Apply individual IP rules
-	appliedCount := 0
-	for _, ip := range ips {
-		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-			log.Warnf("Failed to block IP %s: %v", ip, err)
-			continue
-		}
-		appliedCount++
-	}
-
-	// Apply IP range rules
-	rangeCount := 0
-	for _, cidr := range ranges {
-		if err := fwManager.BlockIPRange(cidr, settings.BlockRuleType); err != nil {
-			log.Warnf("Failed to block IP range %s: %v", cidr, err)
-			continue
-		}
-		rangeCount++
-	}
-
-	log.Infof("Applied firewall rules for %d IPs and %d IP ranges", appliedCount, rangeCount)
 	return nil
 }
 
@@ -314,21 +316,19 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 						continue
 					}
 					seenDomains[domain] = true
-
 					totalProcessed++
+
 					if totalProcessed%100 == 0 || totalProcessed == totalDomains {
 						fmt.Printf("Progress: %d/%d domains processed\n", totalProcessed, totalDomains)
 					}
 
 					log.Infof("Processing domain %d/%d: %s", totalProcessed, totalDomains, domain)
-
 					result, err := processDomain(domain, settings, runID, url)
 					if err != nil {
 						log.Errorf("Failed to process domain %s: %v", domain, err)
 						// Continue with the next domain
 						continue
 					}
-
 					totalBlocked += result.IPsBlocked
 				}
 			}
@@ -342,6 +342,7 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 
 	fmt.Printf("Completed: %d domains processed, %d IPs blocked\n", totalProcessed, totalBlocked)
 	log.Infof("Completed: %d domains processed, %d IPs blocked", totalProcessed, totalBlocked)
+
 	return nil
 }
 
@@ -358,7 +359,6 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 	if err != nil {
 		return result, err
 	}
-
 	if isWhitelisted {
 		log.Infof("Domain %s is whitelisted, skipping", domain)
 		return result, nil
@@ -370,7 +370,6 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 	if err != nil {
 		return result, err
 	}
-
 	if len(ips) == 0 {
 		log.Infof("No IPs found for domain %s", domain)
 		return result, nil
@@ -396,7 +395,6 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		if err != nil {
 			return result, err
 		}
-
 		if isIPWhitelisted {
 			log.Infof("IP %s is whitelisted, skipping", ip)
 			continue
@@ -412,7 +410,6 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		if err != nil {
 			return result, err
 		}
-
 		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
 			return result, err
 		}
@@ -421,7 +418,6 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		if settings.LoggingEnabled {
 			database.LogAction(runID, "block", ip, "success", "")
 		}
-
 		log.Infof("Blocked IP %s for domain %s", ip, domain)
 		result.IPsBlocked++
 	}
@@ -431,7 +427,6 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 	if err != nil {
 		return result, err
 	}
-
 	if isCDN {
 		log.Infof("Domain %s flagged as potential CDN (has %d+ IPs)", domain, settings.MaxIPsPerDomain)
 	}

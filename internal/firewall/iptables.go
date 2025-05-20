@@ -70,7 +70,6 @@ func (m *IPTablesManager) ensureIPTablesTools() error {
 	cmd := exec.Command("systemctl", "status", "netfilter-persistent")
 	if err := cmd.Run(); err != nil {
 		log.Warn("netfilter-persistent service might not be running or installed")
-
 		// Try to reconfigure and restart it if installed
 		cmd = exec.Command("sh", "-c", "systemctl restart netfilter-persistent")
 		_ = cmd.Run() // Ignore error as it might not be installed
@@ -90,13 +89,11 @@ func (m *IPTablesManager) hasJumpRule(ipt *iptables.IPTables, chain, target stri
 	if err != nil {
 		return false, fmt.Errorf("failed to list rules in chain %s: %w", chain, err)
 	}
-
 	for _, rule := range rules {
 		if strings.Contains(rule, "-j "+target) {
 			return true, nil
 		}
 	}
-
 	return false, nil
 }
 
@@ -107,35 +104,54 @@ func (m *IPTablesManager) ensureChain() error {
 	if err != nil {
 		return err
 	}
-
 	if !exists {
 		if err := m.ipv4.NewChain("filter", ChainNameIPv4); err != nil {
 			return err
 		}
 	}
 
-	// Check if jump rules already exist in INPUT and OUTPUT chains
-	hasInputJump, err := m.hasJumpRule(m.ipv4, "INPUT", ChainNameIPv4)
-	if err != nil {
-		return err
-	}
-
-	hasOutputJump, err := m.hasJumpRule(m.ipv4, "OUTPUT", ChainNameIPv4)
-	if err != nil {
-		return err
-	}
-
-	// Add jump rules only if they don't exist
-	if !hasInputJump {
-		if err := m.ipv4.Insert("filter", "INPUT", 1, "-j", ChainNameIPv4); err != nil {
-			return err
+	// Check for and handle duplicate jump rules in INPUT and OUTPUT chains for IPv4
+	for _, chain := range []string{"INPUT", "OUTPUT"} {
+		// Get all rules in the chain
+		rules, err := m.ipv4.List("filter", chain)
+		if err != nil {
+			return fmt.Errorf("failed to list %s chain rules: %w", chain, err)
 		}
-	}
 
-	if !hasOutputJump {
-		if err := m.ipv4.Insert("filter", "OUTPUT", 1, "-j", ChainNameIPv4); err != nil {
-			return err
+		// Count how many times the jump rule appears
+		jumpRuleCount := 0
+		for _, rule := range rules {
+			if strings.Contains(rule, "-j "+ChainNameIPv4) {
+				jumpRuleCount++
+			}
 		}
+
+		// If there are duplicate rules, remove all and add one
+		if jumpRuleCount > 1 {
+			log.Infof("Found %d duplicate jump rules to %s in %s chain. Fixing...",
+				jumpRuleCount, ChainNameIPv4, chain)
+
+			// Remove all jump rules to this target
+			for i := 0; i < jumpRuleCount; i++ {
+				if err := m.ipv4.Delete("filter", chain, "-j", ChainNameIPv4); err != nil {
+					if isRuleNotExistsError(err) {
+						break
+					}
+					return fmt.Errorf("failed to delete duplicate rule: %w", err)
+				}
+			}
+
+			// Add one jump rule back
+			if err := m.ipv4.Insert("filter", chain, 1, "-j", ChainNameIPv4); err != nil {
+				return fmt.Errorf("failed to re-add jump rule: %w", err)
+			}
+		} else if jumpRuleCount == 0 {
+			// If no rule exists, add one
+			if err := m.ipv4.Insert("filter", chain, 1, "-j", ChainNameIPv4); err != nil {
+				return fmt.Errorf("failed to add jump rule: %w", err)
+			}
+		}
+		// If exactly one rule exists, do nothing
 	}
 
 	// Same for IPv6
@@ -143,35 +159,54 @@ func (m *IPTablesManager) ensureChain() error {
 	if err != nil {
 		return err
 	}
-
 	if !exists {
 		if err := m.ipv6.NewChain("filter", ChainNameIPv6); err != nil {
 			return err
 		}
 	}
 
-	// Check if jump rules already exist for IPv6
-	hasInputJump, err = m.hasJumpRule(m.ipv6, "INPUT", ChainNameIPv6)
-	if err != nil {
-		return err
-	}
-
-	hasOutputJump, err = m.hasJumpRule(m.ipv6, "OUTPUT", ChainNameIPv6)
-	if err != nil {
-		return err
-	}
-
-	// Add jump rules only if they don't exist
-	if !hasInputJump {
-		if err := m.ipv6.Insert("filter", "INPUT", 1, "-j", ChainNameIPv6); err != nil {
-			return err
+	// Check for and handle duplicate jump rules in INPUT and OUTPUT chains for IPv6
+	for _, chain := range []string{"INPUT", "OUTPUT"} {
+		// Get all rules in the chain
+		rules, err := m.ipv6.List("filter", chain)
+		if err != nil {
+			return fmt.Errorf("failed to list %s chain rules: %w", chain, err)
 		}
-	}
 
-	if !hasOutputJump {
-		if err := m.ipv6.Insert("filter", "OUTPUT", 1, "-j", ChainNameIPv6); err != nil {
-			return err
+		// Count how many times the jump rule appears
+		jumpRuleCount := 0
+		for _, rule := range rules {
+			if strings.Contains(rule, "-j "+ChainNameIPv6) {
+				jumpRuleCount++
+			}
 		}
+
+		// If there are duplicate rules, remove all and add one
+		if jumpRuleCount > 1 {
+			log.Infof("Found %d duplicate jump rules to %s in %s chain. Fixing...",
+				jumpRuleCount, ChainNameIPv6, chain)
+
+			// Remove all jump rules to this target
+			for i := 0; i < jumpRuleCount; i++ {
+				if err := m.ipv6.Delete("filter", chain, "-j", ChainNameIPv6); err != nil {
+					if isRuleNotExistsError(err) {
+						break
+					}
+					return fmt.Errorf("failed to delete duplicate rule: %w", err)
+				}
+			}
+
+			// Add one jump rule back
+			if err := m.ipv6.Insert("filter", chain, 1, "-j", ChainNameIPv6); err != nil {
+				return fmt.Errorf("failed to re-add jump rule: %w", err)
+			}
+		} else if jumpRuleCount == 0 {
+			// If no rule exists, add one
+			if err := m.ipv6.Insert("filter", chain, 1, "-j", ChainNameIPv6); err != nil {
+				return fmt.Errorf("failed to add jump rule: %w", err)
+			}
+		}
+		// If exactly one rule exists, do nothing
 	}
 
 	return nil
@@ -195,7 +230,6 @@ func (m *IPTablesManager) BlockIP(ip string, blockType string) error {
 
 	var ipt *iptables.IPTables
 	var chain string
-
 	if parsedIP.To4() != nil {
 		ipt = m.ipv4
 		chain = ChainNameIPv4
@@ -242,7 +276,6 @@ func (m *IPTablesManager) UnblockIP(ip string) error {
 
 	var ipt *iptables.IPTables
 	var chain string
-
 	if parsedIP.To4() != nil {
 		ipt = m.ipv4
 		chain = ChainNameIPv4
@@ -258,7 +291,6 @@ func (m *IPTablesManager) UnblockIP(ip string) error {
 			return err
 		}
 	}
-
 	if err := ipt.Delete("filter", chain, "-d", ip, "-j", "DROP"); err != nil {
 		// Ignore error if rule doesn't exist
 		if !isRuleNotExistsError(err) {
@@ -288,7 +320,6 @@ func (m *IPTablesManager) BlockIPRange(cidr string, blockType string) error {
 
 	var ipt *iptables.IPTables
 	var chain string
-
 	if ipNet.IP.To4() != nil {
 		ipt = m.ipv4
 		chain = ChainNameIPv4
@@ -335,7 +366,6 @@ func (m *IPTablesManager) UnblockIPRange(cidr string) error {
 
 	var ipt *iptables.IPTables
 	var chain string
-
 	if ipNet.IP.To4() != nil {
 		ipt = m.ipv4
 		chain = ChainNameIPv4
@@ -351,7 +381,6 @@ func (m *IPTablesManager) UnblockIPRange(cidr string) error {
 			return err
 		}
 	}
-
 	if err := ipt.Delete("filter", chain, "-d", cidr, "-j", "DROP"); err != nil {
 		// Ignore error if rule doesn't exist
 		if !isRuleNotExistsError(err) {
@@ -394,7 +423,7 @@ func (m *IPTablesManager) saveRulesToPersistentFilesInternal() error {
 		return fmt.Errorf("failed to create iptables directory: %w", err)
 	}
 
-	// Save IPv4 rules - use Output() to capture the output instead of redirect
+	// Save IPv4 rules - ensure we're getting all rules
 	cmdIPv4 := exec.Command("iptables-save")
 	ipv4Rules, err := cmdIPv4.Output()
 	if err != nil {
@@ -406,7 +435,7 @@ func (m *IPTablesManager) saveRulesToPersistentFilesInternal() error {
 		return fmt.Errorf("failed to write IPv4 rules file: %w", err)
 	}
 
-	// Save IPv6 rules - use Output() to capture the output instead of redirect
+	// Save IPv6 rules - ensure we're getting all rules
 	cmdIPv6 := exec.Command("ip6tables-save")
 	ipv6Rules, err := cmdIPv6.Output()
 	if err != nil {
@@ -432,7 +461,6 @@ func (m *IPTablesManager) saveRulesToPersistentFilesInternal() error {
 func (m *IPTablesManager) SaveRulesToPersistentFiles() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	return m.saveRulesToPersistentFilesInternal()
 }
 
@@ -441,19 +469,16 @@ func isRuleNotExistsError(err error) bool {
 	if err == nil {
 		return false
 	}
-
 	// iptables returns different error messages depending on the version
 	errorStrings := []string{
 		"No chain/target/match by that name",
 		"Bad rule (does a matching rule exist in that chain?)",
 	}
-
 	for _, str := range errorStrings {
 		if strings.Contains(fmt.Sprint(err), str) {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -462,6 +487,5 @@ func isChainNotExistsError(err error) bool {
 	if err == nil {
 		return false
 	}
-
 	return strings.Contains(fmt.Sprint(err), "No chain/target/match by that name")
 }

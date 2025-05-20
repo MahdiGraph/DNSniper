@@ -16,7 +16,6 @@ import (
 // GetAgentStatus returns the current status of the DNSniper agent
 func GetAgentStatus() (models.AgentStatus, error) {
 	var status models.AgentStatus
-
 	// Check if the timer is active first
 	cmd := exec.Command("systemctl", "is-active", "dnsniper-agent.timer")
 	output, err := cmd.Output()
@@ -164,7 +163,6 @@ func UpdateServiceLogging(enable bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to check service status: %w", err)
 	}
-
 	if isActive {
 		cmd = exec.Command("systemctl", "restart", "dnsniper-agent.service")
 		if err := cmd.Run(); err != nil {
@@ -190,12 +188,10 @@ func DirectlyUpdateServiceLogging(enable bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to read service file: %w", err)
 	}
-
 	contentStr := string(contentBytes)
 
 	// Use regex to find and replace the ExecStart line
 	re := regexp.MustCompile(`(ExecStart=.*?dnsniper-agent)(\s+-log)?(.*)`)
-
 	if enable {
 		// Add -log flag if not present
 		if re.MatchString(contentStr) {
@@ -237,7 +233,6 @@ if systemctl is-active --quiet dnsniper-agent; then
     systemctl restart dnsniper-agent
 fi
 `
-
 	tempFile, err := os.CreateTemp("", "dnsniper_service_update_*.sh")
 	if err != nil {
 		return fmt.Errorf("failed to create temp script: %w", err)
@@ -247,11 +242,9 @@ fi
 	if _, err := tempFile.Write([]byte(script)); err != nil {
 		return fmt.Errorf("failed to write temp script: %w", err)
 	}
-
 	if err := tempFile.Chmod(0755); err != nil {
 		return fmt.Errorf("failed to make script executable: %w", err)
 	}
-
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temp script: %w", err)
 	}
@@ -285,7 +278,6 @@ func GetAgentTimerInterval() (string, error) {
 	// Look for the OnUnitActiveSec line which contains the interval
 	re := regexp.MustCompile(`OnUnitActiveSec=([^\n\r\s]+)`)
 	matches := re.FindSubmatch(content)
-
 	if len(matches) < 2 {
 		return "", fmt.Errorf("could not find timer interval in file")
 	}
@@ -307,12 +299,10 @@ func DirectlyUpdateAgentTimerInterval(interval string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read timer file: %w", err)
 	}
-
 	contentStr := string(contentBytes)
 
 	// Prepare regex to find and replace the interval
 	re := regexp.MustCompile(`(OnUnitActiveSec=)[^\n\r\s]+`)
-
 	if !re.MatchString(contentStr) {
 		return fmt.Errorf("could not find OnUnitActiveSec line in timer file")
 	}
@@ -332,7 +322,6 @@ func DirectlyUpdateAgentTimerInterval(interval string) error {
 systemctl daemon-reload
 systemctl restart dnsniper-agent.timer
 `
-
 	tempFile, err := os.CreateTemp("", "dnsniper_timer_update_*.sh")
 	if err != nil {
 		return fmt.Errorf("failed to create temp script: %w", err)
@@ -342,11 +331,9 @@ systemctl restart dnsniper-agent.timer
 	if _, err := tempFile.Write([]byte(script)); err != nil {
 		return fmt.Errorf("failed to write temp script: %w", err)
 	}
-
 	if err := tempFile.Chmod(0755); err != nil {
 		return fmt.Errorf("failed to make script executable: %w", err)
 	}
-
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temp script: %w", err)
 	}
@@ -399,7 +386,6 @@ func UpdateAgentTimerInterval(interval string) error {
 func isServiceActive(serviceName string) (bool, error) {
 	cmd := exec.Command("systemctl", "is-active", serviceName)
 	output, err := cmd.Output()
-
 	if err != nil {
 		// If the command failed but we got output, check it
 		if exitErr, ok := err.(*exec.ExitError); ok && len(exitErr.Stderr) > 0 {
@@ -407,7 +393,6 @@ func isServiceActive(serviceName string) (bool, error) {
 		}
 		return false, err
 	}
-
 	return strings.TrimSpace(string(output)) == "active", nil
 }
 
@@ -415,7 +400,6 @@ func isServiceActive(serviceName string) (bool, error) {
 func getSystemdServiceStatus(serviceName string) (string, error) {
 	cmd := exec.Command("systemctl", "is-active", serviceName)
 	output, err := cmd.Output()
-
 	if err != nil {
 		// If the command fails, check if it's because the service is inactive
 		if _, ok := err.(*exec.ExitError); ok {
@@ -423,7 +407,6 @@ func getSystemdServiceStatus(serviceName string) (string, error) {
 		}
 		return "", fmt.Errorf("failed to get service status: %w", err)
 	}
-
 	status := strings.TrimSpace(string(output))
 	return status, nil
 }
