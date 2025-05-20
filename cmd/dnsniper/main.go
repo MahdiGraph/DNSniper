@@ -99,14 +99,13 @@ func showMainMenu() {
 
 		// ASCII art banner for DNSniper
 		titleColor.Println(`
-  _____  _   _  _____       _                 
-|   **\| \ | |/** __|     (_)                
-| |  | |  \| | (___  _ __  _ _ __   ___ _ __
-| |  | | . ' |\___ \| '_ \| | '_ \ / _\ '__|
-| |__| | |\  |____) | | | | | |_) |  __/ |   
-|_____/|_| \_|_____/|_| |_|_| .__/ \___|_|   
-                             | |              
-                             |_|              
+:::::::::  ::::    :::  ::::::::  ::::    ::: ::::::::::: :::::::::  :::::::::: :::::::::  
+:+:    :+: :+:+:   :+: :+:    :+: :+:+:   :+:     :+:     :+:    :+: :+:        :+:    :+: 
++:+    +:+ :+:+:+  +:+ +:+        :+:+:+  +:+     +:+     +:+    +:+ +:+        +:+    +:+ 
++#+    +:+ +#+ +:+ +#+ +#++:++#++ +#+ +:+ +#+     +#+     +#++:++#+  +#++:++#   +#++:++#:  
++#+    +#+ +#+  +#+#+#        +#+ +#+  +#+#+#     +#+     +#+        +#+        +#+    +#+ 
+#+#    #+# #+#   #+#+# #+#    #+# #+#   #+#+#     #+#     #+#        #+#        #+#    #+# 
+#########  ###    ####  ########  ###    #### ########### ###        ########## ###    ### 
 `)
 
 		subtitleColor.Println("Lock onto threats, restore your peace of mind!")
@@ -301,6 +300,13 @@ func createSettingsCommand() *cobra.Command {
 }
 
 func runAgentNow() {
+	// Check if agent is already running
+	if already, _ := service.IsAgentRunning(); already {
+		warningColor.Println("Agent is already running in background.")
+		infoColor.Println("You can check its status with option 2 (Show status).")
+		return
+	}
+
 	infoColor.Println("Starting DNSniper agent in background...")
 
 	// Run the agent in background using & at the end

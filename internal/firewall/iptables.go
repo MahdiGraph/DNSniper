@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/coreos/go-iptables/iptables"
 	"github.com/sirupsen/logrus"
@@ -20,12 +21,14 @@ type FirewallManager interface {
 	BlockIPRange(cidr string, blockType string) error
 	UnblockIPRange(cidr string) error
 	ClearRules() error
+	SaveRulesToPersistentFiles() error
 }
 
 // IPTablesManager implements FirewallManager using iptables
 type IPTablesManager struct {
 	ipv4 *iptables.IPTables
 	ipv6 *iptables.IPTables
+	mu   sync.Mutex // Mutex for thread-safe operations
 }
 
 // Constants for iptables chains
@@ -103,6 +106,9 @@ func (m *IPTablesManager) ensureChain() error {
 
 // BlockIP blocks an IP address using iptables
 func (m *IPTablesManager) BlockIP(ip string, blockType string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Ensure chain exists
 	if err := m.ensureChain(); err != nil {
 		return err
@@ -146,12 +152,14 @@ func (m *IPTablesManager) BlockIP(ip string, blockType string) error {
 		return fmt.Errorf("invalid block type: %s", blockType)
 	}
 
-	// Save changes to persistent files
-	return m.saveRulesToPersistentFiles()
+	return nil
 }
 
 // UnblockIP removes blocking rules for an IP
 func (m *IPTablesManager) UnblockIP(ip string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Determine if IPv4 or IPv6
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil {
@@ -184,12 +192,14 @@ func (m *IPTablesManager) UnblockIP(ip string) error {
 		}
 	}
 
-	// Save changes to persistent files
-	return m.saveRulesToPersistentFiles()
+	return nil
 }
 
 // BlockIPRange blocks an IP range using iptables
 func (m *IPTablesManager) BlockIPRange(cidr string, blockType string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Ensure chain exists
 	if err := m.ensureChain(); err != nil {
 		return err
@@ -233,12 +243,14 @@ func (m *IPTablesManager) BlockIPRange(cidr string, blockType string) error {
 		return fmt.Errorf("invalid block type: %s", blockType)
 	}
 
-	// Save changes to persistent files
-	return m.saveRulesToPersistentFiles()
+	return nil
 }
 
 // UnblockIPRange removes blocking rules for an IP range
 func (m *IPTablesManager) UnblockIPRange(cidr string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Determine if IPv4 or IPv6
 	_, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -271,12 +283,14 @@ func (m *IPTablesManager) UnblockIPRange(cidr string) error {
 		}
 	}
 
-	// Save changes to persistent files
-	return m.saveRulesToPersistentFiles()
+	return nil
 }
 
 // ClearRules clears all rules in the DNSniper chains
 func (m *IPTablesManager) ClearRules() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Clear IPv4 rules
 	if err := m.ipv4.ClearChain("filter", ChainNameIPv4); err != nil {
 		if !isChainNotExistsError(err) {
@@ -292,11 +306,12 @@ func (m *IPTablesManager) ClearRules() error {
 	}
 
 	// Save changes to persistent files
-	return m.saveRulesToPersistentFiles()
+	return m.saveRulesToPersistentFilesInternal()
 }
 
-// saveRulesToPersistentFiles saves the current iptables rules to persistent files
-func (m *IPTablesManager) saveRulesToPersistentFiles() error {
+// saveRulesToPersistentFilesInternal is the internal implementation
+// without locking (used by methods that already have a lock)
+func (m *IPTablesManager) saveRulesToPersistentFilesInternal() error {
 	// Create directories if they don't exist
 	if err := os.MkdirAll("/etc/iptables", 0755); err != nil {
 		return fmt.Errorf("failed to create iptables directory: %w", err)
@@ -316,6 +331,14 @@ func (m *IPTablesManager) saveRulesToPersistentFiles() error {
 
 	log.Info("Saved firewall rules to persistent files")
 	return nil
+}
+
+// SaveRulesToPersistentFiles saves the current iptables rules to persistent files
+func (m *IPTablesManager) SaveRulesToPersistentFiles() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.saveRulesToPersistentFilesInternal()
 }
 
 // Helper function to check for "rule not exists" error

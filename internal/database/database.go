@@ -327,13 +327,14 @@ func SaveCustomDomain(domain string, isWhitelisted bool) (int64, error) {
 	return result.LastInsertId()
 }
 
-// RemoveDomain removes a domain from the database
-func RemoveDomain(domain string, isWhitelisted bool) error {
-	// Check if domain exists
-	var id int64
-	err := db.QueryRow(
-		"SELECT id FROM domains WHERE domain = ? AND is_whitelisted = ?",
-		domain, isWhitelisted).Scan(&id)
+// RemoveDomain removes a domain from the database and associated firewall rules
+func RemoveDomain(domain string, isWhitelist bool) error {
+	// Get IDs of IPs related to this domain before deleting
+	var domainID int64
+
+	// First get the domain ID
+	err := db.QueryRow("SELECT id FROM domains WHERE domain = ? AND is_whitelisted = ?",
+		domain, isWhitelist).Scan(&domainID)
 
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("domain not found: %s", domain)
@@ -342,7 +343,7 @@ func RemoveDomain(domain string, isWhitelisted bool) error {
 	}
 
 	// Get all IPs associated with this domain for firewall rule removal
-	rows, err := db.Query("SELECT ip_address FROM ips WHERE domain_id = ?", id)
+	rows, err := db.Query("SELECT ip_address FROM ips WHERE domain_id = ?", domainID)
 	if err != nil {
 		return err
 	}
@@ -362,7 +363,7 @@ func RemoveDomain(domain string, isWhitelisted bool) error {
 	}
 
 	// Remove firewall rules for all IPs if domain is in blocklist
-	if !isWhitelisted {
+	if !isWhitelist && len(ips) > 0 {
 		fwManager, err := firewall.NewIPTablesManager()
 		if err != nil {
 			log.Warnf("Failed to initialize firewall manager: %v", err)
@@ -372,17 +373,22 @@ func RemoveDomain(domain string, isWhitelisted bool) error {
 					log.Warnf("Failed to remove firewall rule for IP %s: %v", ip, err)
 				}
 			}
+
+			// Save changes to persistent files after all rules are removed
+			if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+				log.Warnf("Failed to save firewall rules: %v", err)
+			}
 		}
 	}
 
 	// Delete domain's IPs
-	_, err = db.Exec("DELETE FROM ips WHERE domain_id = ?", id)
+	_, err = db.Exec("DELETE FROM ips WHERE domain_id = ?", domainID)
 	if err != nil {
 		return err
 	}
 
 	// Delete the domain
-	_, err = db.Exec("DELETE FROM domains WHERE id = ?", id)
+	_, err = db.Exec("DELETE FROM domains WHERE id = ?", domainID)
 	return err
 }
 
@@ -523,11 +529,41 @@ func SaveCustomIPRange(cidr string, isWhitelisted bool) error {
 	return err
 }
 
-// RemoveIP removes an IP from the database and firewall rules
-func RemoveIP(ip string, isWhitelisted bool) error {
-	result, err := db.Exec(
-		"DELETE FROM ips WHERE ip_address = ? AND is_whitelisted = ?",
-		ip, isWhitelisted)
+// RemoveIP removes an IP from the database and firewall
+func RemoveIP(ip string, isWhitelist bool) error {
+	// First check if the IP exists
+	var exists int
+	err := db.QueryRow("SELECT COUNT(*) FROM ips WHERE ip_address = ? AND is_whitelisted = ?",
+		ip, isWhitelist).Scan(&exists)
+
+	if err != nil {
+		return err
+	}
+
+	if exists == 0 {
+		return fmt.Errorf("IP not found: %s", ip)
+	}
+
+	// If it's a blocklist IP, remove from firewall first
+	if !isWhitelist {
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			return fmt.Errorf("failed to initialize firewall manager: %w", err)
+		}
+
+		if err := fwManager.UnblockIP(ip); err != nil {
+			return fmt.Errorf("failed to remove firewall rule: %w", err)
+		}
+
+		// Save changes to persistent files
+		if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+			return fmt.Errorf("failed to save firewall rules: %w", err)
+		}
+	}
+
+	// Now remove from database
+	result, err := db.Exec("DELETE FROM ips WHERE ip_address = ? AND is_whitelisted = ?",
+		ip, isWhitelist)
 	if err != nil {
 		return err
 	}
@@ -541,26 +577,44 @@ func RemoveIP(ip string, isWhitelisted bool) error {
 		return fmt.Errorf("IP not found: %s", ip)
 	}
 
-	// Remove firewall rule if it was a blocklisted IP
-	if !isWhitelisted {
+	return nil
+}
+
+// RemoveIPRange removes an IP range from the database and firewall
+func RemoveIPRange(cidr string, isWhitelist bool) error {
+	// First check if the range exists
+	var exists int
+	err := db.QueryRow("SELECT COUNT(*) FROM ip_ranges WHERE cidr = ? AND is_whitelisted = ?",
+		cidr, isWhitelist).Scan(&exists)
+
+	if err != nil {
+		return err
+	}
+
+	if exists == 0 {
+		return fmt.Errorf("IP range not found: %s", cidr)
+	}
+
+	// If it's a blocklist range, remove from firewall first
+	if !isWhitelist {
 		fwManager, err := firewall.NewIPTablesManager()
 		if err != nil {
 			return fmt.Errorf("failed to initialize firewall manager: %w", err)
 		}
 
-		if err := fwManager.UnblockIP(ip); err != nil {
+		if err := fwManager.UnblockIPRange(cidr); err != nil {
 			return fmt.Errorf("failed to remove firewall rule: %w", err)
+		}
+
+		// Save changes to persistent files
+		if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+			return fmt.Errorf("failed to save firewall rules: %w", err)
 		}
 	}
 
-	return nil
-}
-
-// RemoveIPRange removes an IP range from the database and firewall
-func RemoveIPRange(cidr string, isWhitelisted bool) error {
-	result, err := db.Exec(
-		"DELETE FROM ip_ranges WHERE cidr = ? AND is_whitelisted = ?",
-		cidr, isWhitelisted)
+	// Now remove from database
+	result, err := db.Exec("DELETE FROM ip_ranges WHERE cidr = ? AND is_whitelisted = ?",
+		cidr, isWhitelist)
 	if err != nil {
 		return err
 	}
@@ -572,18 +626,6 @@ func RemoveIPRange(cidr string, isWhitelisted bool) error {
 
 	if affected == 0 {
 		return fmt.Errorf("IP range not found: %s", cidr)
-	}
-
-	// Remove firewall rule if it was a blocklisted range
-	if !isWhitelisted {
-		fwManager, err := firewall.NewIPTablesManager()
-		if err != nil {
-			return fmt.Errorf("failed to initialize firewall manager: %w", err)
-		}
-
-		if err := fwManager.UnblockIPRange(cidr); err != nil {
-			return fmt.Errorf("failed to remove firewall rule: %w", err)
-		}
 	}
 
 	return nil
