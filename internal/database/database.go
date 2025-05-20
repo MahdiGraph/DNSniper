@@ -55,6 +55,62 @@ func GetDomainID(domain string, id *int64) error {
 	return err
 }
 
+// IsIPInBlocklist checks if an IP is in the blocklist
+func IsIPInBlocklist(ip string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM ips WHERE ip_address = ? AND is_whitelisted = 0)", ip).Scan(&exists)
+	return exists, err
+}
+
+// IsIPRangeInBlocklist checks if an IP range is in the blocklist
+func IsIPRangeInBlocklist(cidr string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM ip_ranges WHERE cidr = ? AND is_whitelisted = 0)", cidr).Scan(&exists)
+	return exists, err
+}
+
+// IsDomainInBlocklist checks if a domain is in the blocklist
+func IsDomainInBlocklist(domain string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM domains WHERE domain = ? AND is_whitelisted = 0)", domain).Scan(&exists)
+	return exists, err
+}
+
+// GetIPsForDomain gets all IPs associated with a domain
+func GetIPsForDomain(domain string) ([]string, error) {
+	// First get domain ID
+	var domainID int64
+	err := db.QueryRow("SELECT id FROM domains WHERE domain = ?", domain).Scan(&domainID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get IPs for this domain
+	rows, err := db.Query("SELECT ip_address FROM ips WHERE domain_id = ?", domainID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ips []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		ips = append(ips, ip)
+	}
+
+	return ips, nil
+}
+
+// IsIPRangeWhitelisted checks if an IP range is whitelisted
+func IsIPRangeWhitelisted(cidr string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM ip_ranges WHERE cidr = ? AND is_whitelisted = 1)", cidr).Scan(&exists)
+	return exists, err
+}
+
 // createTables creates the necessary database tables
 func createTables() error {
 	// Create domains table
