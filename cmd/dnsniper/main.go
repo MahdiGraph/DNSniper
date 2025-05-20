@@ -107,6 +107,7 @@ func showMainMenu() {
 		menuColor.Println("6. Manage IP whitelist")
 		menuColor.Println("7. Settings")
 		menuColor.Println("8. Clear firewall rules")
+		menuColor.Println("9. Rebuild firewall rules")
 		menuColor.Println("0. Exit")
 		warningColor.Println("U. Uninstall DNSniper")
 
@@ -136,6 +137,10 @@ func showMainMenu() {
 		case "8":
 			clearScreen()
 			clearRules()
+			pressEnterToContinue(reader)
+		case "9":
+			clearScreen()
+			rebuildFirewallRules()
 			pressEnterToContinue(reader)
 		case "0":
 			clearScreen()
@@ -259,13 +264,13 @@ func createSettingsCommand() *cobra.Command {
 }
 
 func runAgentNow() {
-	infoColor.Println("Running DNSniper agent...")
-	err := service.RunAgentOnce()
+	infoColor.Println("Starting DNSniper agent in background...")
+	err := service.RestartAgent()
 	if err != nil {
-		errorColor.Printf("Failed to run agent: %v\n", err)
+		errorColor.Printf("Failed to start agent: %v\n", err)
 		return
 	}
-	successColor.Println("Agent run completed successfully")
+	successColor.Println("Agent started successfully in background")
 }
 
 func showStatus() {
@@ -448,6 +453,12 @@ func manageIPList(listType string, isWhitelist bool, reader *bufio.Reader) {
 			// Display IPs with their expiration time if applicable
 			for i, ip := range ips {
 				ipStr := ip.IPAddress
+
+				// Add an indicator if this is a range
+				if ip.IsRange {
+					ipStr = fmt.Sprintf("%s [RANGE]", ipStr)
+				}
+
 				if !ip.IsCustom && ip.ExpiresAt.Valid {
 					expiresIn := time.Until(ip.ExpiresAt.Time).Round(time.Hour)
 					if expiresIn > 0 {
@@ -471,12 +482,12 @@ func manageIPList(listType string, isWhitelist bool, reader *bufio.Reader) {
 		if totalPages > 1 {
 			menuColor.Println("1. Next page")
 			menuColor.Println("2. Previous page")
-			menuColor.Println("3. Add IP")
-			menuColor.Println("4. Remove IP")
+			menuColor.Println("3. Add IP or IP range")
+			menuColor.Println("4. Remove IP or IP range")
 			menuColor.Println("0. Back to main menu")
 		} else {
-			menuColor.Println("1. Add IP")
-			menuColor.Println("2. Remove IP")
+			menuColor.Println("1. Add IP or IP range")
+			menuColor.Println("2. Remove IP or IP range")
 			menuColor.Println("0. Back to main menu")
 		}
 
@@ -584,6 +595,65 @@ func clearRules() {
 	}
 
 	successColor.Println("Rules cleared successfully and saved permanently")
+}
+
+func rebuildFirewallRules() {
+	infoColor.Println("Rebuilding firewall rules...")
+
+	// First, clear existing rules
+	fwManager, err := firewall.NewIPTablesManager()
+	if err != nil {
+		errorColor.Printf("Error initializing firewall manager: %v\n", err)
+		return
+	}
+
+	if err := fwManager.ClearRules(); err != nil {
+		errorColor.Printf("Error clearing rules: %v\n", err)
+		return
+	}
+
+	// Get all blocked IPs and IP ranges from database
+	blockedIPs, blockedRanges, err := database.GetAllBlockedIPs()
+	if err != nil {
+		errorColor.Printf("Error getting blocked IPs: %v\n", err)
+		return
+	}
+
+	// Get block rule type from settings
+	settings, err := config.GetSettings()
+	if err != nil {
+		errorColor.Printf("Error getting settings: %v\n", err)
+		return
+	}
+
+	// Apply rules for each IP
+	successCount := 0
+	failCount := 0
+
+	infoColor.Printf("Applying rules for %d IPs and %d IP ranges...\n", len(blockedIPs), len(blockedRanges))
+
+	// Apply rules for individual IPs
+	for _, ip := range blockedIPs {
+		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+			errorColor.Printf("Error blocking IP %s: %v\n", ip, err)
+			failCount++
+		} else {
+			successCount++
+		}
+	}
+
+	// Apply rules for IP ranges
+	for _, cidr := range blockedRanges {
+		if err := fwManager.BlockIPRange(cidr, settings.BlockRuleType); err != nil {
+			errorColor.Printf("Error blocking IP range %s: %v\n", cidr, err)
+			failCount++
+		} else {
+			successCount++
+		}
+	}
+
+	successColor.Printf("Firewall rules rebuilt successfully.\n")
+	infoColor.Printf("Applied rules: %d, Failed rules: %d\n", successCount, failCount)
 }
 
 func confirmUninstall(reader *bufio.Reader) bool {
@@ -716,58 +786,105 @@ func addIPToList(isWhitelist bool, reader *bufio.Reader) {
 		subtitleColor.Println("Add IP to Blocklist")
 	}
 
-	promptColor.Print("Enter IP address: ")
-	ip, _ := reader.ReadString('\n')
-	ip = strings.TrimSpace(ip)
+	promptColor.Print("Enter IP address or IP range (CIDR notation, e.g. 192.168.1.0/24): ")
+	ipInput, _ := reader.ReadString('\n')
+	ipInput = strings.TrimSpace(ipInput)
 
-	if ip == "" {
-		errorColor.Println("IP cannot be empty.")
+	if ipInput == "" {
+		errorColor.Println("Input cannot be empty.")
 		time.Sleep(1 * time.Second)
 		return
 	}
 
-	// Validate IP format
-	if !database.IsValidIP(ip) {
-		errorColor.Printf("Invalid IP address format: %s\n", ip)
-		time.Sleep(2 * time.Second)
-		return
-	}
+	// Check if this is a CIDR range
+	if strings.Contains(ipInput, "/") {
+		// Validate CIDR format
+		if !database.IsValidCIDR(ipInput) {
+			errorColor.Printf("Invalid CIDR notation: %s\n", ipInput)
+			time.Sleep(2 * time.Second)
+			return
+		}
 
-	// Save IP to database
-	err := database.SaveCustomIP(ip, isWhitelist)
-	if err != nil {
-		errorColor.Printf("Failed to add IP: %v\n", err)
-		time.Sleep(2 * time.Second)
-		return
-	}
-
-	// If it's a blocklist IP, apply firewall rule
-	if !isWhitelist {
-		settings, err := config.GetSettings()
+		// Save IP range to database
+		err := database.SaveCustomIPRange(ipInput, isWhitelist)
 		if err != nil {
-			errorColor.Printf("Failed to get settings: %v\n", err)
+			errorColor.Printf("Failed to add IP range: %v\n", err)
 			time.Sleep(2 * time.Second)
 			return
 		}
 
-		fwManager, err := firewall.NewIPTablesManager()
-		if err != nil {
-			errorColor.Printf("Failed to initialize firewall: %v\n", err)
-			time.Sleep(2 * time.Second)
-			return
+		// If it's a blocklist range, apply firewall rule
+		if !isWhitelist {
+			settings, err := config.GetSettings()
+			if err != nil {
+				errorColor.Printf("Failed to get settings: %v\n", err)
+				time.Sleep(2 * time.Second)
+				return
+			}
+
+			fwManager, err := firewall.NewIPTablesManager()
+			if err != nil {
+				errorColor.Printf("Failed to initialize firewall: %v\n", err)
+				time.Sleep(2 * time.Second)
+				return
+			}
+
+			if err := fwManager.BlockIPRange(ipInput, settings.BlockRuleType); err != nil {
+				errorColor.Printf("Failed to apply firewall rule: %v\n", err)
+				time.Sleep(2 * time.Second)
+				return
+			}
 		}
 
-		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-			errorColor.Printf("Failed to apply firewall rule: %v\n", err)
-			time.Sleep(2 * time.Second)
-			return
+		if isWhitelist {
+			successColor.Printf("IP range %s added to whitelist\n", ipInput)
+		} else {
+			successColor.Printf("IP range %s added to blocklist\n", ipInput)
 		}
-	}
-
-	if isWhitelist {
-		successColor.Printf("IP %s added to whitelist\n", ip)
 	} else {
-		successColor.Printf("IP %s added to blocklist\n", ip)
+		// Regular IP address
+		if !database.IsValidIP(ipInput) {
+			errorColor.Printf("Invalid IP address format: %s\n", ipInput)
+			time.Sleep(2 * time.Second)
+			return
+		}
+
+		// Save IP to database
+		err := database.SaveCustomIP(ipInput, isWhitelist)
+		if err != nil {
+			errorColor.Printf("Failed to add IP: %v\n", err)
+			time.Sleep(2 * time.Second)
+			return
+		}
+
+		// If it's a blocklist IP, apply firewall rule
+		if !isWhitelist {
+			settings, err := config.GetSettings()
+			if err != nil {
+				errorColor.Printf("Failed to get settings: %v\n", err)
+				time.Sleep(2 * time.Second)
+				return
+			}
+
+			fwManager, err := firewall.NewIPTablesManager()
+			if err != nil {
+				errorColor.Printf("Failed to initialize firewall: %v\n", err)
+				time.Sleep(2 * time.Second)
+				return
+			}
+
+			if err := fwManager.BlockIP(ipInput, settings.BlockRuleType); err != nil {
+				errorColor.Printf("Failed to apply firewall rule: %v\n", err)
+				time.Sleep(2 * time.Second)
+				return
+			}
+		}
+
+		if isWhitelist {
+			successColor.Printf("IP %s added to whitelist\n", ipInput)
+		} else {
+			successColor.Printf("IP %s added to blocklist\n", ipInput)
+		}
 	}
 
 	time.Sleep(1 * time.Second)
@@ -781,82 +898,149 @@ func removeIPFromList(isWhitelist bool, reader *bufio.Reader) {
 		subtitleColor.Println("Remove IP from Blocklist")
 	}
 
-	promptColor.Print("Enter IP address: ")
-	ip, _ := reader.ReadString('\n')
-	ip = strings.TrimSpace(ip)
+	promptColor.Print("Enter IP address or IP range (CIDR notation): ")
+	ipInput, _ := reader.ReadString('\n')
+	ipInput = strings.TrimSpace(ipInput)
 
-	if ip == "" {
-		errorColor.Println("IP cannot be empty.")
+	if ipInput == "" {
+		errorColor.Println("Input cannot be empty.")
 		time.Sleep(1 * time.Second)
 		return
 	}
 
-	// Remove IP from database
-	err := database.RemoveIP(ip, isWhitelist)
-	if err != nil {
-		errorColor.Printf("Failed to remove IP: %v\n", err)
-		time.Sleep(2 * time.Second)
-		return
-	}
+	// Check if this is a CIDR range
+	if strings.Contains(ipInput, "/") {
+		// Validate CIDR format
+		if !database.IsValidCIDR(ipInput) {
+			errorColor.Printf("Invalid CIDR notation: %s\n", ipInput)
+			time.Sleep(2 * time.Second)
+			return
+		}
 
-	// If it's a blocklist IP, remove firewall rule
-	if !isWhitelist {
-		fwManager, err := firewall.NewIPTablesManager()
+		// Remove IP range from database
+		err := database.RemoveIPRange(ipInput, isWhitelist)
 		if err != nil {
-			errorColor.Printf("Failed to initialize firewall: %v\n", err)
+			errorColor.Printf("Failed to remove IP range: %v\n", err)
 			time.Sleep(2 * time.Second)
 			return
 		}
 
-		if err := fwManager.UnblockIP(ip); err != nil {
-			errorColor.Printf("Failed to remove firewall rule: %v\n", err)
-			time.Sleep(2 * time.Second)
-			return
+		if isWhitelist {
+			successColor.Printf("IP range %s removed from whitelist\n", ipInput)
+		} else {
+			successColor.Printf("IP range %s removed from blocklist\n", ipInput)
 		}
-	}
-
-	if isWhitelist {
-		successColor.Printf("IP %s removed from whitelist\n", ip)
 	} else {
-		successColor.Printf("IP %s removed from blocklist\n", ip)
+		// Remove IP from database
+		err := database.RemoveIP(ipInput, isWhitelist)
+		if err != nil {
+			errorColor.Printf("Failed to remove IP: %v\n", err)
+			time.Sleep(2 * time.Second)
+			return
+		}
+
+		if isWhitelist {
+			successColor.Printf("IP %s removed from whitelist\n", ipInput)
+		} else {
+			successColor.Printf("IP %s removed from blocklist\n", ipInput)
+		}
 	}
 
 	time.Sleep(1 * time.Second)
 }
 
 func blockIP(ip string) {
-	if err := database.SaveCustomIP(ip, false); err != nil {
-		errorColor.Printf("Failed to add IP to database: %v\n", err)
-		return
-	}
+	// Check if this is a CIDR range
+	if strings.Contains(ip, "/") {
+		if !database.IsValidCIDR(ip) {
+			errorColor.Printf("Invalid CIDR notation: %s\n", ip)
+			return
+		}
 
-	settings, err := config.GetSettings()
-	if err != nil {
-		errorColor.Printf("Failed to get settings: %v\n", err)
-		return
-	}
+		err := database.SaveCustomIPRange(ip, false)
+		if err != nil {
+			errorColor.Printf("Failed to add IP range to database: %v\n", err)
+			return
+		}
 
-	fwManager, err := firewall.NewIPTablesManager()
-	if err != nil {
-		errorColor.Printf("Failed to initialize firewall: %v\n", err)
-		return
-	}
+		settings, err := config.GetSettings()
+		if err != nil {
+			errorColor.Printf("Failed to get settings: %v\n", err)
+			return
+		}
 
-	if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-		errorColor.Printf("Failed to block IP: %v\n", err)
-		return
-	}
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			errorColor.Printf("Failed to initialize firewall: %v\n", err)
+			return
+		}
 
-	successColor.Printf("IP %s blocked\n", ip)
+		if err := fwManager.BlockIPRange(ip, settings.BlockRuleType); err != nil {
+			errorColor.Printf("Failed to block IP range: %v\n", err)
+			return
+		}
+
+		successColor.Printf("IP range %s blocked\n", ip)
+	} else {
+		if !database.IsValidIP(ip) {
+			errorColor.Printf("Invalid IP address: %s\n", ip)
+			return
+		}
+
+		if err := database.SaveCustomIP(ip, false); err != nil {
+			errorColor.Printf("Failed to add IP to database: %v\n", err)
+			return
+		}
+
+		settings, err := config.GetSettings()
+		if err != nil {
+			errorColor.Printf("Failed to get settings: %v\n", err)
+			return
+		}
+
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			errorColor.Printf("Failed to initialize firewall: %v\n", err)
+			return
+		}
+
+		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+			errorColor.Printf("Failed to block IP: %v\n", err)
+			return
+		}
+
+		successColor.Printf("IP %s blocked\n", ip)
+	}
 }
 
 func whitelistIP(ip string) {
-	if err := database.SaveCustomIP(ip, true); err != nil {
-		errorColor.Printf("Failed to whitelist IP: %v\n", err)
-		return
-	}
+	// Check if this is a CIDR range
+	if strings.Contains(ip, "/") {
+		if !database.IsValidCIDR(ip) {
+			errorColor.Printf("Invalid CIDR notation: %s\n", ip)
+			return
+		}
 
-	successColor.Printf("IP %s whitelisted\n", ip)
+		err := database.SaveCustomIPRange(ip, true)
+		if err != nil {
+			errorColor.Printf("Failed to whitelist IP range: %v\n", err)
+			return
+		}
+
+		successColor.Printf("IP range %s whitelisted\n", ip)
+	} else {
+		if !database.IsValidIP(ip) {
+			errorColor.Printf("Invalid IP address: %s\n", ip)
+			return
+		}
+
+		if err := database.SaveCustomIP(ip, true); err != nil {
+			errorColor.Printf("Failed to whitelist IP: %v\n", err)
+			return
+		}
+
+		successColor.Printf("IP %s whitelisted\n", ip)
+	}
 }
 
 // Settings functions
@@ -1213,7 +1397,11 @@ func listIPs() {
 		fmt.Println("No blocked IPs")
 	} else {
 		for _, ip := range blockedIPs {
-			fmt.Println(ip.IPAddress)
+			if ip.IsRange {
+				fmt.Printf("%s [RANGE]\n", ip.IPAddress)
+			} else {
+				fmt.Println(ip.IPAddress)
+			}
 		}
 	}
 
@@ -1222,7 +1410,11 @@ func listIPs() {
 		fmt.Println("No whitelisted IPs")
 	} else {
 		for _, ip := range whitelistedIPs {
-			fmt.Println(ip.IPAddress)
+			if ip.IsRange {
+				fmt.Printf("%s [RANGE]\n", ip.IPAddress)
+			} else {
+				fmt.Println(ip.IPAddress)
+			}
 		}
 	}
 }

@@ -346,8 +346,8 @@ systemctl daemon-reload
 systemctl enable dnsniper-agent.timer
 systemctl start dnsniper-agent.timer
 
-# Run DNSniper agent once immediately
-print_info "Running DNSniper agent for the first time..."
+# Start the agent service in the background
+print_info "Starting DNSniper agent in background..."
 systemctl start dnsniper-agent.service
 
 # Final message

@@ -19,39 +19,57 @@ func NewStandardResolver() *StandardResolver {
 	return &StandardResolver{}
 }
 
-// ResolveDomain resolves a domain to its IP addresses
+// ResolveDomain resolves a domain to its IP addresses (both IPv4 and IPv6)
 func (r *StandardResolver) ResolveDomain(domain, dnsServer string) ([]string, error) {
+	var ips []string
+
 	// If no custom DNS server is specified, use system default
 	if dnsServer == "" {
-		return resolveWithSystemDNS(domain)
-	}
-
-	// Using custom DNS server
-	return resolveWithCustomDNS(domain, dnsServer)
-}
-
-// resolveWithSystemDNS resolves a domain using the system DNS settings
-func resolveWithSystemDNS(domain string) ([]string, error) {
-	// Resolve IPv4 addresses
-	ipv4Addrs, err := net.LookupIP(domain)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve domain %s: %w", domain, err)
-	}
-
-	// Extract IP addresses as strings
-	var ips []string
-	for _, ip := range ipv4Addrs {
-		// We only want IPv4 addresses
-		if ipv4 := ip.To4(); ipv4 != nil {
-			ips = append(ips, ipv4.String())
+		ipv4, ipv6, err := resolveWithSystemDNS(domain)
+		if err != nil {
+			return nil, err
 		}
+		ips = append(ips, ipv4...)
+		ips = append(ips, ipv6...)
+	} else {
+		// Using custom DNS server
+		ipv4, ipv6, err := resolveWithCustomDNS(domain, dnsServer)
+		if err != nil {
+			return nil, err
+		}
+		ips = append(ips, ipv4...)
+		ips = append(ips, ipv6...)
 	}
 
 	return ips, nil
 }
 
+// resolveWithSystemDNS resolves a domain using the system DNS settings
+func resolveWithSystemDNS(domain string) ([]string, []string, error) {
+	// Resolve IP addresses
+	allAddrs, err := net.LookupIP(domain)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to resolve domain %s: %w", domain, err)
+	}
+
+	// Extract IP addresses as strings
+	var ipv4s []string
+	var ipv6s []string
+
+	for _, ip := range allAddrs {
+		if ipv4 := ip.To4(); ipv4 != nil {
+			ipv4s = append(ipv4s, ipv4.String())
+		} else {
+			// This is an IPv6 address
+			ipv6s = append(ipv6s, ip.String())
+		}
+	}
+
+	return ipv4s, ipv6s, nil
+}
+
 // resolveWithCustomDNS resolves a domain using a custom DNS server
-func resolveWithCustomDNS(domain, dnsServer string) ([]string, error) {
+func resolveWithCustomDNS(domain, dnsServer string) ([]string, []string, error) {
 	// Create a custom resolver
 	r := &net.Resolver{
 		PreferGo: true,
@@ -64,18 +82,27 @@ func resolveWithCustomDNS(domain, dnsServer string) ([]string, error) {
 	// Lookup addresses
 	addrs, err := r.LookupHost(context.Background(), domain)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve domain %s with DNS server %s: %w", domain, dnsServer, err)
+		return nil, nil, fmt.Errorf("failed to resolve domain %s with DNS server %s: %w", domain, dnsServer, err)
 	}
 
-	// Filter for IPv4 addresses
-	var ips []string
+	// Separate IPv4 and IPv6 addresses
+	var ipv4s []string
+	var ipv6s []string
+
 	for _, addr := range addrs {
-		if net.ParseIP(addr).To4() != nil {
-			ips = append(ips, addr)
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			continue
+		}
+
+		if ip.To4() != nil {
+			ipv4s = append(ipv4s, addr)
+		} else {
+			ipv6s = append(ipv6s, addr)
 		}
 	}
 
-	return ips, nil
+	return ipv4s, ipv6s, nil
 }
 
 // MockResolver implements a mock resolver for testing

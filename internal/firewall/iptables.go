@@ -8,12 +8,17 @@ import (
 	"strings"
 
 	"github.com/coreos/go-iptables/iptables"
+	"github.com/sirupsen/logrus"
 )
+
+var log = logrus.New()
 
 // FirewallManager interface for firewall operations
 type FirewallManager interface {
 	BlockIP(ip string, blockType string) error
 	UnblockIP(ip string) error
+	BlockIPRange(cidr string, blockType string) error
+	UnblockIPRange(cidr string) error
 	ClearRules() error
 }
 
@@ -183,6 +188,93 @@ func (m *IPTablesManager) UnblockIP(ip string) error {
 	return m.saveRulesToPersistentFiles()
 }
 
+// BlockIPRange blocks an IP range using iptables
+func (m *IPTablesManager) BlockIPRange(cidr string, blockType string) error {
+	// Ensure chain exists
+	if err := m.ensureChain(); err != nil {
+		return err
+	}
+
+	// Determine if IPv4 or IPv6
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("invalid CIDR notation: %w", err)
+	}
+
+	var ipt *iptables.IPTables
+	var chain string
+
+	if ipNet.IP.To4() != nil {
+		ipt = m.ipv4
+		chain = ChainNameIPv4
+	} else {
+		ipt = m.ipv6
+		chain = ChainNameIPv6
+	}
+
+	// Apply rules based on block type
+	switch blockType {
+	case "source":
+		if err := ipt.AppendUnique("filter", chain, "-s", cidr, "-j", "DROP"); err != nil {
+			return err
+		}
+	case "destination":
+		if err := ipt.AppendUnique("filter", chain, "-d", cidr, "-j", "DROP"); err != nil {
+			return err
+		}
+	case "both":
+		if err := ipt.AppendUnique("filter", chain, "-s", cidr, "-j", "DROP"); err != nil {
+			return err
+		}
+		if err := ipt.AppendUnique("filter", chain, "-d", cidr, "-j", "DROP"); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("invalid block type: %s", blockType)
+	}
+
+	// Save changes to persistent files
+	return m.saveRulesToPersistentFiles()
+}
+
+// UnblockIPRange removes blocking rules for an IP range
+func (m *IPTablesManager) UnblockIPRange(cidr string) error {
+	// Determine if IPv4 or IPv6
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("invalid CIDR notation: %w", err)
+	}
+
+	var ipt *iptables.IPTables
+	var chain string
+
+	if ipNet.IP.To4() != nil {
+		ipt = m.ipv4
+		chain = ChainNameIPv4
+	} else {
+		ipt = m.ipv6
+		chain = ChainNameIPv6
+	}
+
+	// Remove source and destination rules
+	if err := ipt.Delete("filter", chain, "-s", cidr, "-j", "DROP"); err != nil {
+		// Ignore error if rule doesn't exist
+		if !isRuleNotExistsError(err) {
+			return err
+		}
+	}
+
+	if err := ipt.Delete("filter", chain, "-d", cidr, "-j", "DROP"); err != nil {
+		// Ignore error if rule doesn't exist
+		if !isRuleNotExistsError(err) {
+			return err
+		}
+	}
+
+	// Save changes to persistent files
+	return m.saveRulesToPersistentFiles()
+}
+
 // ClearRules clears all rules in the DNSniper chains
 func (m *IPTablesManager) ClearRules() error {
 	// Clear IPv4 rules
@@ -222,6 +314,7 @@ func (m *IPTablesManager) saveRulesToPersistentFiles() error {
 		return fmt.Errorf("failed to save IPv6 rules: %w", err)
 	}
 
+	log.Info("Saved firewall rules to persistent files")
 	return nil
 }
 

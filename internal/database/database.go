@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MahdiGraph/DNSniper/internal/firewall"
 	"github.com/MahdiGraph/DNSniper/internal/models"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -18,6 +20,7 @@ const (
 )
 
 var db *sql.DB
+var log = logrus.New()
 
 // Initialize creates the database and tables if they don't exist
 func Initialize() (*sql.DB, error) {
@@ -77,6 +80,21 @@ func createTables() error {
             source TEXT DEFAULT 'custom',
             domain_id INTEGER NULL,
             FOREIGN KEY (domain_id) REFERENCES domains(id)
+        )`)
+	if err != nil {
+		return err
+	}
+
+	// Create ip_ranges table for CIDR notation
+	_, err = db.Exec(`
+        CREATE TABLE IF NOT EXISTS ip_ranges (
+            id INTEGER PRIMARY KEY,
+            cidr TEXT NOT NULL UNIQUE,
+            is_whitelisted BOOLEAN NOT NULL DEFAULT 0,
+            is_custom BOOLEAN NOT NULL DEFAULT 0,
+            added_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NULL,
+            source TEXT DEFAULT 'custom'
         )`)
 	if err != nil {
 		return err
@@ -203,10 +221,46 @@ func IsIPWhitelisted(ip string) (bool, error) {
 	var isWhitelisted bool
 	err := db.QueryRow("SELECT is_whitelisted FROM ips WHERE ip_address = ?", ip).Scan(&isWhitelisted)
 	if err == sql.ErrNoRows {
+		// Check if IP is in any whitelisted range
+		if rangeWhitelisted, err := isIPInWhitelistedRange(ip); err == nil && rangeWhitelisted {
+			return true, nil
+		}
 		return false, nil
 	}
 
 	return isWhitelisted, err
+}
+
+// isIPInWhitelistedRange checks if an IP is in any whitelisted CIDR range
+func isIPInWhitelistedRange(ipStr string) (bool, error) {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false, fmt.Errorf("invalid IP address: %s", ipStr)
+	}
+
+	rows, err := db.Query("SELECT cidr FROM ip_ranges WHERE is_whitelisted = 1")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cidr string
+		if err := rows.Scan(&cidr); err != nil {
+			return false, err
+		}
+
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+
+		if ipNet.Contains(ip) {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // SaveDomain saves a domain to the database
@@ -287,7 +341,41 @@ func RemoveDomain(domain string, isWhitelisted bool) error {
 		return err
 	}
 
-	// Delete domain's IPs first (to maintain referential integrity)
+	// Get all IPs associated with this domain for firewall rule removal
+	rows, err := db.Query("SELECT ip_address FROM ips WHERE domain_id = ?", id)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var ips []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return err
+		}
+		ips = append(ips, ip)
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Remove firewall rules for all IPs if domain is in blocklist
+	if !isWhitelisted {
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			log.Warnf("Failed to initialize firewall manager: %v", err)
+		} else {
+			for _, ip := range ips {
+				if err := fwManager.UnblockIP(ip); err != nil {
+					log.Warnf("Failed to remove firewall rule for IP %s: %v", ip, err)
+				}
+			}
+		}
+	}
+
+	// Delete domain's IPs
 	_, err = db.Exec("DELETE FROM ips WHERE domain_id = ?", id)
 	if err != nil {
 		return err
@@ -322,25 +410,51 @@ func AddIPWithRotation(domainID int64, ip string, maxIPsPerDomain int, expiratio
 		return err
 	}
 
-	// Check current IP count for this domain
-	var count int
-	err = db.QueryRow("SELECT COUNT(*) FROM ips WHERE domain_id = ? AND is_custom = 0", domainID).Scan(&count)
+	// Get existing IPs for this domain to check for FIFO rotation
+	var ipIDs []struct {
+		ID        int64
+		IPAddress string
+	}
+
+	rows, err := db.Query("SELECT id, ip_address FROM ips WHERE domain_id = ? AND is_custom = 0 ORDER BY added_at ASC", domainID)
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ipData struct {
+			ID        int64
+			IPAddress string
+		}
+		if err := rows.Scan(&ipData.ID, &ipData.IPAddress); err != nil {
+			return err
+		}
+		ipIDs = append(ipIDs, ipData)
+	}
 
 	// If max IPs reached, remove oldest
-	if count >= maxIPsPerDomain {
-		_, err := db.Exec(`
-            DELETE FROM ips
-            WHERE id = (
-                SELECT id FROM ips
-                WHERE domain_id = ? AND is_custom = 0
-                ORDER BY added_at ASC LIMIT 1
-            )
-        `, domainID)
-		if err != nil {
-			return err
+	if len(ipIDs) >= maxIPsPerDomain {
+		// Get oldest IP(s) to remove
+		ipsToRemove := ipIDs[:len(ipIDs)-(maxIPsPerDomain-1)]
+
+		for _, oldIP := range ipsToRemove {
+			// First remove from firewall if needed
+			fwManager, err := firewall.NewIPTablesManager()
+			if err != nil {
+				return err
+			}
+
+			if err := fwManager.UnblockIP(oldIP.IPAddress); err != nil {
+				// Just log the error, but continue
+				log.Warnf("Failed to remove firewall rule for IP %s: %v", oldIP.IPAddress, err)
+			}
+
+			// Then remove from database
+			_, err = db.Exec("DELETE FROM ips WHERE id = ?", oldIP.ID)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -379,7 +493,37 @@ func SaveCustomIP(ip string, isWhitelisted bool) error {
 	return err
 }
 
-// RemoveIP removes an IP from the database
+// SaveCustomIPRange saves a custom IP range to the database
+func SaveCustomIPRange(cidr string, isWhitelisted bool) error {
+	// Validate CIDR format
+	_, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("invalid CIDR notation: %w", err)
+	}
+
+	// Check if IP range already exists
+	var id int64
+	err = db.QueryRow("SELECT id FROM ip_ranges WHERE cidr = ?", cidr).Scan(&id)
+
+	if err == nil {
+		// IP range exists, update it
+		_, err = db.Exec(
+			"UPDATE ip_ranges SET is_whitelisted = ?, is_custom = 1, source = 'custom', expires_at = NULL WHERE id = ?",
+			isWhitelisted, id)
+		return err
+	} else if err != sql.ErrNoRows {
+		return err
+	}
+
+	// Insert new IP range
+	_, err = db.Exec(
+		"INSERT INTO ip_ranges (cidr, is_whitelisted, is_custom, source) VALUES (?, ?, 1, 'custom')",
+		cidr, isWhitelisted)
+
+	return err
+}
+
+// RemoveIP removes an IP from the database and firewall rules
 func RemoveIP(ip string, isWhitelisted bool) error {
 	result, err := db.Exec(
 		"DELETE FROM ips WHERE ip_address = ? AND is_whitelisted = ?",
@@ -397,10 +541,55 @@ func RemoveIP(ip string, isWhitelisted bool) error {
 		return fmt.Errorf("IP not found: %s", ip)
 	}
 
+	// Remove firewall rule if it was a blocklisted IP
+	if !isWhitelisted {
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			return fmt.Errorf("failed to initialize firewall manager: %w", err)
+		}
+
+		if err := fwManager.UnblockIP(ip); err != nil {
+			return fmt.Errorf("failed to remove firewall rule: %w", err)
+		}
+	}
+
 	return nil
 }
 
-// CheckForCDN checks if a domain might be a CDN
+// RemoveIPRange removes an IP range from the database and firewall
+func RemoveIPRange(cidr string, isWhitelisted bool) error {
+	result, err := db.Exec(
+		"DELETE FROM ip_ranges WHERE cidr = ? AND is_whitelisted = ?",
+		cidr, isWhitelisted)
+	if err != nil {
+		return err
+	}
+
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if affected == 0 {
+		return fmt.Errorf("IP range not found: %s", cidr)
+	}
+
+	// Remove firewall rule if it was a blocklisted range
+	if !isWhitelisted {
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			return fmt.Errorf("failed to initialize firewall manager: %w", err)
+		}
+
+		if err := fwManager.UnblockIPRange(cidr); err != nil {
+			return fmt.Errorf("failed to remove firewall rule: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// CheckForCDN checks if a domain might be a CDN and updates its status
 func CheckForCDN(domainID int64, maxIPsPerDomain int) (bool, error) {
 	// Count unique IPs for domain
 	var count int
@@ -409,19 +598,27 @@ func CheckForCDN(domainID int64, maxIPsPerDomain int) (bool, error) {
 		return false, err
 	}
 
+	var currentlyFlagged bool
+	err = db.QueryRow("SELECT flagged_as_cdn FROM domains WHERE id = ?", domainID).Scan(&currentlyFlagged)
+	if err != nil {
+		return false, err
+	}
+
+	// Check if CDN status should change
 	isCDN := count >= maxIPsPerDomain
-	if isCDN {
-		// Update domain status in database
-		_, err := db.Exec("UPDATE domains SET flagged_as_cdn = 1 WHERE id = ?", domainID)
+
+	if isCDN != currentlyFlagged {
+		// Update domain status if changed
+		_, err := db.Exec("UPDATE domains SET flagged_as_cdn = ? WHERE id = ?", isCDN, domainID)
 		if err != nil {
-			return true, err
+			return isCDN, err
 		}
 	}
 
 	return isCDN, nil
 }
 
-// CleanupExpiredRecords removes expired records
+// CleanupExpiredRecords removes expired records from database and firewall
 func CleanupExpiredRecords() error {
 	// Get IPs to unblock first
 	rows, err := db.Query("SELECT ip_address FROM ips WHERE expires_at < CURRENT_TIMESTAMP AND is_custom = 0")
@@ -443,6 +640,46 @@ func CleanupExpiredRecords() error {
 		return err
 	}
 
+	// Get expired IP ranges
+	rangeRows, err := db.Query("SELECT cidr FROM ip_ranges WHERE expires_at < CURRENT_TIMESTAMP AND is_custom = 0")
+	if err != nil {
+		return err
+	}
+	defer rangeRows.Close()
+
+	var expiredRanges []string
+	for rangeRows.Next() {
+		var cidr string
+		if err := rangeRows.Scan(&cidr); err != nil {
+			return err
+		}
+		expiredRanges = append(expiredRanges, cidr)
+	}
+
+	if err := rangeRows.Err(); err != nil {
+		return err
+	}
+
+	// Remove expired entries from firewall
+	if len(expiredIPs) > 0 || len(expiredRanges) > 0 {
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			return err
+		}
+
+		for _, ip := range expiredIPs {
+			if err := fwManager.UnblockIP(ip); err != nil {
+				log.Warnf("Failed to remove firewall rule for expired IP %s: %v", ip, err)
+			}
+		}
+
+		for _, cidr := range expiredRanges {
+			if err := fwManager.UnblockIPRange(cidr); err != nil {
+				log.Warnf("Failed to remove firewall rule for expired IP range %s: %v", cidr, err)
+			}
+		}
+	}
+
 	// Delete expired domains
 	_, err = db.Exec("DELETE FROM domains WHERE expires_at < CURRENT_TIMESTAMP AND is_custom = 0")
 	if err != nil {
@@ -451,6 +688,12 @@ func CleanupExpiredRecords() error {
 
 	// Delete expired IPs
 	_, err = db.Exec("DELETE FROM ips WHERE expires_at < CURRENT_TIMESTAMP AND is_custom = 0")
+	if err != nil {
+		return err
+	}
+
+	// Delete expired IP ranges
+	_, err = db.Exec("DELETE FROM ip_ranges WHERE expires_at < CURRENT_TIMESTAMP AND is_custom = 0")
 	if err != nil {
 		return err
 	}
@@ -531,7 +774,26 @@ func GetIPsCount() (models.IPStats, error) {
 	}
 
 	err = db.QueryRow("SELECT COUNT(*) FROM ips WHERE is_whitelisted = 1").Scan(&stats.Whitelisted)
-	return stats, err
+	if err != nil {
+		return stats, err
+	}
+
+	// Add IP ranges
+	var blockedRanges, whitelistedRanges int
+	err = db.QueryRow("SELECT COUNT(*) FROM ip_ranges WHERE is_whitelisted = 0").Scan(&blockedRanges)
+	if err != nil {
+		return stats, err
+	}
+
+	err = db.QueryRow("SELECT COUNT(*) FROM ip_ranges WHERE is_whitelisted = 1").Scan(&whitelistedRanges)
+	if err != nil {
+		return stats, err
+	}
+
+	stats.Blocked += blockedRanges
+	stats.Whitelisted += whitelistedRanges
+
+	return stats, nil
 }
 
 // GetLastRunInfo gets information about the last agent run
@@ -597,12 +859,21 @@ func GetIPsList(isWhitelisted bool, page, itemsPerPage int) ([]models.IP, int, e
 	// Calculate offset
 	offset := (page - 1) * itemsPerPage
 
-	// Get total count
-	var totalCount int
-	err := db.QueryRow("SELECT COUNT(*) FROM ips WHERE is_whitelisted = ?", isWhitelisted).Scan(&totalCount)
+	// Get total count of IPs
+	var totalIPCount int
+	err := db.QueryRow("SELECT COUNT(*) FROM ips WHERE is_whitelisted = ?", isWhitelisted).Scan(&totalIPCount)
 	if err != nil {
 		return nil, 0, err
 	}
+
+	// Get total count of IP ranges
+	var totalRangeCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM ip_ranges WHERE is_whitelisted = ?", isWhitelisted).Scan(&totalRangeCount)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	totalCount := totalIPCount + totalRangeCount
 
 	// Get IPs for current page
 	rows, err := db.Query(`
@@ -634,14 +905,61 @@ func GetIPsList(isWhitelisted bool, page, itemsPerPage int) ([]models.IP, int, e
 		return nil, 0, err
 	}
 
+	// If we have fetched all available IPs and there are IP ranges, start fetching them
+	if len(ips) < itemsPerPage && offset < totalIPCount {
+		// Adjust offset for IP ranges
+		rangeOffset := 0
+		if offset > totalIPCount {
+			rangeOffset = offset - totalIPCount
+		} else {
+			rangeOffset = 0
+		}
+
+		// Determine how many more items we need
+		remainingItems := itemsPerPage - len(ips)
+
+		// Get IP ranges
+		rangeRows, err := db.Query(`
+            SELECT id, cidr, is_whitelisted, is_custom, added_at, expires_at, source 
+            FROM ip_ranges 
+            WHERE is_whitelisted = ? 
+            ORDER BY added_at DESC 
+            LIMIT ? OFFSET ?
+        `, isWhitelisted, remainingItems, rangeOffset)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer rangeRows.Close()
+
+		for rangeRows.Next() {
+			var ipRange models.IP
+			var cidr string
+			if err := rangeRows.Scan(
+				&ipRange.ID, &cidr, &ipRange.IsWhitelisted,
+				&ipRange.IsCustom, &ipRange.AddedAt, &ipRange.ExpiresAt,
+				&ipRange.Source); err != nil {
+				return nil, 0, err
+			}
+
+			ipRange.IPAddress = cidr // Store CIDR in IPAddress field
+			ipRange.IsRange = true   // Mark as range
+			ips = append(ips, ipRange)
+		}
+
+		if err := rangeRows.Err(); err != nil {
+			return nil, 0, err
+		}
+	}
+
 	return ips, totalCount, nil
 }
 
-// GetAllBlockedIPs returns all non-whitelisted IPs
-func GetAllBlockedIPs() ([]string, error) {
+// GetAllBlockedIPs returns all non-whitelisted IPs and IP ranges
+func GetAllBlockedIPs() ([]string, []string, error) {
+	// Get individual IPs
 	rows, err := db.Query("SELECT ip_address FROM ips WHERE is_whitelisted = 0")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
@@ -649,21 +967,47 @@ func GetAllBlockedIPs() ([]string, error) {
 	for rows.Next() {
 		var ip string
 		if err := rows.Scan(&ip); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		ips = append(ips, ip)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return ips, nil
+	// Get IP ranges
+	rangeRows, err := db.Query("SELECT cidr FROM ip_ranges WHERE is_whitelisted = 0")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rangeRows.Close()
+
+	var ranges []string
+	for rangeRows.Next() {
+		var cidr string
+		if err := rangeRows.Scan(&cidr); err != nil {
+			return nil, nil, err
+		}
+		ranges = append(ranges, cidr)
+	}
+
+	if err := rangeRows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	return ips, ranges, nil
 }
 
 // IsValidIP checks if the provided string is a valid IP address
 func IsValidIP(ip string) bool {
 	return net.ParseIP(ip) != nil
+}
+
+// IsValidCIDR checks if the provided string is a valid CIDR notation
+func IsValidCIDR(cidr string) bool {
+	_, _, err := net.ParseCIDR(cidr)
+	return err == nil
 }
 
 // GetUpdateURLs returns all update URLs

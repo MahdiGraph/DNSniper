@@ -38,6 +38,7 @@ type IP struct {
 	ExpiresAt     sql.NullTime
 	Source        string
 	DomainID      sql.NullInt64
+	IsRange       bool // Indicates if this is an IP range (CIDR)
 }
 
 // AgentRun represents an agent run entry in the database

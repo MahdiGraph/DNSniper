@@ -201,18 +201,18 @@ func setupSignalHandling(cancel context.CancelFunc) {
 }
 
 func applyExistingRules() error {
-	// Get existing blocked IPs from database
-	blockedIPs, err := database.GetAllBlockedIPs()
+	// Get existing blocked IPs and IP ranges from database
+	ips, ranges, err := database.GetAllBlockedIPs()
 	if err != nil {
 		return fmt.Errorf("failed to get blocked IPs: %w", err)
 	}
 
-	if len(blockedIPs) == 0 {
-		log.Info("No existing IPs to block")
+	if len(ips) == 0 && len(ranges) == 0 {
+		log.Info("No existing rules to apply")
 		return nil
 	}
 
-	log.Infof("Applying rules for %d existing blocked IPs", len(blockedIPs))
+	log.Infof("Applying rules for %d IPs and %d IP ranges", len(ips), len(ranges))
 
 	// Get block rule type from settings
 	settings, err := config.GetSettings()
@@ -226,9 +226,14 @@ func applyExistingRules() error {
 		return fmt.Errorf("failed to initialize firewall manager: %w", err)
 	}
 
-	// Apply rules
+	// First clear all existing rules to prevent duplicates
+	if err := fwManager.ClearRules(); err != nil {
+		return fmt.Errorf("failed to clear existing rules: %w", err)
+	}
+
+	// Apply individual IP rules
 	appliedCount := 0
-	for _, ip := range blockedIPs {
+	for _, ip := range ips {
 		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
 			log.Warnf("Failed to block IP %s: %v", ip, err)
 			continue
@@ -236,7 +241,17 @@ func applyExistingRules() error {
 		appliedCount++
 	}
 
-	log.Infof("Applied firewall rules for %d IPs", appliedCount)
+	// Apply IP range rules
+	rangeCount := 0
+	for _, cidr := range ranges {
+		if err := fwManager.BlockIPRange(cidr, settings.BlockRuleType); err != nil {
+			log.Warnf("Failed to block IP range %s: %v", cidr, err)
+			continue
+		}
+		rangeCount++
+	}
+
+	log.Infof("Applied firewall rules for %d IPs and %d IP ranges", appliedCount, rangeCount)
 	return nil
 }
 
@@ -349,7 +364,7 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		return result, nil
 	}
 
-	// Resolve domain
+	// Resolve domain (includes both IPv4 and IPv6)
 	resolver := dns.NewStandardResolver()
 	ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
 	if err != nil {
@@ -387,7 +402,7 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 			continue
 		}
 
-		// Add IP to database with rotation mechanism
+		// Add IP to database with rotation mechanism (will handle FIFO)
 		if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, settings.RuleExpiration); err != nil {
 			return result, err
 		}
@@ -411,7 +426,7 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		result.IPsBlocked++
 	}
 
-	// Check for CDN
+	// Check for CDN status and update if needed
 	isCDN, err := database.CheckForCDN(domainID, settings.MaxIPsPerDomain)
 	if err != nil {
 		return result, err
