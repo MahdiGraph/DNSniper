@@ -11,8 +11,10 @@ import (
 
 	"github.com/MahdiGraph/DNSniper/internal/config"
 	"github.com/MahdiGraph/DNSniper/internal/database"
+	"github.com/MahdiGraph/DNSniper/internal/dns"
 	"github.com/MahdiGraph/DNSniper/internal/firewall"
 	"github.com/MahdiGraph/DNSniper/internal/service"
+	"github.com/MahdiGraph/DNSniper/internal/utils"
 	"github.com/fatih/color"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -94,10 +96,22 @@ func showMainMenu() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		clearScreen()
-		titleColor.Println("\n===============================")
-		titleColor.Println("      D N S n i p e r")
-		subtitleColor.Println("  Domain Threat Neutralizer")
-		titleColor.Println("===============================")
+
+		// ASCII art banner for DNSniper
+		titleColor.Println(`
+  _____  _   _  _____       _                 
+ |  __ \| \ | |/ ____|     (_)                
+ | |  | |  \| | (___  _ __  _ _ __   ___ _ __ 
+ | |  | | . ' |\___ \| '_ \| | '_ \ / _ \ '__|
+ | |__| | |\  |____) | | | | | |_) |  __/ |   
+ |_____/|_| \_|_____/|_| |_|_| .__/ \___|_|   
+                             | |              
+                             |_|              
+`)
+
+		subtitleColor.Println("   Advanced Security Shield for Your Network")
+		infoColor.Println("                  made by MahdiGraph")
+		titleColor.Println("===============================================")
 
 		menuColor.Println("1. Run agent now")
 		menuColor.Println("2. Show status")
@@ -136,12 +150,26 @@ func showMainMenu() {
 			manageSettings(reader)
 		case "8":
 			clearScreen()
-			clearRules()
-			pressEnterToContinue(reader)
+			// Check if agent is running before clearing rules
+			if isAgentRunning() {
+				errorColor.Println("Cannot clear firewall rules while the agent is running.")
+				errorColor.Println("Please wait for the agent to complete its current run and try again.")
+				pressEnterToContinue(reader)
+			} else {
+				clearRules()
+				pressEnterToContinue(reader)
+			}
 		case "9":
 			clearScreen()
-			rebuildFirewallRules()
-			pressEnterToContinue(reader)
+			// Check if agent is running before rebuilding rules
+			if isAgentRunning() {
+				errorColor.Println("Cannot rebuild firewall rules while the agent is running.")
+				errorColor.Println("Please wait for the agent to complete its current run and try again.")
+				pressEnterToContinue(reader)
+			} else {
+				rebuildFirewallRules()
+				pressEnterToContinue(reader)
+			}
 		case "0":
 			clearScreen()
 			successColor.Println("Exiting DNSniper. Goodbye!")
@@ -155,6 +183,16 @@ func showMainMenu() {
 			time.Sleep(1 * time.Second)
 		}
 	}
+}
+
+// isAgentRunning checks if the agent is currently running
+func isAgentRunning() bool {
+	isRunning, err := service.IsAgentRunning()
+	if err != nil {
+		errorColor.Printf("Failed to check agent status: %v\n", err)
+		return false // Assume not running in case of error
+	}
+	return isRunning
 }
 
 func pressEnterToContinue(reader *bufio.Reader) {
@@ -330,7 +368,7 @@ func showStatus() {
 // manageDomainList handles both blocklist and whitelist domains with pagination
 func manageDomainList(listType string, isWhitelist bool, reader *bufio.Reader) {
 	page := 1
-	itemsPerPage := 10
+	itemsPerPage := 20 // Увеличено с 10 до 20
 
 	for {
 		clearScreen()
@@ -431,7 +469,7 @@ func manageDomainList(listType string, isWhitelist bool, reader *bufio.Reader) {
 // manageIPList handles both blocklist and whitelist IPs with pagination
 func manageIPList(listType string, isWhitelist bool, reader *bufio.Reader) {
 	page := 1
-	itemsPerPage := 10
+	itemsPerPage := 20 // Увеличено с 10 до 20
 
 	for {
 		clearScreen()
@@ -542,6 +580,7 @@ func manageSettings(reader *bufio.Reader) {
 		menuColor.Println("4. Toggle logging")
 		menuColor.Println("5. Set rules expiration time")
 		menuColor.Println("6. Manage update URLs")
+		menuColor.Println("7. Change agent timer interval")
 		menuColor.Println("0. Back to main menu")
 
 		promptColor.Print("\nSelect an option: ")
@@ -559,11 +598,21 @@ func manageSettings(reader *bufio.Reader) {
 			pressEnterToContinue(reader)
 		case "3":
 			clearScreen()
-			changeBlockRuleType(reader)
-			pressEnterToContinue(reader)
+			// Check if agent is running
+			if isAgentRunning() {
+				errorColor.Println("Cannot change block rule type while the agent is running.")
+				errorColor.Println("Please wait for the agent to complete its current run and try again.")
+				pressEnterToContinue(reader)
+			} else {
+				changeBlockRuleType(reader)
+				// Automatically rebuild firewall rules
+				infoColor.Println("\nRebuilding firewall rules with new block rule type...")
+				rebuildFirewallRules()
+				pressEnterToContinue(reader)
+			}
 		case "4":
 			clearScreen()
-			toggleLogging()
+			toggleLogging(reader)
 			pressEnterToContinue(reader)
 		case "5":
 			clearScreen()
@@ -571,6 +620,10 @@ func manageSettings(reader *bufio.Reader) {
 			pressEnterToContinue(reader)
 		case "6":
 			manageUpdateURLs(reader)
+		case "7":
+			clearScreen()
+			changeAgentTimer(reader)
+			pressEnterToContinue(reader)
 		case "0":
 			return
 		default:
@@ -713,6 +766,55 @@ func addDomainToList(isWhitelist bool, reader *bufio.Reader) {
 		return
 	}
 
+	// For blocked domains, immediately apply firewall rules
+	if !isWhitelist {
+		// Resolve the domain to get IPs
+		settings, err := config.GetSettings()
+		if err != nil {
+			errorColor.Printf("Failed to get settings: %v\n", err)
+			time.Sleep(2 * time.Second)
+			return
+		}
+
+		resolver := dns.NewStandardResolver()
+		ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
+		if err != nil {
+			errorColor.Printf("Failed to resolve domain: %v\n", err)
+			// Continue even if resolution fails
+		}
+
+		// Apply firewall rules for resolved IPs
+		if len(ips) > 0 {
+			fwManager, err := firewall.NewIPTablesManager()
+			if err != nil {
+				errorColor.Printf("Failed to initialize firewall: %v\n", err)
+				time.Sleep(2 * time.Second)
+				return
+			}
+
+			for _, ip := range ips {
+				// Check if IP is valid to block
+				valid, err := utils.IsValidIPToBlock(ip)
+				if err != nil || !valid {
+					continue
+				}
+
+				// Check if IP is whitelisted
+				isIPWhitelisted, err := database.IsIPWhitelisted(ip)
+				if err != nil || isIPWhitelisted {
+					continue
+				}
+
+				// Block IP
+				if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+					errorColor.Printf("Failed to block IP %s: %v\n", ip, err)
+				} else {
+					infoColor.Printf("Blocked IP %s for domain %s\n", ip, domain)
+				}
+			}
+		}
+	}
+
 	if isWhitelist {
 		successColor.Printf("Domain %s added to whitelist\n", domain)
 	} else {
@@ -740,7 +842,7 @@ func removeDomainFromList(isWhitelist bool, reader *bufio.Reader) {
 		return
 	}
 
-	// Remove domain from database
+	// Remove domain from database and associated firewall rules
 	err := database.RemoveDomain(domain, isWhitelist)
 	if err != nil {
 		errorColor.Printf("Failed to remove domain: %v\n", err)
@@ -762,6 +864,48 @@ func blockDomain(domain string) {
 	if err != nil {
 		errorColor.Printf("Failed to block domain: %v\n", err)
 		return
+	}
+
+	// Immediately apply firewall rules
+	settings, err := config.GetSettings()
+	if err != nil {
+		errorColor.Printf("Failed to get settings: %v\n", err)
+		return
+	}
+
+	resolver := dns.NewStandardResolver()
+	ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
+	if err != nil {
+		errorColor.Printf("Failed to resolve domain: %v\n", err)
+		// Continue even if resolution fails
+	}
+
+	// Apply firewall rules for resolved IPs
+	if len(ips) > 0 {
+		fwManager, err := firewall.NewIPTablesManager()
+		if err != nil {
+			errorColor.Printf("Failed to initialize firewall: %v\n", err)
+			return
+		}
+
+		for _, ip := range ips {
+			// Check if IP is valid to block
+			valid, err := utils.IsValidIPToBlock(ip)
+			if err != nil || !valid {
+				continue
+			}
+
+			// Check if IP is whitelisted
+			isIPWhitelisted, err := database.IsIPWhitelisted(ip)
+			if err != nil || isIPWhitelisted {
+				continue
+			}
+
+			// Block IP
+			if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+				errorColor.Printf("Failed to block IP %s: %v\n", ip, err)
+			}
+		}
 	}
 
 	successColor.Printf("Domain %s blocked\n", domain)
@@ -813,7 +957,7 @@ func addIPToList(isWhitelist bool, reader *bufio.Reader) {
 			return
 		}
 
-		// If it's a blocklist range, apply firewall rule
+		// If it's a blocklist range, apply firewall rule immediately
 		if !isWhitelist {
 			settings, err := config.GetSettings()
 			if err != nil {
@@ -857,7 +1001,7 @@ func addIPToList(isWhitelist bool, reader *bufio.Reader) {
 			return
 		}
 
-		// If it's a blocklist IP, apply firewall rule
+		// If it's a blocklist IP, apply firewall rule immediately
 		if !isWhitelist {
 			settings, err := config.GetSettings()
 			if err != nil {
@@ -1073,6 +1217,14 @@ func viewSettings() {
 			}
 		}
 	}
+
+	// Display timer interval
+	interval, err := service.GetAgentTimerInterval()
+	if err != nil {
+		errorColor.Printf("Failed to get agent timer interval: %v\n", err)
+	} else {
+		fmt.Printf("Agent Timer Interval: %s\n", interval)
+	}
 }
 
 func changeDNSResolver(reader *bufio.Reader) {
@@ -1107,6 +1259,13 @@ func changeDNSResolver(reader *bufio.Reader) {
 func changeBlockRuleType(reader *bufio.Reader) {
 	subtitleColor.Println("Change Block Rule Type")
 
+	settings, err := config.GetSettings()
+	if err != nil {
+		errorColor.Printf("Failed to get current settings: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Current block rule type: %s\n\n", settings.BlockRuleType)
 	fmt.Println("Select block rule type:")
 	fmt.Println("1. source (block as source only)")
 	fmt.Println("2. destination (block as destination only)")
@@ -1130,7 +1289,7 @@ func changeBlockRuleType(reader *bufio.Reader) {
 	}
 
 	// Save to database
-	err := config.SaveSetting("block_rule_type", ruleType)
+	err = config.SaveSetting("block_rule_type", ruleType)
 	if err != nil {
 		errorColor.Printf("Failed to save block rule type: %v\n", err)
 		return
@@ -1139,13 +1298,30 @@ func changeBlockRuleType(reader *bufio.Reader) {
 	successColor.Printf("Block rule type set to: %s\n", ruleType)
 }
 
-func toggleLogging() {
+func toggleLogging(reader *bufio.Reader) {
 	subtitleColor.Println("Toggle Logging")
 
 	// Get current logging state
 	settings, err := config.GetSettings()
 	if err != nil {
 		errorColor.Printf("Failed to get settings: %v\n", err)
+		return
+	}
+
+	// Show current status and ask for confirmation
+	if settings.LoggingEnabled {
+		fmt.Println("Logging is currently ENABLED")
+		promptColor.Print("Do you want to disable logging? (yes/no): ")
+	} else {
+		fmt.Println("Logging is currently DISABLED")
+		promptColor.Print("Do you want to enable logging? (yes/no): ")
+	}
+
+	confirm, _ := reader.ReadString('\n')
+	confirm = strings.TrimSpace(confirm)
+
+	if strings.ToLower(confirm) != "yes" {
+		infoColor.Println("Logging settings unchanged.")
 		return
 	}
 
@@ -1162,7 +1338,13 @@ func toggleLogging() {
 	// Update service file
 	err = service.UpdateServiceLogging(newState)
 	if err != nil {
-		errorColor.Printf("Failed to update service file: %v\n", err)
+		// Better error handling when updating service file
+		if strings.Contains(err.Error(), "exit status 3") {
+			errorColor.Printf("Failed to update service file: The service might not be fully configured or accessible.\n")
+			errorColor.Println("Try running as root or check if the systemd service file exists.")
+		} else {
+			errorColor.Printf("Failed to update service file: %v\n", err)
+		}
 		return
 	}
 
@@ -1182,30 +1364,123 @@ func setRulesExpiration(reader *bufio.Reader) {
 		return
 	}
 
-	fmt.Printf("Current rule expiration: %s\n", settings.RuleExpiration.String())
-	promptColor.Print("Enter rules expiration time in days (default 30): ")
+	fmt.Printf("Current rule expiration: %s\n\n", settings.RuleExpiration.String())
+	fmt.Println("Select time unit:")
+	fmt.Println("1. Minutes")
+	fmt.Println("2. Hours (default: 24 hours)")
+	fmt.Println("3. Days")
 
+	promptColor.Print("\nEnter choice [1-3]: ")
+	unitChoice, _ := reader.ReadString('\n')
+	unitChoice = strings.TrimSpace(unitChoice)
+
+	var unit string
+	var defaultValue int
+	var unitText string
+
+	switch unitChoice {
+	case "1":
+		unit = "m"
+		defaultValue = 1440 // 24 hours in minutes
+		unitText = "minutes"
+	case "3":
+		unit = "d"
+		defaultValue = 1 // 1 day
+		unitText = "days"
+	default:
+		unit = "h"
+		defaultValue = 24 // 24 hours
+		unitText = "hours"
+	}
+
+	promptColor.Printf("Enter expiration time in %s (default: %d): ", unitText, defaultValue)
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
-	days := 30 // Default
+	value := defaultValue
 	if input != "" {
 		var err error
-		days, err = strconv.Atoi(input)
-		if err != nil || days <= 0 {
-			errorColor.Println("Invalid input. Using default (30 days).")
-			days = 30
+		value, err = strconv.Atoi(input)
+		if err != nil || value <= 0 {
+			errorColor.Printf("Invalid input. Using default (%d %s).\n", defaultValue, unitText)
+			value = defaultValue
 		}
 	}
 
-	// Save to database
-	err = config.SaveSetting("rule_expiration", fmt.Sprintf("%dd", days))
+	// Save to database with appropriate unit
+	expStr := fmt.Sprintf("%d%s", value, unit)
+	err = config.SaveSetting("rule_expiration", expStr)
 	if err != nil {
 		errorColor.Printf("Failed to save rule expiration: %v\n", err)
 		return
 	}
 
-	successColor.Printf("Rules expiration set to: %d days\n", days)
+	// Parse the setting to get the duration for display
+	newSettings, err := config.GetSettings()
+	if err != nil {
+		successColor.Printf("Rules expiration set to: %s\n", expStr)
+	} else {
+		successColor.Printf("Rules expiration set to: %s\n", newSettings.RuleExpiration.String())
+	}
+}
+
+func changeAgentTimer(reader *bufio.Reader) {
+	subtitleColor.Println("Change Agent Timer Interval")
+
+	// Get current interval
+	currentInterval, err := service.GetAgentTimerInterval()
+	if err != nil {
+		errorColor.Printf("Failed to get current timer interval: %v\n", err)
+		currentInterval = "unknown"
+	}
+
+	fmt.Printf("Current timer interval: %s\n\n", currentInterval)
+	fmt.Println("Select predefined interval or enter custom:")
+	fmt.Println("1. Hourly")
+	fmt.Println("2. Every 3 hours")
+	fmt.Println("3. Every 6 hours")
+	fmt.Println("4. Daily")
+	fmt.Println("5. Custom interval")
+
+	promptColor.Print("\nEnter choice [1-5]: ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	var newInterval string
+	var friendlyText string
+
+	switch input {
+	case "1":
+		newInterval = "1h"
+		friendlyText = "1 hour"
+	case "2":
+		newInterval = "3h"
+		friendlyText = "3 hours"
+	case "3":
+		newInterval = "6h"
+		friendlyText = "6 hours"
+	case "4":
+		newInterval = "1d"
+		friendlyText = "1 day"
+	case "5":
+		promptColor.Print("Enter custom interval (format: 30m, 1h, 2h30m, 1d, etc): ")
+		newInterval, _ = reader.ReadString('\n')
+		newInterval = strings.TrimSpace(newInterval)
+		friendlyText = newInterval
+	default:
+		errorColor.Println("Invalid choice. Using default (3h).")
+		newInterval = "3h"
+		friendlyText = "3 hours"
+	}
+
+	// Update timer
+	err = service.UpdateAgentTimerInterval(newInterval)
+	if err != nil {
+		errorColor.Printf("Failed to update agent timer interval: %v\n", err)
+		return
+	}
+
+	successColor.Printf("Agent timer interval set to: %s\n", friendlyText)
 }
 
 func manageUpdateURLs(reader *bufio.Reader) {

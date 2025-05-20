@@ -87,13 +87,13 @@ func SaveSetting(key, value string) error {
 	return err
 }
 
-// parseExpiration parses a string like "30d" to a duration
+// parseExpiration parses a string like "30d", "24h", or "60m" to a duration
 func parseExpiration(expStr string) time.Duration {
 	expStr = strings.TrimSpace(expStr)
 
-	// Default to 30 days if empty
+	// Default to 24 hours if empty
 	if expStr == "" {
-		return 30 * 24 * time.Hour
+		return 24 * time.Hour
 	}
 
 	// Try to parse direct duration first
@@ -102,16 +102,27 @@ func parseExpiration(expStr string) time.Duration {
 		return duration
 	}
 
-	// Parse format like "30d" for 30 days
-	if len(expStr) > 0 && expStr[len(expStr)-1] == 'd' {
-		days, err := strconv.Atoi(expStr[:len(expStr)-1])
-		if err == nil && days > 0 {
-			return time.Duration(days) * 24 * time.Hour
-		}
+	// Parse different formats
+	lastChar := expStr[len(expStr)-1]
+	valueStr := expStr[:len(expStr)-1]
+
+	value, err := strconv.Atoi(valueStr)
+	if err != nil || value <= 0 {
+		// Default to 24 hours if parsing fails
+		return 24 * time.Hour
 	}
 
-	// Default to 30 days if parsing fails
-	return 30 * 24 * time.Hour
+	switch lastChar {
+	case 'd':
+		return time.Duration(value) * 24 * time.Hour
+	case 'h':
+		return time.Duration(value) * time.Hour
+	case 'm':
+		return time.Duration(value) * time.Minute
+	default:
+		// Default to 24 hours if unit is unknown
+		return 24 * time.Hour
+	}
 }
 
 // IsLoggingEnabled checks if logging is enabled

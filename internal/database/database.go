@@ -821,12 +821,12 @@ func GetDomainsList(isWhitelisted bool, page, itemsPerPage int) ([]models.Domain
 		return nil, 0, err
 	}
 
-	// Get domains for current page
+	// Get domains for current page - showing custom domains first, then sorting by added_at
 	rows, err := db.Query(`
         SELECT id, domain, is_whitelisted, is_custom, flagged_as_cdn, added_at, expires_at, source, last_checked 
         FROM domains 
         WHERE is_whitelisted = ? 
-        ORDER BY added_at DESC 
+        ORDER BY is_custom DESC, added_at DESC 
         LIMIT ? OFFSET ?
     `, isWhitelisted, itemsPerPage, offset)
 	if err != nil {
@@ -875,12 +875,12 @@ func GetIPsList(isWhitelisted bool, page, itemsPerPage int) ([]models.IP, int, e
 
 	totalCount := totalIPCount + totalRangeCount
 
-	// Get IPs for current page
+	// Get IPs for current page - showing custom IPs first, then sorting by added_at
 	rows, err := db.Query(`
         SELECT id, ip_address, is_whitelisted, is_custom, added_at, expires_at, source, domain_id 
         FROM ips 
-        WHERE is_whitelisted = ? 
-        ORDER BY added_at DESC 
+        WHERE is_whitelisted = ?
+        ORDER BY is_custom DESC, added_at DESC 
         LIMIT ? OFFSET ?
     `, isWhitelisted, itemsPerPage, offset)
 	if err != nil {
@@ -918,12 +918,12 @@ func GetIPsList(isWhitelisted bool, page, itemsPerPage int) ([]models.IP, int, e
 		// Determine how many more items we need
 		remainingItems := itemsPerPage - len(ips)
 
-		// Get IP ranges
+		// Get IP ranges - showing custom ranges first, then sorting by added_at
 		rangeRows, err := db.Query(`
             SELECT id, cidr, is_whitelisted, is_custom, added_at, expires_at, source 
             FROM ip_ranges 
-            WHERE is_whitelisted = ? 
-            ORDER BY added_at DESC 
+            WHERE is_whitelisted = ?
+            ORDER BY is_custom DESC, added_at DESC 
             LIMIT ? OFFSET ?
         `, isWhitelisted, remainingItems, rangeOffset)
 		if err != nil {

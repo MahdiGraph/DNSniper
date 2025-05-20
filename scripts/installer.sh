@@ -348,7 +348,7 @@ systemctl start dnsniper-agent.timer
 
 # Start the agent service in the background
 print_info "Starting DNSniper agent in background..."
-systemctl start dnsniper-agent.service
+systemctl start dnsniper-agent.service &
 
 # Final message
 print_success "DNSniper installation completed successfully!"
