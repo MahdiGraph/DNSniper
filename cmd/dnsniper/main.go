@@ -726,6 +726,12 @@ func rebuildFirewallRules() {
 		}
 	}
 
+	// Save the changes to persistent files
+	if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+		errorColor.Printf("Error saving firewall rules: %v\n", err)
+		return
+	}
+
 	successColor.Printf("Firewall rules rebuilt successfully.\n")
 	infoColor.Printf("Applied rules: %d, Skipped (whitelisted): %d, Failed rules: %d\n", successCount, skippedCount, failCount)
 }
@@ -778,6 +784,35 @@ func addDomainToList(isWhitelist bool, reader *bufio.Reader) {
 		return
 	}
 
+	// Check if domain exists in the opposite list
+	if isWhitelist {
+		inBlocklist, err := database.IsDomainInBlocklist(domain)
+		if err == nil && inBlocklist {
+			warningColor.Printf("Warning: Domain %s is currently in the blocklist. Adding to whitelist will override the block.\n", domain)
+			promptColor.Print("Continue? (y/n): ")
+			confirm, _ := reader.ReadString('\n')
+			confirm = strings.TrimSpace(confirm)
+			if strings.ToLower(confirm) != "y" {
+				infoColor.Println("Operation cancelled.")
+				time.Sleep(1 * time.Second)
+				return
+			}
+		}
+	} else {
+		isWhitelisted, err := database.IsDomainWhitelisted(domain)
+		if err == nil && isWhitelisted {
+			warningColor.Printf("Warning: Domain %s is currently in the whitelist. Whitelist has priority over blocklist.\n", domain)
+			promptColor.Print("Continue? (y/n): ")
+			confirm, _ := reader.ReadString('\n')
+			confirm = strings.TrimSpace(confirm)
+			if strings.ToLower(confirm) != "y" {
+				infoColor.Println("Operation cancelled.")
+				time.Sleep(1 * time.Second)
+				return
+			}
+		}
+	}
+
 	// Save domain to database
 	_, err := database.SaveCustomDomain(domain, isWhitelist)
 	if err != nil {
@@ -786,61 +821,91 @@ func addDomainToList(isWhitelist bool, reader *bufio.Reader) {
 		return
 	}
 
-	// For blocked domains, immediately apply firewall rules
-	if !isWhitelist {
-		// Resolve the domain to get IPs
-		settings, err := config.GetSettings()
-		if err != nil {
-			errorColor.Printf("Failed to get settings: %v\n", err)
-			time.Sleep(2 * time.Second)
-			return
-		}
-		resolver := dns.NewStandardResolver()
-		ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
-		if err != nil {
-			errorColor.Printf("Failed to resolve domain: %v\n", err)
-			// Continue even if resolution fails
-		}
-
-		// Apply firewall rules for resolved IPs
-		if len(ips) > 0 {
+	// For whitelisted domains, remove any existing blocking rules
+	if isWhitelist {
+		// Check if domain has IPs in the database
+		ips, err := database.GetIPsForDomain(domain)
+		if err == nil && len(ips) > 0 {
 			fwManager, err := firewall.NewIPTablesManager()
 			if err != nil {
 				errorColor.Printf("Failed to initialize firewall: %v\n", err)
+			} else {
+				for _, ip := range ips {
+					if err := fwManager.UnblockIP(ip); err != nil {
+						log.Warnf("Failed to unblock IP %s: %v", ip, err)
+					} else {
+						infoColor.Printf("Unblocked IP %s because domain %s is now whitelisted\n", ip, domain)
+					}
+				}
+				// Save changes to firewall
+				if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+					log.Warnf("Failed to save firewall rules: %v", err)
+				}
+			}
+		}
+	} else {
+		// For blocked domains, immediately apply firewall rules IF not whitelisted
+		isWhitelisted, err := database.IsDomainWhitelisted(domain)
+		if err != nil {
+			log.Warnf("Failed to check if domain %s is whitelisted: %v", domain, err)
+		} else if isWhitelisted {
+			infoColor.Printf("Domain %s is whitelisted, not applying block rules\n", domain)
+		} else {
+			// Domain is not whitelisted, resolve and block IPs
+			settings, err := config.GetSettings()
+			if err != nil {
+				errorColor.Printf("Failed to get settings: %v\n", err)
 				time.Sleep(2 * time.Second)
 				return
 			}
-			for _, ip := range ips {
-				// Check if IP is valid to block
-				valid, err := utils.IsValidIPToBlock(ip)
-				if err != nil || !valid {
-					continue
-				}
-				// Check if IP is whitelisted
-				isIPWhitelisted, err := database.IsIPWhitelisted(ip)
-				if err != nil || isIPWhitelisted {
-					continue
-				}
+			resolver := dns.NewStandardResolver()
+			ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
+			if err != nil {
+				errorColor.Printf("Failed to resolve domain: %v\n", err)
+				// Continue even if resolution fails
+			}
 
-				// Get domain ID again to ensure we have it
-				var domainID int64
-				err = database.GetDomainID(domain, &domainID)
+			// Apply firewall rules for resolved IPs
+			if len(ips) > 0 {
+				fwManager, err := firewall.NewIPTablesManager()
 				if err != nil {
-					errorColor.Printf("Failed to get domain ID: %v\n", err)
-					continue
+					errorColor.Printf("Failed to initialize firewall: %v\n", err)
+					time.Sleep(2 * time.Second)
+					return
 				}
+				for _, ip := range ips {
+					// Check if IP is valid to block
+					valid, err := utils.IsValidIPToBlock(ip)
+					if err != nil || !valid {
+						continue
+					}
+					// Check if IP is whitelisted
+					isIPWhitelisted, err := database.IsIPWhitelisted(ip)
+					if err != nil || isIPWhitelisted {
+						infoColor.Printf("IP %s is whitelisted, skipping\n", ip)
+						continue
+					}
 
-				// Associate the IP with this domain in the database
-				if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, 0); err != nil {
-					errorColor.Printf("Failed to associate IP with domain: %v\n", err)
-					continue
-				}
+					// Get domain ID again to ensure we have it
+					var domainID int64
+					err = database.GetDomainID(domain, &domainID)
+					if err != nil {
+						errorColor.Printf("Failed to get domain ID: %v\n", err)
+						continue
+					}
 
-				// Block IP
-				if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-					errorColor.Printf("Failed to block IP %s: %v\n", ip, err)
-				} else {
-					infoColor.Printf("Blocked IP %s for domain %s\n", ip, domain)
+					// Associate the IP with this domain in the database
+					if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, 0); err != nil {
+						errorColor.Printf("Failed to associate IP with domain: %v\n", err)
+						continue
+					}
+
+					// Block IP
+					if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+						errorColor.Printf("Failed to block IP %s: %v\n", ip, err)
+					} else {
+						infoColor.Printf("Blocked IP %s for domain %s\n", ip, domain)
+					}
 				}
 			}
 		}
@@ -878,6 +943,16 @@ func removeDomainFromList(isWhitelist bool, reader *bufio.Reader) {
 			log.Warnf("Failed to check if domain %s is in blocklist: %v", domain, err)
 		} else if inBlocklist {
 			// Domain is in blocklist, need to reapply block rules
+			warningColor.Printf("Warning: Domain %s is also in the blocklist. Removing it from whitelist will cause it to be blocked.\n", domain)
+			promptColor.Print("Continue? (y/n): ")
+			confirm, _ := reader.ReadString('\n')
+			confirm = strings.TrimSpace(confirm)
+			if strings.ToLower(confirm) != "y" {
+				infoColor.Println("Operation cancelled.")
+				time.Sleep(1 * time.Second)
+				return
+			}
+
 			// Get IPs for this domain
 			ips, err := database.GetIPsForDomain(domain)
 			if err != nil {
@@ -893,6 +968,13 @@ func removeDomainFromList(isWhitelist bool, reader *bufio.Reader) {
 						log.Warnf("Failed to initialize firewall: %v", err)
 					} else {
 						for _, ip := range ips {
+							// Check if IP itself is whitelisted
+							isIPWhitelisted, err := database.IsIPWhitelisted(ip)
+							if err == nil && isIPWhitelisted {
+								infoColor.Printf("IP %s is explicitly whitelisted, skipping\n", ip)
+								continue
+							}
+
 							if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
 								log.Warnf("Failed to reblock IP %s: %v", ip, err)
 							} else {
@@ -927,91 +1009,107 @@ func removeDomainFromList(isWhitelist bool, reader *bufio.Reader) {
 }
 
 func blockDomain(domain string) {
+	// Check if domain is already whitelisted
+	isWhitelisted, err := database.IsDomainWhitelisted(domain)
+	if err == nil && isWhitelisted {
+		warningColor.Printf("Warning: Domain %s is already in the whitelist. Whitelist has priority over blocklist.\n", domain)
+		return
+	}
+
 	domainID, err := database.SaveCustomDomain(domain, false)
 	if err != nil {
 		errorColor.Printf("Failed to block domain: %v\n", err)
 		return
 	}
-	// Immediately apply firewall rules
-	settings, err := config.GetSettings()
-	if err != nil {
-		errorColor.Printf("Failed to get settings: %v\n", err)
-		return
-	}
-	resolver := dns.NewStandardResolver()
-	ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
-	if err != nil {
-		errorColor.Printf("Failed to resolve domain: %v\n", err)
-		// Continue even if resolution fails
-	}
-	// Apply firewall rules for resolved IPs
-	if len(ips) > 0 {
-		fwManager, err := firewall.NewIPTablesManager()
+
+	// Immediately apply firewall rules only if not whitelisted
+	if !isWhitelisted {
+		settings, err := config.GetSettings()
 		if err != nil {
-			errorColor.Printf("Failed to initialize firewall: %v\n", err)
+			errorColor.Printf("Failed to get settings: %v\n", err)
 			return
 		}
-		for _, ip := range ips {
-			// Check if IP is valid to block
-			valid, err := utils.IsValidIPToBlock(ip)
-			if err != nil || !valid {
-				continue
-			}
-			// Check if IP is whitelisted
-			isIPWhitelisted, err := database.IsIPWhitelisted(ip)
-			if err != nil || isIPWhitelisted {
-				infoColor.Printf("IP %s is whitelisted, skipping\n", ip)
-				continue
-			}
+		resolver := dns.NewStandardResolver()
+		ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
+		if err != nil {
+			errorColor.Printf("Failed to resolve domain: %v\n", err)
+			// Continue even if resolution fails
+		}
 
-			// Associate the IP with this domain in the database
-			if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, 0); err != nil {
-				errorColor.Printf("Failed to associate IP with domain: %v\n", err)
-				continue
+		// Apply firewall rules for resolved IPs
+		if len(ips) > 0 {
+			fwManager, err := firewall.NewIPTablesManager()
+			if err != nil {
+				errorColor.Printf("Failed to initialize firewall: %v\n", err)
+				return
 			}
+			for _, ip := range ips {
+				// Check if IP is valid to block
+				valid, err := utils.IsValidIPToBlock(ip)
+				if err != nil || !valid {
+					continue
+				}
+				// Check if IP is whitelisted
+				isIPWhitelisted, err := database.IsIPWhitelisted(ip)
+				if err != nil || isIPWhitelisted {
+					infoColor.Printf("IP %s is whitelisted, skipping\n", ip)
+					continue
+				}
 
-			// Block IP
-			if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-				errorColor.Printf("Failed to block IP %s: %v\n", ip, err)
-			} else {
-				infoColor.Printf("Blocked IP %s for domain %s\n", ip, domain)
+				// Associate the IP with this domain in the database
+				if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, 0); err != nil {
+					errorColor.Printf("Failed to associate IP with domain: %v\n", err)
+					continue
+				}
+
+				// Block IP
+				if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+					errorColor.Printf("Failed to block IP %s: %v\n", ip, err)
+				} else {
+					infoColor.Printf("Blocked IP %s for domain %s\n", ip, domain)
+				}
 			}
 		}
+	} else {
+		infoColor.Printf("Domain %s is whitelisted, not applying block rules\n", domain)
 	}
-	successColor.Printf("Domain %s blocked\n", domain)
+
+	successColor.Printf("Domain %s added to blocklist\n", domain)
 }
 
 func whitelistDomain(domain string) {
-	// Add domain to whitelist
-	_, err := database.SaveCustomDomain(domain, true)
+	// Check if domain is already in blocklist
+	inBlocklist, err := database.IsDomainInBlocklist(domain)
+	if err == nil && inBlocklist {
+		warningColor.Printf("Warning: Domain %s is currently in the blocklist. Adding to whitelist will override the block.\n", domain)
+	}
+
+	_, err = database.SaveCustomDomain(domain, true)
 	if err != nil {
 		errorColor.Printf("Failed to whitelist domain: %v\n", err)
 		return
 	}
 
-	// Check if domain was previously in blocklist and has IPs to unblock
-	ips, err := database.GetIPsForDomain(domain)
-	if err != nil {
-		log.Warnf("Failed to get IPs for domain %s: %v", domain, err)
-	} else if len(ips) > 0 {
-		// This domain has blocked IPs, remove them from firewall
-		fwManager, err := firewall.NewIPTablesManager()
-		if err != nil {
-			errorColor.Printf("Failed to initialize firewall: %v\n", err)
-			return
-		}
-
-		for _, ip := range ips {
-			if err := fwManager.UnblockIP(ip); err != nil {
-				log.Warnf("Failed to unblock IP %s: %v", ip, err)
+	// If domain was already in blocklist, unblock its IPs
+	if inBlocklist {
+		ips, err := database.GetIPsForDomain(domain)
+		if err == nil && len(ips) > 0 {
+			fwManager, err := firewall.NewIPTablesManager()
+			if err != nil {
+				log.Warnf("Failed to initialize firewall: %v", err)
 			} else {
-				infoColor.Printf("Unblocked IP %s because %s is now whitelisted\n", ip, domain)
+				for _, ip := range ips {
+					if err := fwManager.UnblockIP(ip); err != nil {
+						log.Warnf("Failed to unblock IP %s: %v", ip, err)
+					} else {
+						infoColor.Printf("Unblocked IP %s because domain %s is now whitelisted\n", ip, domain)
+					}
+				}
+				// Save changes to firewall
+				if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+					log.Warnf("Failed to save firewall rules: %v", err)
+				}
 			}
-		}
-
-		// Save changes to firewall
-		if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
-			log.Warnf("Failed to save firewall rules: %v", err)
 		}
 	}
 
@@ -1044,6 +1142,36 @@ func addIPToList(isWhitelist bool, reader *bufio.Reader) {
 			time.Sleep(2 * time.Second)
 			return
 		}
+
+		// Check if range exists in the opposite list
+		if isWhitelist {
+			inBlocklist, err := database.IsIPRangeInBlocklist(ipInput)
+			if err == nil && inBlocklist {
+				warningColor.Printf("Warning: IP range %s is currently in the blocklist. Adding to whitelist will override the block.\n", ipInput)
+				promptColor.Print("Continue? (y/n): ")
+				confirm, _ := reader.ReadString('\n')
+				confirm = strings.TrimSpace(confirm)
+				if strings.ToLower(confirm) != "y" {
+					infoColor.Println("Operation cancelled.")
+					time.Sleep(1 * time.Second)
+					return
+				}
+			}
+		} else {
+			isRangeWhitelisted, err := database.IsIPRangeWhitelisted(ipInput)
+			if err == nil && isRangeWhitelisted {
+				warningColor.Printf("Warning: IP range %s is currently in the whitelist. Whitelist has priority over blocklist.\n", ipInput)
+				promptColor.Print("Continue? (y/n): ")
+				confirm, _ := reader.ReadString('\n')
+				confirm = strings.TrimSpace(confirm)
+				if strings.ToLower(confirm) != "y" {
+					infoColor.Println("Operation cancelled.")
+					time.Sleep(1 * time.Second)
+					return
+				}
+			}
+		}
+
 		// Save IP range to database
 		err := database.SaveCustomIPRange(ipInput, isWhitelist)
 		if err != nil {
@@ -1051,26 +1179,54 @@ func addIPToList(isWhitelist bool, reader *bufio.Reader) {
 			time.Sleep(2 * time.Second)
 			return
 		}
-		// If it's a blocklist range, apply firewall rule immediately
-		if !isWhitelist {
-			settings, err := config.GetSettings()
-			if err != nil {
-				errorColor.Printf("Failed to get settings: %v\n", err)
-				time.Sleep(2 * time.Second)
-				return
+
+		// If it's a whitelist range, unblock it if it was previously blocked
+		if isWhitelist {
+			inBlocklist, err := database.IsIPRangeInBlocklist(ipInput)
+			if err == nil && inBlocklist {
+				fwManager, err := firewall.NewIPTablesManager()
+				if err != nil {
+					log.Warnf("Failed to initialize firewall: %v", err)
+				} else {
+					if err := fwManager.UnblockIPRange(ipInput); err != nil {
+						log.Warnf("Failed to unblock IP range %s: %v", ipInput, err)
+					} else {
+						infoColor.Printf("Unblocked IP range %s because it's now whitelisted\n", ipInput)
+					}
+					// Save changes to firewall
+					if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+						log.Warnf("Failed to save firewall rules: %v", err)
+					}
+				}
 			}
-			fwManager, err := firewall.NewIPTablesManager()
+		} else {
+			// If it's a blocklist range, apply firewall rule immediately IF not whitelisted
+			isRangeWhitelisted, err := database.IsIPRangeWhitelisted(ipInput)
 			if err != nil {
-				errorColor.Printf("Failed to initialize firewall: %v\n", err)
-				time.Sleep(2 * time.Second)
-				return
-			}
-			if err := fwManager.BlockIPRange(ipInput, settings.BlockRuleType); err != nil {
-				errorColor.Printf("Failed to apply firewall rule: %v\n", err)
-				time.Sleep(2 * time.Second)
-				return
+				log.Warnf("Failed to check if range %s is whitelisted: %v", ipInput, err)
+			} else if isRangeWhitelisted {
+				infoColor.Printf("IP range %s is whitelisted, not applying block rules\n", ipInput)
+			} else {
+				settings, err := config.GetSettings()
+				if err != nil {
+					errorColor.Printf("Failed to get settings: %v\n", err)
+					time.Sleep(2 * time.Second)
+					return
+				}
+				fwManager, err := firewall.NewIPTablesManager()
+				if err != nil {
+					errorColor.Printf("Failed to initialize firewall: %v\n", err)
+					time.Sleep(2 * time.Second)
+					return
+				}
+				if err := fwManager.BlockIPRange(ipInput, settings.BlockRuleType); err != nil {
+					errorColor.Printf("Failed to apply firewall rule: %v\n", err)
+					time.Sleep(2 * time.Second)
+					return
+				}
 			}
 		}
+
 		if isWhitelist {
 			successColor.Printf("IP range %s added to whitelist\n", ipInput)
 		} else {
@@ -1083,6 +1239,36 @@ func addIPToList(isWhitelist bool, reader *bufio.Reader) {
 			time.Sleep(2 * time.Second)
 			return
 		}
+
+		// Check if IP exists in the opposite list
+		if isWhitelist {
+			inBlocklist, err := database.IsIPInBlocklist(ipInput)
+			if err == nil && inBlocklist {
+				warningColor.Printf("Warning: IP %s is currently in the blocklist. Adding to whitelist will override the block.\n", ipInput)
+				promptColor.Print("Continue? (y/n): ")
+				confirm, _ := reader.ReadString('\n')
+				confirm = strings.TrimSpace(confirm)
+				if strings.ToLower(confirm) != "y" {
+					infoColor.Println("Operation cancelled.")
+					time.Sleep(1 * time.Second)
+					return
+				}
+			}
+		} else {
+			isIPWhitelisted, err := database.IsIPWhitelisted(ipInput)
+			if err == nil && isIPWhitelisted {
+				warningColor.Printf("Warning: IP %s is currently in the whitelist. Whitelist has priority over blocklist.\n", ipInput)
+				promptColor.Print("Continue? (y/n): ")
+				confirm, _ := reader.ReadString('\n')
+				confirm = strings.TrimSpace(confirm)
+				if strings.ToLower(confirm) != "y" {
+					infoColor.Println("Operation cancelled.")
+					time.Sleep(1 * time.Second)
+					return
+				}
+			}
+		}
+
 		// Save IP to database
 		err := database.SaveCustomIP(ipInput, isWhitelist)
 		if err != nil {
@@ -1090,26 +1276,54 @@ func addIPToList(isWhitelist bool, reader *bufio.Reader) {
 			time.Sleep(2 * time.Second)
 			return
 		}
-		// If it's a blocklist IP, apply firewall rule immediately
-		if !isWhitelist {
-			settings, err := config.GetSettings()
-			if err != nil {
-				errorColor.Printf("Failed to get settings: %v\n", err)
-				time.Sleep(2 * time.Second)
-				return
+
+		// If it's a whitelist IP, unblock it if it was previously blocked
+		if isWhitelist {
+			inBlocklist, err := database.IsIPInBlocklist(ipInput)
+			if err == nil && inBlocklist {
+				fwManager, err := firewall.NewIPTablesManager()
+				if err != nil {
+					log.Warnf("Failed to initialize firewall: %v", err)
+				} else {
+					if err := fwManager.UnblockIP(ipInput); err != nil {
+						log.Warnf("Failed to unblock IP %s: %v", ipInput, err)
+					} else {
+						infoColor.Printf("Unblocked IP %s because it's now whitelisted\n", ipInput)
+					}
+					// Save changes to firewall
+					if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+						log.Warnf("Failed to save firewall rules: %v", err)
+					}
+				}
 			}
-			fwManager, err := firewall.NewIPTablesManager()
+		} else {
+			// If it's a blocklist IP, apply firewall rule immediately IF not whitelisted
+			isIPWhitelisted, err := database.IsIPWhitelisted(ipInput)
 			if err != nil {
-				errorColor.Printf("Failed to initialize firewall: %v\n", err)
-				time.Sleep(2 * time.Second)
-				return
-			}
-			if err := fwManager.BlockIP(ipInput, settings.BlockRuleType); err != nil {
-				errorColor.Printf("Failed to apply firewall rule: %v\n", err)
-				time.Sleep(2 * time.Second)
-				return
+				log.Warnf("Failed to check if IP %s is whitelisted: %v", ipInput, err)
+			} else if isIPWhitelisted {
+				infoColor.Printf("IP %s is whitelisted, not applying block rules\n", ipInput)
+			} else {
+				settings, err := config.GetSettings()
+				if err != nil {
+					errorColor.Printf("Failed to get settings: %v\n", err)
+					time.Sleep(2 * time.Second)
+					return
+				}
+				fwManager, err := firewall.NewIPTablesManager()
+				if err != nil {
+					errorColor.Printf("Failed to initialize firewall: %v\n", err)
+					time.Sleep(2 * time.Second)
+					return
+				}
+				if err := fwManager.BlockIP(ipInput, settings.BlockRuleType); err != nil {
+					errorColor.Printf("Failed to apply firewall rule: %v\n", err)
+					time.Sleep(2 * time.Second)
+					return
+				}
 			}
 		}
+
 		if isWhitelist {
 			successColor.Printf("IP %s added to whitelist\n", ipInput)
 		} else {
@@ -1152,6 +1366,16 @@ func removeIPFromList(isWhitelist bool, reader *bufio.Reader) {
 				log.Warnf("Failed to check if range %s is in blocklist: %v", ipInput, err)
 			} else if inBlocklist {
 				// This range is in blocklist, we'll need to reapply block rules
+				warningColor.Printf("Warning: IP range %s is also in the blocklist. Removing it from whitelist will cause it to be blocked.\n", ipInput)
+				promptColor.Print("Continue? (y/n): ")
+				confirm, _ := reader.ReadString('\n')
+				confirm = strings.TrimSpace(confirm)
+				if strings.ToLower(confirm) != "y" {
+					infoColor.Println("Operation cancelled.")
+					time.Sleep(1 * time.Second)
+					return
+				}
+
 				settings, err := config.GetSettings()
 				if err != nil {
 					log.Warnf("Failed to get settings: %v", err)
@@ -1189,6 +1413,13 @@ func removeIPFromList(isWhitelist bool, reader *bufio.Reader) {
 			successColor.Printf("IP range %s removed from blocklist\n", ipInput)
 		}
 	} else {
+		// Regular IP address
+		if !database.IsValidIP(ipInput) {
+			errorColor.Printf("Invalid IP address format: %s\n", ipInput)
+			time.Sleep(2 * time.Second)
+			return
+		}
+
 		// If removing from whitelist, check if it's in blocklist first
 		if isWhitelist {
 			inBlocklist, err := database.IsIPInBlocklist(ipInput)
@@ -1196,6 +1427,16 @@ func removeIPFromList(isWhitelist bool, reader *bufio.Reader) {
 				log.Warnf("Failed to check if IP %s is in blocklist: %v", ipInput, err)
 			} else if inBlocklist {
 				// This IP is in blocklist, we'll need to reapply block rules
+				warningColor.Printf("Warning: IP %s is also in the blocklist. Removing it from whitelist will cause it to be blocked.\n", ipInput)
+				promptColor.Print("Continue? (y/n): ")
+				confirm, _ := reader.ReadString('\n')
+				confirm = strings.TrimSpace(confirm)
+				if strings.ToLower(confirm) != "y" {
+					infoColor.Println("Operation cancelled.")
+					time.Sleep(1 * time.Second)
+					return
+				}
+
 				settings, err := config.GetSettings()
 				if err != nil {
 					log.Warnf("Failed to get settings: %v", err)
@@ -1243,50 +1484,80 @@ func blockIP(ip string) {
 			errorColor.Printf("Invalid CIDR notation: %s\n", ip)
 			return
 		}
-		err := database.SaveCustomIPRange(ip, false)
+
+		// Check if range is already whitelisted
+		isWhitelisted, err := database.IsIPRangeWhitelisted(ip)
+		if err == nil && isWhitelisted {
+			warningColor.Printf("Warning: IP range %s is already in the whitelist. Whitelist has priority over blocklist.\n", ip)
+			return
+		}
+
+		err = database.SaveCustomIPRange(ip, false)
 		if err != nil {
 			errorColor.Printf("Failed to add IP range to database: %v\n", err)
 			return
 		}
-		settings, err := config.GetSettings()
-		if err != nil {
-			errorColor.Printf("Failed to get settings: %v\n", err)
-			return
+
+		// Only apply the rule if not whitelisted
+		if !isWhitelisted {
+			settings, err := config.GetSettings()
+			if err != nil {
+				errorColor.Printf("Failed to get settings: %v\n", err)
+				return
+			}
+			fwManager, err := firewall.NewIPTablesManager()
+			if err != nil {
+				errorColor.Printf("Failed to initialize firewall: %v\n", err)
+				return
+			}
+			if err := fwManager.BlockIPRange(ip, settings.BlockRuleType); err != nil {
+				errorColor.Printf("Failed to block IP range: %v\n", err)
+				return
+			}
+			successColor.Printf("IP range %s blocked\n", ip)
+		} else {
+			infoColor.Printf("IP range %s is whitelisted, not applying block rules\n", ip)
+			successColor.Printf("IP range %s added to blocklist\n", ip)
 		}
-		fwManager, err := firewall.NewIPTablesManager()
-		if err != nil {
-			errorColor.Printf("Failed to initialize firewall: %v\n", err)
-			return
-		}
-		if err := fwManager.BlockIPRange(ip, settings.BlockRuleType); err != nil {
-			errorColor.Printf("Failed to block IP range: %v\n", err)
-			return
-		}
-		successColor.Printf("IP range %s blocked\n", ip)
 	} else {
 		if !database.IsValidIP(ip) {
 			errorColor.Printf("Invalid IP address: %s\n", ip)
 			return
 		}
+
+		// Check if IP is already whitelisted
+		isWhitelisted, err := database.IsIPWhitelisted(ip)
+		if err == nil && isWhitelisted {
+			warningColor.Printf("Warning: IP %s is already in the whitelist. Whitelist has priority over blocklist.\n", ip)
+			return
+		}
+
 		if err := database.SaveCustomIP(ip, false); err != nil {
 			errorColor.Printf("Failed to add IP to database: %v\n", err)
 			return
 		}
-		settings, err := config.GetSettings()
-		if err != nil {
-			errorColor.Printf("Failed to get settings: %v\n", err)
-			return
+
+		// Only apply the rule if not whitelisted
+		if !isWhitelisted {
+			settings, err := config.GetSettings()
+			if err != nil {
+				errorColor.Printf("Failed to get settings: %v\n", err)
+				return
+			}
+			fwManager, err := firewall.NewIPTablesManager()
+			if err != nil {
+				errorColor.Printf("Failed to initialize firewall: %v\n", err)
+				return
+			}
+			if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+				errorColor.Printf("Failed to block IP: %v\n", err)
+				return
+			}
+			successColor.Printf("IP %s blocked\n", ip)
+		} else {
+			infoColor.Printf("IP %s is whitelisted, not applying block rules\n", ip)
+			successColor.Printf("IP %s added to blocklist\n", ip)
 		}
-		fwManager, err := firewall.NewIPTablesManager()
-		if err != nil {
-			errorColor.Printf("Failed to initialize firewall: %v\n", err)
-			return
-		}
-		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-			errorColor.Printf("Failed to block IP: %v\n", err)
-			return
-		}
-		successColor.Printf("IP %s blocked\n", ip)
 	}
 }
 
@@ -1297,17 +1568,21 @@ func whitelistIP(ip string) {
 			errorColor.Printf("Invalid CIDR notation: %s\n", ip)
 			return
 		}
-		err := database.SaveCustomIPRange(ip, true)
+
+		// Check if range is already in blocklist
+		inBlocklist, err := database.IsIPRangeInBlocklist(ip)
+		if err == nil && inBlocklist {
+			warningColor.Printf("Warning: IP range %s is currently in the blocklist. Adding to whitelist will override the block.\n", ip)
+		}
+
+		err = database.SaveCustomIPRange(ip, true)
 		if err != nil {
 			errorColor.Printf("Failed to whitelist IP range: %v\n", err)
 			return
 		}
 
-		// Check if this range was previously blocked and unblock it
-		inBlocklist, err := database.IsIPRangeInBlocklist(ip)
-		if err != nil {
-			log.Warnf("Failed to check if range %s is in blocklist: %v", ip, err)
-		} else if inBlocklist {
+		// If range was previously blocked, unblock it
+		if inBlocklist {
 			fwManager, err := firewall.NewIPTablesManager()
 			if err != nil {
 				log.Warnf("Failed to initialize firewall: %v", err)
@@ -1317,7 +1592,6 @@ func whitelistIP(ip string) {
 				} else {
 					infoColor.Printf("Unblocked IP range %s because it's now whitelisted\n", ip)
 				}
-
 				// Save changes to firewall
 				if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
 					log.Warnf("Failed to save firewall rules: %v", err)
@@ -1331,16 +1605,20 @@ func whitelistIP(ip string) {
 			errorColor.Printf("Invalid IP address: %s\n", ip)
 			return
 		}
+
+		// Check if IP is already in blocklist
+		inBlocklist, err := database.IsIPInBlocklist(ip)
+		if err == nil && inBlocklist {
+			warningColor.Printf("Warning: IP %s is currently in the blocklist. Adding to whitelist will override the block.\n", ip)
+		}
+
 		if err := database.SaveCustomIP(ip, true); err != nil {
 			errorColor.Printf("Failed to whitelist IP: %v\n", err)
 			return
 		}
 
-		// Check if this IP was previously blocked and unblock it
-		inBlocklist, err := database.IsIPInBlocklist(ip)
-		if err != nil {
-			log.Warnf("Failed to check if IP %s is in blocklist: %v", ip, err)
-		} else if inBlocklist {
+		// If IP was previously blocked, unblock it
+		if inBlocklist {
 			fwManager, err := firewall.NewIPTablesManager()
 			if err != nil {
 				log.Warnf("Failed to initialize firewall: %v", err)
@@ -1350,7 +1628,6 @@ func whitelistIP(ip string) {
 				} else {
 					infoColor.Printf("Unblocked IP %s because it's now whitelisted\n", ip)
 				}
-
 				// Save changes to firewall
 				if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
 					log.Warnf("Failed to save firewall rules: %v", err)

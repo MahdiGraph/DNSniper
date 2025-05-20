@@ -376,15 +376,6 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		return result, nil
 	}
 
-	// Check if any of the resolved IPs are already whitelisted
-	whitelistedIPs := make(map[string]bool)
-	for _, ip := range ips {
-		isIPWhitelisted, err := database.IsIPWhitelisted(ip)
-		if err == nil && isIPWhitelisted {
-			whitelistedIPs[ip] = true
-		}
-	}
-
 	// Save domain in database (with source URL for auto-downloaded domains)
 	domainID, err := database.SaveDomain(domain, settings.RuleExpiration, sourceURL)
 	if err != nil {
@@ -400,12 +391,6 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 
 	// Process IPs
 	for _, ip := range ips {
-		// Skip if the IP is whitelisted
-		if whitelistedIPs[ip] {
-			log.Infof("IP %s is whitelisted, skipping", ip)
-			continue
-		}
-
 		// Validate IP
 		valid, err := utils.IsValidIPToBlock(ip)
 		if err != nil || !valid {
@@ -413,7 +398,7 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 			continue
 		}
 
-		// Check IP whitelist
+		// Check IP whitelist - skip if whitelisted
 		isIPWhitelisted, err := database.IsIPWhitelisted(ip)
 		if err != nil {
 			return result, err
