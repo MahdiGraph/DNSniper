@@ -288,17 +288,25 @@ fi
 # 8. Download and verify checksum if available
 if command_exists sha256sum; then
     print_info "Downloading checksum file..."
-    if curl -L --fail -s "${CHECKSUM_URL}" -o "${TEMP_DIR}/dnsniper.zip.sha256"; then
+    if curl -L --fail -s "${CHECKSUM_URL}" -o "${TEMP_DIR}/checksum.sha256"; then
         print_info "Verifying package integrity..."
-        # Create a checksum of our downloaded file
-        (cd "${TEMP_DIR}" && sha256sum -c dnsniper.zip.sha256)
-        if [ $? -ne 0 ]; then
+        # Extract just the hash from the checksum file
+        EXPECTED_HASH=$(cut -d ' ' -f 1 "${TEMP_DIR}/checksum.sha256")
+        
+        # Calculate hash of the downloaded file
+        ACTUAL_HASH=$(sha256sum "${TEMP_DIR}/dnsniper.zip" | cut -d ' ' -f 1)
+        
+        # Compare hashes
+        if [ "$EXPECTED_HASH" = "$ACTUAL_HASH" ]; then
+            print_success "Checksum verification passed!"
+        else
             print_error "Checksum verification failed! The downloaded package may be corrupted."
+            print_error "Expected: $EXPECTED_HASH"
+            print_error "Actual:   $ACTUAL_HASH"
             print_error "Please try again or download manually from https://github.com/${GITHUB_REPO}/releases"
             rm -rf "${TEMP_DIR}"
             exit 1
         fi
-        print_success "Checksum verification passed!"
     else
         print_warning "Could not download checksum file. Skipping integrity check."
     fi
