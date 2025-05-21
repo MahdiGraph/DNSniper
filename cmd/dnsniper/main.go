@@ -98,7 +98,7 @@ func showMainMenu() {
 		clearScreen()
 		// ASCII art banner for DNSniper
 		titleColor.Println(`
-_____  _   _  _____       _                 
+ _____  _   _  _____       _                 
 |   **\| \ | |/** __|     (_)                
 | |  | |  \| | (___  _ __  _ _ __   ___ _ __
 | |  | | . ' |\___ \| '_ \| | '_ \ / _\ '__|
