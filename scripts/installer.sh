@@ -8,19 +8,20 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# GitHub repository information
+GITHUB_REPO="MahdiGraph/DNSniper"
+GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
+
 # Function to print colored messages
 print_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
-
 print_success() {
     echo -e "${GREEN}[SUCCESS]${NC} $1"
 }
-
 print_warning() {
     echo -e "${YELLOW}[WARNING]${NC} $1"
 }
-
 print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
@@ -48,11 +49,35 @@ else
     exit 1
 fi
 
+# Detect architecture
+ARCH=$(uname -m)
+case $ARCH in
+    x86_64)
+        ARCH="amd64"
+        ;;
+    aarch64)
+        ARCH="arm64"
+        ;;
+    armv7*)
+        ARCH="arm"
+        ;;
+    i386|i686)
+        ARCH="386"
+        ;;
+    *)
+        print_error "Unsupported architecture: $ARCH"
+        exit 1
+        ;;
+esac
+
+print_info "Detected architecture: $ARCH"
+
 # Define paths
 INSTALL_DIR="/etc/dnsniper"
 LOG_DIR="/var/log/dnsniper"
 SERVICE_FILE="/etc/systemd/system/dnsniper-agent.service"
 TIMER_FILE="/etc/systemd/system/dnsniper-agent.timer"
+TEMP_DIR=$(mktemp -d)
 
 # Determine correct bin directory for symlinks based on OS
 if [ "$OS" = "debian" ]; then
@@ -71,7 +96,6 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
     echo "3) Uninstall DNSniper"
     echo "4) Cancel"
     read -p "Enter choice [1-4]: " choice
-    
     case $choice in
         1)
             print_info "Reinstalling with existing settings..."
@@ -98,7 +122,6 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
             rm -f "$SERVICE_FILE" "$TIMER_FILE"
             rm -f "$BIN_DIR/dnsniper" "$BIN_DIR/dnsniper-agent"
             rm -rf "$INSTALL_DIR"
-            
             # Optionally, ask if logs should be kept
             read -p "Would you like to keep log files? (y/n): " keep_logs
             if [[ "$keep_logs" =~ ^[Nn]$ ]]; then
@@ -107,7 +130,6 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
             else
                 print_info "Log files kept at $LOG_DIR"
             fi
-            
             # Clean up iptables rules
             print_info "Cleaning up iptables rules..."
             if iptables -L DNSniper >/dev/null 2>&1; then
@@ -116,14 +138,12 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
                 iptables -F DNSniper 2>/dev/null
                 iptables -X DNSniper 2>/dev/null
             fi
-            
             if ip6tables -L DNSniper6 >/dev/null 2>&1; then
                 ip6tables -D INPUT -j DNSniper6 2>/dev/null
                 ip6tables -D OUTPUT -j DNSniper6 2>/dev/null
                 ip6tables -F DNSniper6 2>/dev/null
                 ip6tables -X DNSniper6 2>/dev/null
             fi
-            
             # Save iptables rules
             if [ "$OS" = "debian" ]; then
                 mkdir -p /etc/iptables
@@ -135,7 +155,6 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
                 service iptables save 2>/dev/null
                 service ip6tables save 2>/dev/null
             fi
-            
             print_success "DNSniper has been uninstalled."
             exit 0
             ;;
@@ -161,50 +180,137 @@ fi
 # 5. Check for required dependencies
 print_info "Checking required dependencies..."
 
-# Install required packages based on OS
+# Function to install package(s)
+install_package() {
+    local pkg_list="$1"
+    if [ "$OS" = "debian" ]; then
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y $pkg_list
+    elif [ "$OS" = "redhat" ]; then
+        if command_exists dnf; then
+            dnf install -y $pkg_list
+        else
+            yum install -y $pkg_list
+        fi
+    fi
+}
+
+# Check for curl
+if ! command_exists curl; then
+    print_info "Installing curl..."
+    install_package "curl"
+fi
+
+# Check for jq (needed for parsing JSON)
+if ! command_exists jq; then
+    print_info "Installing jq..."
+    install_package "jq"
+fi
+
+# Check for unzip
+if ! command_exists unzip; then
+    print_info "Installing unzip..."
+    install_package "unzip"
+fi
+
+# Check for iptables
+if ! command_exists iptables; then
+    print_info "Installing iptables..."
+    install_package "iptables"
+fi
+
+# Install iptables persistence
 if [ "$OS" = "debian" ]; then
-    print_info "Updating package lists..."
-    apt-get update -qq
-    
-    # Check for required tools
-    PACKAGES_TO_INSTALL=""
-    if ! command_exists iptables; then
-        PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL iptables"
-    fi
-    
     if ! dpkg -l | grep -q iptables-persistent; then
-        PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL iptables-persistent"
-    fi
-    
-    if [ -n "$PACKAGES_TO_INSTALL" ]; then
-        print_info "Installing required packages: $PACKAGES_TO_INSTALL"
+        print_info "Installing iptables-persistent..."
         # Pre-configure iptables-persistent to not ask questions
         echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
         echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
-        apt-get install -y $PACKAGES_TO_INSTALL
+        install_package "iptables-persistent"
     fi
 elif [ "$OS" = "redhat" ]; then
-    # Check for package manager
-    if command_exists dnf; then
-        PKG_MANAGER="dnf"
-    else
-        PKG_MANAGER="yum"
-    fi
-    
-    PACKAGES_TO_INSTALL=""
-    if ! command_exists iptables; then
-        PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL iptables"
-    fi
-    
     if ! systemctl list-unit-files | grep -q iptables.service; then
-        PACKAGES_TO_INSTALL="$PACKAGES_TO_INSTALL iptables-services"
-    fi
-    
-    if [ -n "$PACKAGES_TO_INSTALL" ]; then
-        print_info "Installing required packages: $PACKAGES_TO_INSTALL"
-        $PKG_MANAGER install -y $PACKAGES_TO_INSTALL
+        print_info "Installing iptables-services..."
+        install_package "iptables-services"
     fi
 fi
+
+# 6. Get the latest release version
+print_info "Fetching latest release information..."
+
+# First attempt with GitHub API
+LATEST_VERSION=""
+if command_exists curl && command_exists jq; then
+    # Try with GitHub API first
+    API_RESPONSE=$(curl -s "${GITHUB_API}/releases/latest")
+    if [ $? -eq 0 ] && [ -n "$API_RESPONSE" ]; then
+        LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r .tag_name 2>/dev/null)
+    fi
+fi
+
+# Fallback if API call failed or jq is not available
+if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
+    print_warning "Could not determine latest version from GitHub API. Using fallback method."
+    
+    # Parse HTML page as a fallback (less reliable)
+    RELEASES_PAGE=$(curl -s "https://github.com/${GITHUB_REPO}/releases")
+    if [ $? -eq 0 ] && [ -n "$RELEASES_PAGE" ]; then
+        # Extract the first release tag with grep and sed
+        LATEST_VERSION=$(echo "$RELEASES_PAGE" | grep -o "/${GITHUB_REPO}/releases/tag/[^ \"]*" | head -1 | sed "s/.*\/tag\///")
+    fi
+    
+    # If still no version found, use a hardcoded fallback
+    if [ -z "$LATEST_VERSION" ]; then
+        LATEST_VERSION="v1.0.0"  # Fallback version
+        print_warning "Could not determine latest version. Using fallback version ${LATEST_VERSION}."
+    else
+        print_info "Found latest version: ${LATEST_VERSION}"
+    fi
+else
+    print_info "Found latest version: ${LATEST_VERSION}"
+fi
+
+# Construct download URL
+DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/dnsniper-linux-${ARCH}.zip"
+
+# 7. Download and extract DNSniper
+print_info "Downloading DNSniper binary package for ${ARCH}..."
+print_info "Download URL: ${DOWNLOAD_URL}"
+
+curl -L --fail "${DOWNLOAD_URL}" -o "${TEMP_DIR}/dnsniper.zip"
+if [ $? -ne 0 ]; then
+    print_error "Failed to download DNSniper. Please check your internet connection and try again."
+    print_error "If the problem persists, visit https://github.com/${GITHUB_REPO}/releases for manual download."
+    rm -rf "${TEMP_DIR}"
+    exit 1
+fi
+
+# 8. Extract and install executables
+print_info "Installing DNSniper executables..."
+
+print_info "Extracting DNSniper binaries..."
+unzip -q "${TEMP_DIR}/dnsniper.zip" -d "${TEMP_DIR}"
+if [ $? -ne 0 ]; then
+    print_error "Failed to extract DNSniper binaries."
+    rm -rf "${TEMP_DIR}"
+    exit 1
+fi
+
+# Look for architecture-specific binary names
+MAIN_BINARY=$(find "${TEMP_DIR}" -name "dnsniper-linux-${ARCH}" | head -1)
+AGENT_BINARY=$(find "${TEMP_DIR}" -name "dnsniper-agent-linux-${ARCH}" | head -1)
+
+# Check if binaries were found
+if [ -z "$MAIN_BINARY" ] || [ -z "$AGENT_BINARY" ]; then
+    print_error "Could not find DNSniper executables for ${ARCH} architecture in the downloaded package."
+    print_error "Files in package:"
+    ls -la "${TEMP_DIR}"
+    print_error "Installation failed."
+    rm -rf "${TEMP_DIR}"
+    exit 1
+fi
+
+print_info "Found executables for ${ARCH} architecture"
 
 # Create required directories
 print_info "Creating required directories..."
@@ -212,32 +318,21 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$LOG_DIR"
 mkdir -p "$INSTALL_DIR/scripts"
 
-# Copy this script to scripts directory
-cp "$0" "$INSTALL_DIR/scripts/installer.sh"
-chmod +x "$INSTALL_DIR/scripts/installer.sh"
+# Copy binaries to installation directory
+cp "$MAIN_BINARY" "$INSTALL_DIR/dnsniper"
+cp "$AGENT_BINARY" "$INSTALL_DIR/dnsniper-agent"
 
-# 6. Copy executables to install directory and create symlinks
-print_info "Installing DNSniper executables..."
-if [ -f "../dnsniper" ] && [ -f "../dnsniper-agent" ]; then
-    # Copy executables to install directory
-    cp ../dnsniper "$INSTALL_DIR/dnsniper"
-    cp ../dnsniper-agent "$INSTALL_DIR/dnsniper-agent"
-    
-    # Set executable permissions
-    chmod +x "$INSTALL_DIR/dnsniper"
-    chmod +x "$INSTALL_DIR/dnsniper-agent"
-    
-    # Create symlinks in bin directory
-    ln -sf "$INSTALL_DIR/dnsniper" "$BIN_DIR/dnsniper"
-    ln -sf "$INSTALL_DIR/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
-    
-    print_success "Executable files installed and symlinks created"
-else
-    print_error "Could not find DNSniper executable files (../dnsniper and ../dnsniper-agent)"
-    exit 1
-fi
+# Set executable permissions
+chmod +x "$INSTALL_DIR/dnsniper"
+chmod +x "$INSTALL_DIR/dnsniper-agent"
 
-# 7. Ask for agent execution interval
+# Create symlinks in bin directory
+ln -sf "$INSTALL_DIR/dnsniper" "$BIN_DIR/dnsniper"
+ln -sf "$INSTALL_DIR/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
+
+print_success "Executable files installed and symlinks created"
+
+# 9. Ask for agent execution interval
 print_info "Setting up agent execution interval..."
 echo "How often would you like the DNSniper agent to run?"
 echo "1) Every 3 hours (default)"
@@ -245,7 +340,6 @@ echo "2) Hourly"
 echo "3) Every 6 hours"
 echo "4) Daily"
 echo "5) Custom interval"
-
 read -p "Select an option [1-5]: " interval_choice
 case $interval_choice in
     1)
@@ -275,11 +369,10 @@ case $interval_choice in
         ;;
 esac
 
-# 8. Create systemd service and timer
+# 10. Create systemd service and timer
 print_info "Creating systemd service for DNSniper agent..."
-
 # Create systemd service
-cat > "$SERVICE_FILE" << EOF
+cat > "$SERVICE_FILE" << EOSERVICE
 [Unit]
 Description=DNSniper Agent Service
 After=network.target
@@ -291,10 +384,10 @@ LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOSERVICE
 
 # Create systemd timer
-cat > "$TIMER_FILE" << EOF
+cat > "$TIMER_FILE" << EOTIMER
 [Unit]
 Description=Run DNSniper Agent regularly
 Requires=dnsniper-agent.service
@@ -306,13 +399,12 @@ OnUnitActiveSec=$INTERVAL
 
 [Install]
 WantedBy=timers.target
-EOF
+EOTIMER
 
 print_success "Systemd service and timer created"
 
-# Setup iptables
+# 11. Setup iptables
 print_info "Setting up iptables rules..."
-
 # Ensure DNSniper chains exist
 iptables -N DNSniper 2>/dev/null || iptables -F DNSniper
 iptables -I INPUT -j DNSniper
@@ -329,7 +421,6 @@ if [ "$OS" = "debian" ]; then
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
     ip6tables-save > /etc/iptables/rules.v6
-    
     # Enable and start netfilter-persistent
     print_info "Enabling netfilter-persistent service..."
     systemctl enable netfilter-persistent
@@ -340,7 +431,7 @@ else
     service ip6tables save
 fi
 
-# Start and enable systemd services
+# 12. Start and enable systemd services
 print_info "Starting and enabling DNSniper agent service..."
 systemctl daemon-reload
 systemctl enable dnsniper-agent.timer
@@ -350,8 +441,12 @@ systemctl start dnsniper-agent.timer
 print_info "Starting DNSniper agent in background..."
 systemctl start dnsniper-agent.service &
 
+# 13. Clean up temporary files
+rm -rf "${TEMP_DIR}"
+
 # Final message
 print_success "DNSniper installation completed successfully!"
+print_success "Version ${LATEST_VERSION} has been installed"
 print_success "The agent will run every $FRIENDLY_INTERVAL"
 print_info "Run 'dnsniper' to start the interactive menu"
 print_info "You can check service status with 'systemctl status dnsniper-agent.service'"
