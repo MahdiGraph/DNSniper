@@ -11,6 +11,7 @@ NC='\033[0m' # No Color
 # GitHub repository information
 GITHUB_REPO="MahdiGraph/DNSniper"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
+GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_REPO}"
 
 # Function to print colored messages
 print_info() {
@@ -80,9 +81,7 @@ TIMER_FILE="/etc/systemd/system/dnsniper-agent.timer"
 TEMP_DIR=$(mktemp -d)
 
 # Determine correct bin directory for symlinks based on OS
-if [ "$OS" = "debian" ]; then
-    BIN_DIR="/usr/bin"
-elif [ "$OS" = "redhat" ]; then
+if [ "$OS" = "debian" ] || [ "$OS" = "redhat" ]; then
     BIN_DIR="/usr/bin"
 else
     BIN_DIR="/usr/local/bin"  # Fallback
@@ -270,10 +269,11 @@ else
     print_info "Found latest version: ${LATEST_VERSION}"
 fi
 
-# Construct download URL
+# Construct download URLs
 DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/dnsniper-linux-${ARCH}.zip"
+CHECKSUM_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/dnsniper-linux-${ARCH}.zip.sha256"
 
-# 7. Download and extract DNSniper
+# 7. Download DNSniper package
 print_info "Downloading DNSniper binary package for ${ARCH}..."
 print_info "Download URL: ${DOWNLOAD_URL}"
 
@@ -285,7 +285,28 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# 8. Extract and install executables
+# 8. Download and verify checksum if available
+if command_exists sha256sum; then
+    print_info "Downloading checksum file..."
+    if curl -L --fail -s "${CHECKSUM_URL}" -o "${TEMP_DIR}/dnsniper.zip.sha256"; then
+        print_info "Verifying package integrity..."
+        # Create a checksum of our downloaded file
+        (cd "${TEMP_DIR}" && sha256sum -c dnsniper.zip.sha256)
+        if [ $? -ne 0 ]; then
+            print_error "Checksum verification failed! The downloaded package may be corrupted."
+            print_error "Please try again or download manually from https://github.com/${GITHUB_REPO}/releases"
+            rm -rf "${TEMP_DIR}"
+            exit 1
+        fi
+        print_success "Checksum verification passed!"
+    else
+        print_warning "Could not download checksum file. Skipping integrity check."
+    fi
+else
+    print_warning "sha256sum not found. Skipping integrity check."
+fi
+
+# 9. Extract and install executables
 print_info "Installing DNSniper executables..."
 
 print_info "Extracting DNSniper binaries..."
@@ -297,12 +318,12 @@ if [ $? -ne 0 ]; then
 fi
 
 # Look for architecture-specific binary names
-MAIN_BINARY=$(find "${TEMP_DIR}" -name "dnsniper-linux-${ARCH}" | head -1)
-AGENT_BINARY=$(find "${TEMP_DIR}" -name "dnsniper-agent-linux-${ARCH}" | head -1)
+MAIN_BINARY="${TEMP_DIR}/dnsniper-linux-${ARCH}"
+AGENT_BINARY="${TEMP_DIR}/dnsniper-agent-linux-${ARCH}"
 
 # Check if binaries were found
-if [ -z "$MAIN_BINARY" ] || [ -z "$AGENT_BINARY" ]; then
-    print_error "Could not find DNSniper executables for ${ARCH} architecture in the downloaded package."
+if [ ! -f "$MAIN_BINARY" ] || [ ! -f "$AGENT_BINARY" ]; then
+    print_error "Could not find expected DNSniper executables in the downloaded package."
     print_error "Files in package:"
     ls -la "${TEMP_DIR}"
     print_error "Installation failed."
@@ -332,7 +353,7 @@ ln -sf "$INSTALL_DIR/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
 
 print_success "Executable files installed and symlinks created"
 
-# 9. Ask for agent execution interval
+# 10. Ask for agent execution interval
 print_info "Setting up agent execution interval..."
 echo "How often would you like the DNSniper agent to run?"
 echo "1) Every 3 hours (default)"
@@ -369,7 +390,7 @@ case $interval_choice in
         ;;
 esac
 
-# 10. Create systemd service and timer
+# 11. Create systemd service and timer
 print_info "Creating systemd service for DNSniper agent..."
 # Create systemd service
 cat > "$SERVICE_FILE" << EOSERVICE
@@ -403,7 +424,7 @@ EOTIMER
 
 print_success "Systemd service and timer created"
 
-# 11. Setup iptables
+# 12. Setup iptables
 print_info "Setting up iptables rules..."
 # Ensure DNSniper chains exist
 iptables -N DNSniper 2>/dev/null || iptables -F DNSniper
@@ -431,7 +452,7 @@ else
     service ip6tables save
 fi
 
-# 12. Start and enable systemd services
+# 13. Start and enable systemd services
 print_info "Starting and enabling DNSniper agent service..."
 systemctl daemon-reload
 systemctl enable dnsniper-agent.timer
@@ -441,11 +462,13 @@ systemctl start dnsniper-agent.timer
 print_info "Starting DNSniper agent in background..."
 systemctl start dnsniper-agent.service &
 
-# 13. Clean up temporary files
+# 14. Clean up temporary files
 rm -rf "${TEMP_DIR}"
 
 # Final message
-print_success "DNSniper installation completed successfully!"
+print_success "╔════════════════════════════════════════╗"
+print_success "║     DNSniper Installation Complete     ║"
+print_success "╚════════════════════════════════════════╝"
 print_success "Version ${LATEST_VERSION} has been installed"
 print_success "The agent will run every $FRIENDLY_INTERVAL"
 print_info "Run 'dnsniper' to start the interactive menu"
