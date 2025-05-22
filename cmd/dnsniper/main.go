@@ -107,7 +107,7 @@ func showMainMenu() {
                              | |              
                              |_|              
 `)
-		titleColor.Println("version v1.3.6-beta.1")
+		titleColor.Println("version v1.3.6-beta.2")
 		subtitleColor.Println("Lock onto threats, restore your peace of mind!")
 		titleColor.Println("===============================================")
 		menuColor.Println("1. Run agent now")
