@@ -110,8 +110,8 @@ func (m *IPTablesManager) ensureChain() error {
 		}
 	}
 
-	// Check for and handle duplicate jump rules in INPUT and OUTPUT chains for IPv4
-	for _, chain := range []string{"INPUT", "OUTPUT"} {
+	// Check for and handle duplicate jump rules in INPUT, OUTPUT, and FORWARD chains for IPv4
+	for _, chain := range []string{"INPUT", "OUTPUT", "FORWARD"} {
 		// Get all rules in the chain
 		rules, err := m.ipv4.List("filter", chain)
 		if err != nil {
@@ -130,7 +130,6 @@ func (m *IPTablesManager) ensureChain() error {
 		if jumpRuleCount > 1 {
 			log.Infof("Found %d duplicate jump rules to %s in %s chain. Fixing...",
 				jumpRuleCount, ChainNameIPv4, chain)
-
 			// Remove all jump rules to this target
 			for i := 0; i < jumpRuleCount; i++ {
 				if err := m.ipv4.Delete("filter", chain, "-j", ChainNameIPv4); err != nil {
@@ -140,7 +139,6 @@ func (m *IPTablesManager) ensureChain() error {
 					return fmt.Errorf("failed to delete duplicate rule: %w", err)
 				}
 			}
-
 			// Add one jump rule back
 			if err := m.ipv4.Insert("filter", chain, 1, "-j", ChainNameIPv4); err != nil {
 				return fmt.Errorf("failed to re-add jump rule: %w", err)
@@ -165,8 +163,8 @@ func (m *IPTablesManager) ensureChain() error {
 		}
 	}
 
-	// Check for and handle duplicate jump rules in INPUT and OUTPUT chains for IPv6
-	for _, chain := range []string{"INPUT", "OUTPUT"} {
+	// Check for and handle duplicate jump rules in INPUT, OUTPUT and FORWARD chains for IPv6
+	for _, chain := range []string{"INPUT", "OUTPUT", "FORWARD"} {
 		// Get all rules in the chain
 		rules, err := m.ipv6.List("filter", chain)
 		if err != nil {
@@ -185,7 +183,6 @@ func (m *IPTablesManager) ensureChain() error {
 		if jumpRuleCount > 1 {
 			log.Infof("Found %d duplicate jump rules to %s in %s chain. Fixing...",
 				jumpRuleCount, ChainNameIPv6, chain)
-
 			// Remove all jump rules to this target
 			for i := 0; i < jumpRuleCount; i++ {
 				if err := m.ipv6.Delete("filter", chain, "-j", ChainNameIPv6); err != nil {
@@ -195,7 +192,6 @@ func (m *IPTablesManager) ensureChain() error {
 					return fmt.Errorf("failed to delete duplicate rule: %w", err)
 				}
 			}
-
 			// Add one jump rule back
 			if err := m.ipv6.Insert("filter", chain, 1, "-j", ChainNameIPv6); err != nil {
 				return fmt.Errorf("failed to re-add jump rule: %w", err)

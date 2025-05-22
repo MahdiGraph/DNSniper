@@ -438,11 +438,13 @@ print_info "Setting up iptables rules..."
 iptables -N DNSniper 2>/dev/null || iptables -F DNSniper
 iptables -I INPUT -j DNSniper
 iptables -I OUTPUT -j DNSniper
+iptables -I FORWARD -j DNSniper
 
 # Do the same for IPv6
 ip6tables -N DNSniper6 2>/dev/null || ip6tables -F DNSniper6
 ip6tables -I INPUT -j DNSniper6
 ip6tables -I OUTPUT -j DNSniper6
+ip6tables -I FORWARD -j DNSniper6
 
 # Save iptables rules
 if [ "$OS" = "debian" ]; then
