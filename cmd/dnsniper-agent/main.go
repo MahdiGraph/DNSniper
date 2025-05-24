@@ -25,6 +25,7 @@ import (
 
 var log = logrus.New()
 var enableLogging bool
+var runIDHook *RunIDLogHook
 
 func init() {
 	// Parse command line flags
@@ -72,8 +73,9 @@ func setupLogger(enabled bool) {
 	multiWriter := io.MultiWriter(logFile, os.Stderr)
 	log.SetOutput(multiWriter)
 
-	// Add hook to log to a separate file for each run ID
-	log.AddHook(&RunIDLogHook{basePath: "/var/log/dnsniper"})
+	// Create and add the run ID log hook
+	runIDHook = &RunIDLogHook{basePath: "/var/log/dnsniper"}
+	log.AddHook(runIDHook)
 
 	log.Info("Logging setup complete")
 }
@@ -208,11 +210,8 @@ func main() {
 	}
 
 	// Set the run ID for per-run logging if hook exists
-	for _, hook := range log.Hooks {
-		if runIDHook, ok := hook.(*RunIDLogHook); ok {
-			runIDHook.SetRunID(runID)
-			break
-		}
+	if runIDHook != nil {
+		runIDHook.SetRunID(runID)
 	}
 
 	fmt.Println("DNSniper agent started")
@@ -277,6 +276,7 @@ func acquireLock() error {
 				// Try to lock again
 				return lock.TryLock()
 			}
+
 			return lockfile.ErrBusy
 		}
 		return err
@@ -363,6 +363,7 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 	if err != nil {
 		return fmt.Errorf("failed to get update URLs: %w", err)
 	}
+
 	if len(urls) == 0 {
 		log.Warn("No update URLs configured. Adding default URL.")
 		if err := database.AddUpdateURL("https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"); err != nil {
@@ -450,18 +451,15 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 				if seenDomains[domain] {
 					continue
 				}
-
 				seenDomains[domain] = true
 
 				// Send domain for processing
 				select {
 				case domainChan <- domain:
 					domainsSent++
-
 					// Process results after each batch
 					if domainsSent%batchSize == 0 {
 						processResults(resultChan, errorChan, &totalProcessed, &totalBlocked, totalDomains)
-
 						// Small delay between batches to avoid overwhelming system
 						time.Sleep(100 * time.Millisecond)
 					}
@@ -493,6 +491,7 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 
 	fmt.Printf("Completed: %d domains processed, %d IPs blocked\n", totalProcessed, totalBlocked)
 	log.Infof("Completed: %d domains processed, %d IPs blocked", totalProcessed, totalBlocked)
+
 	return nil
 }
 
@@ -530,6 +529,7 @@ func processDomain(ctx context.Context, domain string, settings models.Settings,
 	if err != nil {
 		return result, err
 	}
+
 	if isWhitelisted {
 		log.Infof("Domain %s is whitelisted, skipping", domain)
 		return result, nil
@@ -551,7 +551,6 @@ func processDomain(ctx context.Context, domain string, settings models.Settings,
 
 		// Resolve the domain - NOTE: Adjusted to work with the standard DNS resolver
 		ips, err = resolver.ResolveDomain(domain, settings.DNSResolver)
-
 		if err == nil {
 			break
 		}
@@ -645,6 +644,7 @@ func processDomain(ctx context.Context, domain string, settings models.Settings,
 	if err != nil {
 		log.Warnf("Failed to check CDN status for domain %s: %v", domain, err)
 	}
+
 	if isCDN {
 		log.Infof("Domain %s flagged as potential CDN (has %d+ IPs)", domain, settings.MaxIPsPerDomain)
 	}
