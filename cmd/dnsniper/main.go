@@ -2942,8 +2942,7 @@ func changeBlockRuleType(reader *bufio.Reader) {
 
 	// Show current configuration
 	fmt.Printf("\nCurrent configuration:\n")
-	fmt.Printf("  Chains: %s\n", settings.BlockChains)
-	fmt.Printf("  Direction: %s\n\n", settings.BlockDirection)
+	fmt.Printf("  Chains: %s\n\n", settings.BlockChains)
 
 	// Select chains
 	fmt.Println("Select chains to apply blocking rules:")
@@ -2957,6 +2956,7 @@ func changeBlockRuleType(reader *bufio.Reader) {
 	fmt.Println("8. Custom selection")
 
 	promptColor.Print("\nEnter choice [1-8]: ")
+
 	chainChoice, _ := reader.ReadString('\n')
 	chainChoice = strings.TrimSpace(chainChoice)
 
@@ -2996,35 +2996,11 @@ func changeBlockRuleType(reader *bufio.Reader) {
 		selectedChains = "ALL"
 	}
 
-	fmt.Printf("\nSelected chains: %s\n\n", selectedChains)
-
-	// Select direction
-	fmt.Println("Select blocking direction:")
-	fmt.Println("1. Block as both source and destination [Default]")
-	fmt.Println("2. Block as source only")
-	fmt.Println("3. Block as destination only")
-
-	promptColor.Print("\nEnter choice [1-3]: ")
-	dirChoice, _ := reader.ReadString('\n')
-	dirChoice = strings.TrimSpace(dirChoice)
-
-	var direction string
-	switch dirChoice {
-	case "2":
-		direction = "source"
-	case "3":
-		direction = "destination"
-	default:
-		direction = "both"
-	}
-
-	// Show summary
 	fmt.Printf("\nNew configuration:\n")
 	fmt.Printf("  Chains: %s\n", selectedChains)
-	fmt.Printf("  Direction: %s\n", direction)
 
 	// If configuration hasn't changed, no need to update
-	if selectedChains == settings.BlockChains && direction == settings.BlockDirection {
+	if selectedChains == settings.BlockChains {
 		infoColor.Println("\nConfiguration unchanged.")
 		return
 	}
@@ -3044,15 +3020,8 @@ func changeBlockRuleType(reader *bufio.Reader) {
 		return
 	}
 
-	err = config.SaveSetting("block_direction", direction)
-	if err != nil {
-		errorColor.Printf("Failed to save block direction: %v\n", err)
-		return
-	}
-
 	// Apply the changes immediately
 	infoColor.Println("\nApplying changes to firewall rules...")
-
 	fwManager, err := firewall.NewIPTablesManager()
 	if err != nil {
 		errorColor.Printf("Failed to initialize firewall manager: %v\n", err)
@@ -3069,7 +3038,7 @@ func changeBlockRuleType(reader *bufio.Reader) {
 	}
 
 	successColor.Println("\nBlock rule configuration updated successfully!")
-	successColor.Printf("Chains: %s, Direction: %s\n", selectedChains, direction)
+	successColor.Printf("Chains: %s\n", selectedChains)
 }
 
 // verifyRuleType checks if the applied rules match the expected block rule type

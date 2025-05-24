@@ -145,7 +145,7 @@ func parseChainsFromString(chainsStr string) []string {
 	return chains
 }
 
-// Updated ensureIPSetRules method with proper priority handling
+// Updated ensureIPSetRules method
 func (m *IPTablesManager) ensureIPSetRules() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -155,17 +155,15 @@ func (m *IPTablesManager) ensureIPSetRules() error {
 	if err != nil {
 		log.Warnf("Failed to get settings, using defaults: %v", err)
 		settings.BlockChains = "ALL"
-		settings.BlockDirection = "both"
 	}
 
 	// Parse chains to apply rules to
 	chains := parseChainsFromString(settings.BlockChains)
 
-	log.Infof("Setting up ipset rules for chains: %v with direction: %s", chains, settings.BlockDirection)
+	log.Infof("Setting up ipset rules for chains: %v", chains)
 
 	// Remove all existing ipset rules first
 	allChains := []string{"INPUT", "OUTPUT", "FORWARD"}
-
 	for _, ipt := range []*iptables.IPTables{m.ipv4, m.ipv6} {
 		for _, chain := range allChains {
 			rules, err := ipt.List("filter", chain)
@@ -189,75 +187,61 @@ func (m *IPTablesManager) ensureIPSetRules() error {
 
 	priority := 1
 	for _, chain := range chains {
-		// First add individual IP whitelist rules (highest priority)
-		if chain == "INPUT" || chain == "FORWARD" {
+		// First add whitelist rules based on chain type
+		if chain == "INPUT" {
 			m.ipv4.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "src", "-j", "ACCEPT")
 			m.ipv6.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "src", "-j", "ACCEPT")
 			priority++
-		}
-		if chain == "OUTPUT" || chain == "FORWARD" {
-			m.ipv4.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "dst", "-j", "ACCEPT")
-			m.ipv6.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "dst", "-j", "ACCEPT")
-			priority++
-		}
-
-		// Then add whitelist range rules
-		if chain == "INPUT" || chain == "FORWARD" {
 			m.ipv4.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-range-whitelist", "src", "-j", "ACCEPT")
 			m.ipv6.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-range-whitelist", "src", "-j", "ACCEPT")
 			priority++
-		}
-		if chain == "OUTPUT" || chain == "FORWARD" {
+		} else if chain == "OUTPUT" {
+			m.ipv4.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "dst", "-j", "ACCEPT")
+			m.ipv6.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "dst", "-j", "ACCEPT")
+			priority++
 			m.ipv4.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-range-whitelist", "dst", "-j", "ACCEPT")
 			m.ipv6.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-range-whitelist", "dst", "-j", "ACCEPT")
 			priority++
-		}
-
-		// Reset priority for next chain
-		if chain != chains[len(chains)-1] {
-			priority = 1
+		} else if chain == "FORWARD" {
+			// For FORWARD, check both src and dst for whitelist
+			m.ipv4.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "src", "-j", "ACCEPT")
+			m.ipv6.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "src", "-j", "ACCEPT")
+			priority++
+			m.ipv4.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "dst", "-j", "ACCEPT")
+			m.ipv6.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-whitelist", "dst", "-j", "ACCEPT")
+			priority++
+			m.ipv4.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-range-whitelist", "src", "-j", "ACCEPT")
+			m.ipv6.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-range-whitelist", "src", "-j", "ACCEPT")
+			priority++
+			m.ipv4.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-range-whitelist", "dst", "-j", "ACCEPT")
+			m.ipv6.Insert("filter", chain, priority, "-m", "set", "--match-set", "dnsniper-range-whitelist", "dst", "-j", "ACCEPT")
+			priority++
 		}
 	}
 
 	// Now add blocklist rules (lower priority than whitelist)
 	blockPriority := 10 // Start with a higher number to ensure it's after whitelist
 	for _, chain := range chains {
-		switch settings.BlockDirection {
-		case "source":
-			if chain == "INPUT" || chain == "FORWARD" {
-				m.ipv4.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
-				m.ipv4.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
-			}
-		case "destination":
-			if chain == "OUTPUT" || chain == "FORWARD" {
-				m.ipv4.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
-				m.ipv4.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
-			}
-		default: // "both"
-			if chain == "INPUT" {
-				m.ipv4.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
-				m.ipv4.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
-			} else if chain == "OUTPUT" {
-				m.ipv4.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
-				m.ipv4.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
-			} else { // FORWARD
-				m.ipv4.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
-				m.ipv4.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
-				m.ipv4.Insert("filter", chain, blockPriority+2, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
-				m.ipv4.Insert("filter", chain, blockPriority+3, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority+2, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
-				m.ipv6.Insert("filter", chain, blockPriority+3, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
-			}
+		if chain == "INPUT" {
+			m.ipv4.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
+			m.ipv4.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
+			m.ipv6.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
+			m.ipv6.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
+		} else if chain == "OUTPUT" {
+			m.ipv4.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
+			m.ipv4.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
+			m.ipv6.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
+			m.ipv6.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
+		} else if chain == "FORWARD" {
+			// For FORWARD, add rules for both directions
+			m.ipv4.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
+			m.ipv4.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
+			m.ipv4.Insert("filter", chain, blockPriority+2, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
+			m.ipv4.Insert("filter", chain, blockPriority+3, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
+			m.ipv6.Insert("filter", chain, blockPriority, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
+			m.ipv6.Insert("filter", chain, blockPriority+1, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
+			m.ipv6.Insert("filter", chain, blockPriority+2, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
+			m.ipv6.Insert("filter", chain, blockPriority+3, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
 		}
 	}
 
