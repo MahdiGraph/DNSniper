@@ -271,18 +271,22 @@ func initializeDefaultSettings() error {
 		description string
 	}{
 		"dns_resolver":       {"8.8.8.8", "DNS resolver to use for domain resolution"},
-		"block_rule_type":    {"both", "Type of blocking rule (source, destination, both)"},
+		"block_rule_type":    {"both", "DEPRECATED: Type of blocking rule (use block_chains and block_direction instead)"},
+		"block_chains":       {"ALL", "Chains to apply blocking rules (INPUT,OUTPUT,FORWARD or ALL)"},
+		"block_direction":    {"both", "Direction of blocking (source, destination, both)"},
 		"logging_enabled":    {"false", "Whether to enable logging"},
 		"rule_expiration":    {"30d", "Expiration time for rules (e.g., 30d for 30 days)"},
 		"max_ips_per_domain": {"5", "Maximum number of IPs to track per domain"},
 	}
 
+	// First, insert all default settings if they don't exist
 	for key, setting := range defaultSettings {
 		var count int
 		err := db.QueryRow("SELECT COUNT(*) FROM settings WHERE key = ?", key).Scan(&count)
 		if err != nil {
 			return err
 		}
+
 		if count == 0 {
 			_, err = db.Exec("INSERT INTO settings (key, value, description) VALUES (?, ?, ?)",
 				key, setting.value, setting.description)
@@ -292,18 +296,129 @@ func initializeDefaultSettings() error {
 		}
 	}
 
+	// Handle migration from old block_rule_type to new system
+	// Check if we need to migrate
+	var needsMigration bool
+	var oldBlockRuleType string
+
+	// Check if block_rule_type exists and has a value
+	err := db.QueryRow("SELECT value FROM settings WHERE key = 'block_rule_type'").Scan(&oldBlockRuleType)
+	if err == nil && oldBlockRuleType != "" {
+		// Check if new settings already have been customized
+		var blockChains, blockDirection string
+		var chainsCustomized, directionCustomized bool
+
+		err = db.QueryRow("SELECT value FROM settings WHERE key = 'block_chains'").Scan(&blockChains)
+		chainsCustomized = (err == nil && blockChains != "ALL")
+
+		err = db.QueryRow("SELECT value FROM settings WHERE key = 'block_direction'").Scan(&blockDirection)
+		directionCustomized = (err == nil && blockDirection != "both")
+
+		// Only migrate if new settings haven't been customized
+		needsMigration = !chainsCustomized && !directionCustomized
+	}
+
+	if needsMigration {
+		// Perform migration based on old block_rule_type
+		var newChains, newDirection string
+
+		switch oldBlockRuleType {
+		case "source":
+			// Source blocking typically applies to INPUT and FORWARD
+			newChains = "INPUT,FORWARD"
+			newDirection = "source"
+		case "destination":
+			// Destination blocking typically applies to OUTPUT and FORWARD
+			newChains = "OUTPUT,FORWARD"
+			newDirection = "destination"
+		case "both":
+			// Both means all chains and both directions
+			newChains = "ALL"
+			newDirection = "both"
+		default:
+			// Default to all chains, both directions
+			newChains = "ALL"
+			newDirection = "both"
+		}
+
+		// Update the new settings
+		_, err = db.Exec("UPDATE settings SET value = ? WHERE key = 'block_chains'", newChains)
+		if err != nil {
+			return fmt.Errorf("failed to migrate block_chains: %w", err)
+		}
+
+		_, err = db.Exec("UPDATE settings SET value = ? WHERE key = 'block_direction'", newDirection)
+		if err != nil {
+			return fmt.Errorf("failed to migrate block_direction: %w", err)
+		}
+
+		log.Infof("Migrated block_rule_type '%s' to block_chains '%s' and block_direction '%s'",
+			oldBlockRuleType, newChains, newDirection)
+	}
+
 	// Add default update URL if none exists
-	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM update_urls").Scan(&count)
+	var urlCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM update_urls").Scan(&urlCount)
 	if err != nil {
 		return err
 	}
-	if count == 0 {
+
+	if urlCount == 0 {
 		_, err = db.Exec("INSERT INTO update_urls (url) VALUES (?)",
 			"https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt")
 		if err != nil {
 			return err
 		}
+	}
+
+	// Create index on frequently queried columns if not exists
+	// This improves performance for large datasets
+	indexQueries := []string{
+		"CREATE INDEX IF NOT EXISTS idx_domains_whitelisted ON domains(is_whitelisted)",
+		"CREATE INDEX IF NOT EXISTS idx_domains_custom ON domains(is_custom)",
+		"CREATE INDEX IF NOT EXISTS idx_domains_expires ON domains(expires_at)",
+		"CREATE INDEX IF NOT EXISTS idx_ips_whitelisted ON ips(is_whitelisted)",
+		"CREATE INDEX IF NOT EXISTS idx_ips_custom ON ips(is_custom)",
+		"CREATE INDEX IF NOT EXISTS idx_ips_domain ON ips(domain_id)",
+		"CREATE INDEX IF NOT EXISTS idx_ips_expires ON ips(expires_at)",
+		"CREATE INDEX IF NOT EXISTS idx_ip_ranges_whitelisted ON ip_ranges(is_whitelisted)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_logs_run ON agent_logs(run_id)",
+		"CREATE INDEX IF NOT EXISTS idx_agent_logs_timestamp ON agent_logs(timestamp)",
+	}
+
+	for _, query := range indexQueries {
+		if _, err := db.Exec(query); err != nil {
+			// Log but don't fail - indexes are for performance optimization
+			log.Warnf("Failed to create index: %v", err)
+		}
+	}
+
+	// Clean up any orphaned IPs (IPs without valid domain references)
+	// This can happen if database operations were interrupted
+	_, err = db.Exec(`
+        DELETE FROM ips 
+        WHERE domain_id IS NOT NULL 
+        AND domain_id NOT IN (SELECT id FROM domains)
+    `)
+	if err != nil {
+		log.Warnf("Failed to clean up orphaned IPs: %v", err)
+	}
+
+	// Set up automatic cleanup trigger for expired records (if SQLite version supports it)
+	// This is optional and won't fail initialization if not supported
+	triggerQuery := `
+        CREATE TRIGGER IF NOT EXISTS cleanup_expired_domains
+        AFTER INSERT ON domains
+        BEGIN
+            DELETE FROM domains 
+            WHERE expires_at IS NOT NULL 
+            AND expires_at < datetime('now') 
+            AND is_custom = 0;
+        END;
+    `
+	if _, err := db.Exec(triggerQuery); err != nil {
+		// Triggers might not be supported in all SQLite versions
+		log.Debugf("Failed to create cleanup trigger (not critical): %v", err)
 	}
 
 	return nil
@@ -363,34 +478,300 @@ func IsIPWhitelisted(ip string) (bool, error) {
 	return false, nil
 }
 
-// isIPInWhitelistedRange checks if an IP is in any whitelisted CIDR range
-func isIPInWhitelistedRange(ipStr string) (bool, error) {
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false, fmt.Errorf("invalid IP address: %s", ipStr)
+// GetDomainsListSorted returns a sorted list of domains
+func GetDomainsListSorted(isWhitelisted bool, page, itemsPerPage int, sortBy string) ([]models.Domain, int, error) {
+	// Calculate offset
+	offset := (page - 1) * itemsPerPage
+
+	// Get total count
+	var totalCount int
+	err := db.QueryRow("SELECT COUNT(*) FROM domains WHERE is_whitelisted = ?", isWhitelisted).Scan(&totalCount)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Build ORDER BY clause based on sortBy parameter
+	orderBy := "is_custom DESC, added_at DESC" // default: custom first
+	switch sortBy {
+	case "name":
+		orderBy = "domain ASC"
+	case "date":
+		orderBy = "added_at DESC"
+	}
+
+	// Get domains for current page
+	query := fmt.Sprintf(`
+        SELECT id, domain, is_whitelisted, is_custom, flagged_as_cdn, added_at, expires_at, source, last_checked
+        FROM domains
+        WHERE is_whitelisted = ?
+        ORDER BY %s
+        LIMIT ? OFFSET ?
+    `, orderBy)
+
+	rows, err := db.Query(query, isWhitelisted, itemsPerPage, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	// Parse rows
+	var domains []models.Domain
+	for rows.Next() {
+		var domain models.Domain
+		if err := rows.Scan(
+			&domain.ID, &domain.Domain, &domain.IsWhitelisted,
+			&domain.IsCustom, &domain.FlaggedAsCDN, &domain.AddedAt,
+			&domain.ExpiresAt, &domain.Source, &domain.LastChecked); err != nil {
+			return nil, 0, err
+		}
+		domains = append(domains, domain)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return domains, totalCount, nil
+}
+
+// اضافه کردن فانکشن‌های جدید مورد نیاز
+func GetAllIPRanges(isWhitelisted bool) ([]struct {
+	CIDR     string
+	IsCustom bool
+}, error) {
+	rows, err := db.Query(`
+        SELECT cidr, is_custom 
+        FROM ip_ranges 
+        WHERE is_whitelisted = ?
+        ORDER BY is_custom DESC, added_at DESC
+    `, isWhitelisted)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ranges []struct {
+		CIDR     string
+		IsCustom bool
+	}
+
+	for rows.Next() {
+		var r struct {
+			CIDR     string
+			IsCustom bool
+		}
+		if err := rows.Scan(&r.CIDR, &r.IsCustom); err != nil {
+			return nil, err
+		}
+		ranges = append(ranges, r)
+	}
+
+	return ranges, rows.Err()
+}
+
+// GetAllBlockedIPRanges returns all blocked IP ranges
+func GetAllBlockedIPRanges() ([]string, error) {
+	rows, err := db.Query("SELECT cidr FROM ip_ranges WHERE is_whitelisted = 0")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ranges []string
+	for rows.Next() {
+		var cidr string
+		if err := rows.Scan(&cidr); err != nil {
+			return nil, err
+		}
+		ranges = append(ranges, cidr)
+	}
+
+	return ranges, rows.Err()
+}
+
+// GetIPsListFiltered returns a filtered list of IPs
+func GetIPsListFiltered(isWhitelisted bool, page, itemsPerPage int, showType string) ([]models.IP, int, error) {
+	// Calculate offset
+	offset := (page - 1) * itemsPerPage
+
+	var totalCount int
+	var rows *sql.Rows
+	var err error
+
+	switch showType {
+	case "individual":
+		// Only show individual IPs
+		err = db.QueryRow("SELECT COUNT(*) FROM ips WHERE is_whitelisted = ?", isWhitelisted).Scan(&totalCount)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		rows, err = db.Query(`
+            SELECT id, ip_address, is_whitelisted, is_custom, added_at, expires_at, source, domain_id
+            FROM ips
+            WHERE is_whitelisted = ?
+            ORDER BY is_custom DESC, added_at DESC
+            LIMIT ? OFFSET ?
+        `, isWhitelisted, itemsPerPage, offset)
+
+	case "ranges":
+		// Only show IP ranges
+		err = db.QueryRow("SELECT COUNT(*) FROM ip_ranges WHERE is_whitelisted = ?", isWhitelisted).Scan(&totalCount)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		rows, err = db.Query(`
+            SELECT id, cidr, is_whitelisted, is_custom, added_at, expires_at, source
+            FROM ip_ranges
+            WHERE is_whitelisted = ?
+            ORDER BY is_custom DESC, added_at DESC
+            LIMIT ? OFFSET ?
+        `, isWhitelisted, itemsPerPage, offset)
+
+	default: // "all"
+		// Get count for both
+		var ipCount, rangeCount int
+		err = db.QueryRow("SELECT COUNT(*) FROM ips WHERE is_whitelisted = ?", isWhitelisted).Scan(&ipCount)
+		if err != nil {
+			return nil, 0, err
+		}
+		err = db.QueryRow("SELECT COUNT(*) FROM ip_ranges WHERE is_whitelisted = ?", isWhitelisted).Scan(&rangeCount)
+		if err != nil {
+			return nil, 0, err
+		}
+		totalCount = ipCount + rangeCount
+
+		// Complex query to get both IPs and ranges
+		rows, err = db.Query(`
+            SELECT * FROM (
+                SELECT id, ip_address, is_whitelisted, is_custom, added_at, expires_at, source, domain_id, 0 as is_range
+                FROM ips WHERE is_whitelisted = ?
+                UNION ALL
+                SELECT id, cidr as ip_address, is_whitelisted, is_custom, added_at, expires_at, source, NULL as domain_id, 1 as is_range
+                FROM ip_ranges WHERE is_whitelisted = ?
+            ) AS combined
+            ORDER BY is_custom DESC, added_at DESC
+            LIMIT ? OFFSET ?
+        `, isWhitelisted, isWhitelisted, itemsPerPage, offset)
+	}
+
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var ips []models.IP
+	for rows.Next() {
+		var ip models.IP
+
+		if showType == "ranges" {
+			// For ranges only query
+			if err := rows.Scan(
+				&ip.ID, &ip.IPAddress, &ip.IsWhitelisted,
+				&ip.IsCustom, &ip.AddedAt, &ip.ExpiresAt,
+				&ip.Source); err != nil {
+				return nil, 0, err
+			}
+			ip.IsRange = true
+		} else {
+			// For individual IPs or combined query
+			var isRange int
+			if err := rows.Scan(
+				&ip.ID, &ip.IPAddress, &ip.IsWhitelisted,
+				&ip.IsCustom, &ip.AddedAt, &ip.ExpiresAt,
+				&ip.Source, &ip.DomainID, &isRange); err != nil {
+				return nil, 0, err
+			}
+			ip.IsRange = (isRange == 1)
+		}
+
+		ips = append(ips, ip)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	return ips, totalCount, nil
+}
+
+// Helper functions to check IP against ranges
+func GetWhitelistRangesContainingIP(ip string) ([]string, error) {
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return nil, fmt.Errorf("invalid IP address")
 	}
 
 	rows, err := db.Query("SELECT cidr FROM ip_ranges WHERE is_whitelisted = 1")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer rows.Close()
 
+	var ranges []string
 	for rows.Next() {
 		var cidr string
 		if err := rows.Scan(&cidr); err != nil {
-			return false, err
+			continue
 		}
+
 		_, ipNet, err := net.ParseCIDR(cidr)
 		if err != nil {
 			continue
 		}
-		if ipNet.Contains(ip) {
-			return true, nil
+
+		if ipNet.Contains(parsedIP) {
+			ranges = append(ranges, cidr)
 		}
 	}
 
-	return false, nil
+	return ranges, nil
+}
+
+func GetBlocklistRangesContainingIP(ip string) ([]string, error) {
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return nil, fmt.Errorf("invalid IP address")
+	}
+
+	rows, err := db.Query("SELECT cidr FROM ip_ranges WHERE is_whitelisted = 0")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ranges []string
+	for rows.Next() {
+		var cidr string
+		if err := rows.Scan(&cidr); err != nil {
+			continue
+		}
+
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+
+		if ipNet.Contains(parsedIP) {
+			ranges = append(ranges, cidr)
+		}
+	}
+
+	return ranges, nil
+}
+
+// Direct check functions
+func IsIPInWhitelist(ip string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM ips WHERE ip_address = ? AND is_whitelisted = 1)", ip).Scan(&exists)
+	return exists, err
+}
+
+func IsIPInBlocklistDirect(ip string) (bool, error) {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM ips WHERE ip_address = ? AND is_whitelisted = 0)", ip).Scan(&exists)
+	return exists, err
 }
 
 // SaveDomain saves a domain to the database

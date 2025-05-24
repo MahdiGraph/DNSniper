@@ -30,9 +30,11 @@ func GetSettings() (models.Settings, error) {
 	// Default values in case settings retrieval fails
 	settings = models.Settings{
 		DNSResolver:     "8.8.8.8",
-		BlockRuleType:   "both",
-		LoggingEnabled:  false,               // Default to disabled
-		RuleExpiration:  30 * 24 * time.Hour, // 30 days
+		BlockRuleType:   "both", // Deprecated but kept for compatibility
+		BlockChains:     "ALL",  // New default
+		BlockDirection:  "both", // New default
+		LoggingEnabled:  false,
+		RuleExpiration:  30 * 24 * time.Hour,
 		UpdateURL:       "https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt",
 		MaxIPsPerDomain: 5,
 	}
@@ -55,7 +57,11 @@ func GetSettings() (models.Settings, error) {
 		case "dns_resolver":
 			settings.DNSResolver = value
 		case "block_rule_type":
-			settings.BlockRuleType = value
+			settings.BlockRuleType = value // Keep for backward compatibility
+		case "block_chains":
+			settings.BlockChains = value
+		case "block_direction":
+			settings.BlockDirection = value
 		case "logging_enabled":
 			settings.LoggingEnabled = (value == "true")
 		case "rule_expiration":

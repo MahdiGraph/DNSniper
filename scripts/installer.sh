@@ -1,5 +1,6 @@
 #!/bin/bash
-# DNSniper Installation Script with IPSet Support (Updated for IPSet-only mode)
+# DNSniper Installation Script with IPSet Support (Updated with Chain Selection)
+
 # ANSI color codes
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -114,6 +115,7 @@ case $ARCH in
         exit 1
         ;;
 esac
+
 print_info "Detected architecture: $ARCH"
 
 # Define paths
@@ -138,29 +140,45 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
     echo "3) Uninstall DNSniper"
     echo "4) Cancel"
     read -p "Enter choice [1-4]: " choice
+    
     case $choice in
         1)
             print_info "Reinstalling with existing settings..."
             REINSTALL=true
-            # If reinstalling, get the current block rule type
+            
+            # If reinstalling, get the current block configuration
             if [ -f "$INSTALL_DIR/settings.db" ]; then
-                print_info "Trying to determine existing block rule type..."
+                print_info "Trying to determine existing block configuration..."
                 # We need sqlite3 to read the database
                 if command_exists sqlite3; then
-                    BLOCK_RULE_TYPE=$(sqlite3 "$INSTALL_DIR/settings.db" "SELECT value FROM settings WHERE key='block_rule_type' LIMIT 1;" 2>/dev/null)
-                    if [ -n "$BLOCK_RULE_TYPE" ]; then
-                        print_info "Found existing block rule type: $BLOCK_RULE_TYPE"
+                    # Get block chains
+                    BLOCK_CHAINS=$(sqlite3 "$INSTALL_DIR/settings.db" "SELECT value FROM settings WHERE key='block_chains' LIMIT 1;" 2>/dev/null)
+                    if [ -z "$BLOCK_CHAINS" ]; then
+                        # Try old block_rule_type
+                        BLOCK_RULE_TYPE=$(sqlite3 "$INSTALL_DIR/settings.db" "SELECT value FROM settings WHERE key='block_rule_type' LIMIT 1;" 2>/dev/null)
+                        BLOCK_CHAINS="ALL"
+                        if [ -n "$BLOCK_RULE_TYPE" ]; then
+                            BLOCK_DIRECTION="$BLOCK_RULE_TYPE"
+                        else
+                            BLOCK_DIRECTION="both"
+                        fi
                     else
-                        BLOCK_RULE_TYPE="both"
-                        print_info "No existing block rule type found, using default: both"
+                        # Get block direction
+                        BLOCK_DIRECTION=$(sqlite3 "$INSTALL_DIR/settings.db" "SELECT value FROM settings WHERE key='block_direction' LIMIT 1;" 2>/dev/null)
+                        if [ -z "$BLOCK_DIRECTION" ]; then
+                            BLOCK_DIRECTION="both"
+                        fi
                     fi
+                    print_info "Found existing configuration: chains=$BLOCK_CHAINS, direction=$BLOCK_DIRECTION"
                 else
                     print_warning "sqlite3 is not available, cannot read existing settings"
-                    BLOCK_RULE_TYPE="both"
+                    BLOCK_CHAINS="ALL"
+                    BLOCK_DIRECTION="both"
                 fi
             else
-                BLOCK_RULE_TYPE="both"
-                print_info "No existing settings database found, using default block rule type: both"
+                BLOCK_CHAINS="ALL"
+                BLOCK_DIRECTION="both"
+                print_info "No existing settings database found, using defaults"
             fi
             ;;
         2)
@@ -174,8 +192,9 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
             rm -rf "$INSTALL_DIR"
             rm -rf "$LOG_DIR"
             CLEAN_INSTALL=true
-            # Default block rule type for clean install
-            BLOCK_RULE_TYPE="both"
+            # Default block configuration for clean install
+            BLOCK_CHAINS="ALL"
+            BLOCK_DIRECTION="both"
             ;;
         3)
             print_info "Uninstalling DNSniper..."
@@ -186,6 +205,7 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
             rm -f "$SERVICE_FILE" "$TIMER_FILE"
             rm -f "$BIN_DIR/dnsniper" "$BIN_DIR/dnsniper-agent"
             rm -rf "$INSTALL_DIR"
+            
             # Optionally, ask if logs should be kept
             read -p "Would you like to keep log files? (y/n): " keep_logs
             if [[ "$keep_logs" =~ ^[Nn]$ ]]; then
@@ -194,31 +214,38 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
             else
                 print_info "Log files kept at $LOG_DIR"
             fi
+            
             # Clean up iptables rules
             print_info "Cleaning up iptables rules..."
+            
             # First remove any traditional direct DROP rules that might exist (legacy cleanup)
             print_info "Removing legacy direct DROP rules..."
             iptables-save | grep -v -- "-A DNSniper .* -j DROP" | iptables-restore
             ip6tables-save | grep -v -- "-A DNSniper6 .* -j DROP" | ip6tables-restore
+            
             # Remove ipset rules from iptables
             print_info "Removing ipset rules from iptables..."
-            iptables -D INPUT -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
-            iptables -D OUTPUT -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
-            iptables -D INPUT -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
-            iptables -D OUTPUT -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
-            iptables -D INPUT -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
-            iptables -D OUTPUT -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
-            iptables -D INPUT -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
-            iptables -D OUTPUT -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
-            # Same for IPv6
-            ip6tables -D INPUT -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
-            ip6tables -D OUTPUT -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
-            ip6tables -D INPUT -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
-            ip6tables -D OUTPUT -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
-            ip6tables -D INPUT -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
-            ip6tables -D OUTPUT -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
-            ip6tables -D INPUT -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
-            ip6tables -D OUTPUT -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
+            for chain in INPUT OUTPUT FORWARD; do
+                iptables -D $chain -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
+                iptables -D $chain -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
+                iptables -D $chain -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
+                iptables -D $chain -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
+                iptables -D $chain -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
+                iptables -D $chain -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
+                iptables -D $chain -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
+                iptables -D $chain -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
+                
+                # Same for IPv6
+                ip6tables -D $chain -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
+                ip6tables -D $chain -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
+                ip6tables -D $chain -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
+                ip6tables -D $chain -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
+                ip6tables -D $chain -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
+                ip6tables -D $chain -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
+                ip6tables -D $chain -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
+                ip6tables -D $chain -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
+            done
+            
             # Remove chain references
             if iptables -L DNSniper >/dev/null 2>&1; then
                 iptables -D INPUT -j DNSniper 2>/dev/null
@@ -227,6 +254,7 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
                 iptables -F DNSniper 2>/dev/null
                 iptables -X DNSniper 2>/dev/null
             fi
+            
             if ip6tables -L DNSniper6 >/dev/null 2>&1; then
                 ip6tables -D INPUT -j DNSniper6 2>/dev/null
                 ip6tables -D OUTPUT -j DNSniper6 2>/dev/null
@@ -234,14 +262,17 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
                 ip6tables -F DNSniper6 2>/dev/null
                 ip6tables -X DNSniper6 2>/dev/null
             fi
+            
             # Clean up ipset rules
             print_info "Destroying ipset sets..."
             ipset destroy dnsniper-whitelist 2>/dev/null
             ipset destroy dnsniper-blocklist 2>/dev/null
             ipset destroy dnsniper-range-whitelist 2>/dev/null
             ipset destroy dnsniper-range-blocklist 2>/dev/null
+            
             # Delete ipset configuration file
             rm -f /etc/ipset.conf
+            
             # Save iptables rules
             if [ "$OS" = "debian" ]; then
                 mkdir -p /etc/iptables
@@ -252,6 +283,7 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SERVICE_FILE" ]
                 service iptables save 2>/dev/null
                 service ip6tables save 2>/dev/null
             fi
+            
             print_success "DNSniper has been uninstalled."
             exit 0
             ;;
@@ -272,12 +304,15 @@ else
         print_info "Installation cancelled."
         exit 0
     fi
-    # Set default block rule type for new installs
-    BLOCK_RULE_TYPE="both"
+    
+    # Set default block configuration for new installs
+    BLOCK_CHAINS="ALL"
+    BLOCK_DIRECTION="both"
 fi
 
 # 5. Check for required dependencies
 print_info "Checking required dependencies..."
+
 # Function to install package(s)
 install_package() {
     local pkg_list="$1"
@@ -321,6 +356,7 @@ fi
 if ! command_exists ipset; then
     print_warning "ipset is required for DNSniper. Installing ipset..."
     install_package "ipset"
+    
     # Verify installation was successful
     if ! command_exists ipset; then
         print_error "Failed to install ipset. DNSniper requires ipset to function."
@@ -333,6 +369,7 @@ fi
 # Check that ipset is working correctly
 ipset_check=$(check_ipset_functionality)
 ipset_result=$?
+
 if [ $ipset_result -ne 0 ]; then
     print_error "ipset is installed but not functioning properly (error code: $ipset_result)."
     print_error "Trying additional ipset dependencies..."
@@ -352,6 +389,7 @@ if [ $ipset_result -ne 0 ]; then
     # Check again after installing dependencies
     ipset_check=$(check_ipset_functionality)
     ipset_result=$?
+    
     if [ $ipset_result -ne 0 ]; then
         print_error "ipset is still not functioning properly. DNSniper requires a working ipset."
         print_error "Please check your system configuration or contact support."
@@ -363,25 +401,90 @@ else
     print_success "ipset is functioning properly."
 fi
 
-# If not in reinstall mode, ask for block rule type
+# If not in reinstall mode, ask for block configuration
 if [ "$REINSTALL" != "true" ]; then
-    print_info "Select block rule type:"
-    echo "1) both - Block IPs as both source and destination (default)"
-    echo "2) source - Block IPs only as source"
-    echo "3) destination - Block IPs only as destination"
-    read -p "Enter your choice [1-3]: " block_rule_choice
-    case $block_rule_choice in
+    print_info "Select chains to apply blocking rules:"
+    echo "1) ALL chains (INPUT + OUTPUT + FORWARD) - Recommended"
+    echo "2) INPUT only - Block incoming connections"
+    echo "3) OUTPUT only - Block outgoing connections"
+    echo "4) FORWARD only - Block forwarded traffic"
+    echo "5) INPUT + OUTPUT - Block direct traffic only"
+    echo "6) INPUT + FORWARD - Block incoming and forwarded traffic"
+    echo "7) OUTPUT + FORWARD - Block outgoing and forwarded traffic"
+    echo "8) Custom selection"
+    read -p "Enter your choice [1-8]: " chain_choice
+    
+    case $chain_choice in
         2)
-            BLOCK_RULE_TYPE="source"
-            print_info "Block rule type set to: source"
+            BLOCK_CHAINS="INPUT"
+            print_info "Selected: INPUT only"
             ;;
         3)
-            BLOCK_RULE_TYPE="destination"
-            print_info "Block rule type set to: destination"
+            BLOCK_CHAINS="OUTPUT"
+            print_info "Selected: OUTPUT only"
+            ;;
+        4)
+            BLOCK_CHAINS="FORWARD"
+            print_info "Selected: FORWARD only"
+            ;;
+        5)
+            BLOCK_CHAINS="INPUT,OUTPUT"
+            print_info "Selected: INPUT + OUTPUT"
+            ;;
+        6)
+            BLOCK_CHAINS="INPUT,FORWARD"
+            print_info "Selected: INPUT + FORWARD"
+            ;;
+        7)
+            BLOCK_CHAINS="OUTPUT,FORWARD"
+            print_info "Selected: OUTPUT + FORWARD"
+            ;;
+        8)
+            read -p "Enter chains (comma-separated, e.g., INPUT,OUTPUT,FORWARD): " custom_chains
+            # Validate and normalize
+            BLOCK_CHAINS=""
+            IFS=',' read -ra CHAIN_ARRAY <<< "$custom_chains"
+            for chain in "${CHAIN_ARRAY[@]}"; do
+                chain=$(echo "$chain" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
+                if [ "$chain" = "INPUT" ] || [ "$chain" = "OUTPUT" ] || [ "$chain" = "FORWARD" ]; then
+                    if [ -z "$BLOCK_CHAINS" ]; then
+                        BLOCK_CHAINS="$chain"
+                    else
+                        BLOCK_CHAINS="$BLOCK_CHAINS,$chain"
+                    fi
+                fi
+            done
+            if [ -z "$BLOCK_CHAINS" ]; then
+                print_warning "No valid chains selected. Using ALL."
+                BLOCK_CHAINS="ALL"
+            else
+                print_info "Selected custom chains: $BLOCK_CHAINS"
+            fi
             ;;
         *)
-            BLOCK_RULE_TYPE="both"
-            print_info "Block rule type set to: both (default)"
+            BLOCK_CHAINS="ALL"
+            print_info "Using default: ALL chains"
+            ;;
+    esac
+    
+    print_info "\nSelect blocking direction:"
+    echo "1) both - Block as both source and destination (default)"
+    echo "2) source - Block as source only"
+    echo "3) destination - Block as destination only"
+    read -p "Enter your choice [1-3]: " dir_choice
+    
+    case $dir_choice in
+        2)
+            BLOCK_DIRECTION="source"
+            print_info "Block direction set to: source only"
+            ;;
+        3)
+            BLOCK_DIRECTION="destination"
+            print_info "Block direction set to: destination only"
+            ;;
+        *)
+            BLOCK_DIRECTION="both"
+            print_info "Block direction set to: both (default)"
             ;;
     esac
 fi
@@ -417,6 +520,7 @@ fi
 # 6. Get binaries - either by building locally or downloading
 if [ "$USE_LOCAL_BUILD" = true ]; then
     print_info "Building DNSniper from source..."
+    
     # Check if we're in the correct directory
     if [ ! -d "cmd" ] || [ ! -f "go.mod" ]; then
         # Try parent directory
@@ -426,9 +530,12 @@ if [ "$USE_LOCAL_BUILD" = true ]; then
             exit 1
         fi
     fi
+    
     print_info "Found source code, building..."
+    
     # Clean any existing binaries
     rm -f dnsniper dnsniper-agent 2>/dev/null
+    
     # Build dnsniper
     print_info "Building dnsniper..."
     go build -o dnsniper ./cmd/dnsniper/
@@ -436,6 +543,7 @@ if [ "$USE_LOCAL_BUILD" = true ]; then
         print_error "Failed to build dnsniper. Please check for errors."
         exit 1
     fi
+    
     # Build dnsniper-agent
     print_info "Building dnsniper-agent..."
     go build -o dnsniper-agent ./cmd/dnsniper-agent/
@@ -443,7 +551,9 @@ if [ "$USE_LOCAL_BUILD" = true ]; then
         print_error "Failed to build dnsniper-agent. Please check for errors."
         exit 1
     fi
+    
     print_success "Successfully built DNSniper binaries"
+    
     # Use the newly built binaries
     MAIN_BINARY="./dnsniper"
     AGENT_BINARY="./dnsniper-agent"
@@ -451,6 +561,7 @@ if [ "$USE_LOCAL_BUILD" = true ]; then
 else
     # Download from GitHub
     print_info "Fetching latest release information..."
+    
     # First attempt with GitHub API
     LATEST_VERSION=""
     if command_exists curl && command_exists jq; then
@@ -460,6 +571,7 @@ else
             LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r .tag_name 2>/dev/null)
         fi
     fi
+    
     # Fallback if API call failed or jq is not available
     if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
         print_warning "Could not determine latest version from GitHub API. Using fallback method."
@@ -469,6 +581,7 @@ else
             # Extract the first release tag with grep and sed
             LATEST_VERSION=$(echo "$RELEASES_PAGE" | grep -o "/${GITHUB_REPO}/releases/tag/[^ \"]*" | head -1 | sed "s/.*\/tag\///")
         fi
+        
         # If still no version found, use a hardcoded fallback
         if [ -z "$LATEST_VERSION" ]; then
             LATEST_VERSION="v1.0.0"  # Fallback version
@@ -479,12 +592,15 @@ else
     else
         print_info "Found latest version: ${LATEST_VERSION}"
     fi
+    
     # Construct download URLs
     DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/dnsniper-linux-${ARCH}.zip"
     CHECKSUM_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/dnsniper-linux-${ARCH}.zip.sha256"
+    
     # 7. Download DNSniper package
     print_info "Downloading DNSniper binary package for ${ARCH}..."
     print_info "Download URL: ${DOWNLOAD_URL}"
+    
     curl -L --fail "${DOWNLOAD_URL}" -o "${TEMP_DIR}/dnsniper.zip"
     if [ $? -ne 0 ]; then
         print_error "Failed to download DNSniper. Please check your internet connection and try again."
@@ -492,6 +608,7 @@ else
         rm -rf "${TEMP_DIR}"
         exit 1
     fi
+    
     # 8. Download and verify checksum if available
     if command_exists sha256sum; then
         print_info "Downloading checksum file..."
@@ -501,6 +618,7 @@ else
             EXPECTED_HASH=$(cut -d ' ' -f 1 "${TEMP_DIR}/checksum.sha256")
             # Calculate hash of the downloaded file
             ACTUAL_HASH=$(sha256sum "${TEMP_DIR}/dnsniper.zip" | cut -d ' ' -f 1)
+            
             # Compare hashes
             if [ "$EXPECTED_HASH" = "$ACTUAL_HASH" ]; then
                 print_success "Checksum verification passed!"
@@ -518,6 +636,7 @@ else
     else
         print_warning "sha256sum not found. Skipping integrity check."
     fi
+    
     # 9. Extract and install executables
     print_info "Installing DNSniper executables..."
     print_info "Extracting DNSniper binaries..."
@@ -527,9 +646,11 @@ else
         rm -rf "${TEMP_DIR}"
         exit 1
     fi
+    
     # Look for architecture-specific binary names
     MAIN_BINARY="${TEMP_DIR}/dnsniper-linux-${ARCH}"
     AGENT_BINARY="${TEMP_DIR}/dnsniper-agent-linux-${ARCH}"
+    
     # Check if binaries were found
     if [ ! -f "$MAIN_BINARY" ] || [ ! -f "$AGENT_BINARY" ]; then
         print_error "Could not find expected DNSniper executables in the downloaded package."
@@ -539,6 +660,7 @@ else
         rm -rf "${TEMP_DIR}"
         exit 1
     fi
+    
     print_info "Found executables for ${ARCH} architecture"
 fi
 
@@ -571,6 +693,7 @@ echo "3) Every 6 hours"
 echo "4) Daily"
 echo "5) Custom interval"
 read -p "Select an option [1-5]: " interval_choice
+
 case $interval_choice in
     1)
         INTERVAL="3h"
@@ -601,6 +724,7 @@ esac
 
 # 11. Create systemd service and timer
 print_info "Creating systemd service for DNSniper agent..."
+
 # Create systemd service
 cat > "$SERVICE_FILE" << EOSERVICE
 [Unit]
@@ -672,81 +796,119 @@ ipset create dnsniper-blocklist hash:ip hashsize 4096 -exist
 ipset create dnsniper-range-whitelist hash:net hashsize 1024 -exist
 ipset create dnsniper-range-blocklist hash:net hashsize 1024 -exist
 
-# Add ipset rules to iptables
-print_info "Setting up ipset rules in iptables with block rule type: $BLOCK_RULE_TYPE"
-
-# First remove any existing rules to avoid duplicates
-print_info "Removing any existing ipset rules..."
-iptables -D INPUT -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
-iptables -D OUTPUT -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
-iptables -D INPUT -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
-iptables -D OUTPUT -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
-iptables -D INPUT -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
-iptables -D OUTPUT -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
-iptables -D INPUT -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
-iptables -D OUTPUT -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
-
-# Same for IPv6
-if command_exists ip6tables; then
-    ip6tables -D INPUT -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
-    ip6tables -D OUTPUT -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
-    ip6tables -D INPUT -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
-    ip6tables -D OUTPUT -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
-    ip6tables -D INPUT -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
-    ip6tables -D OUTPUT -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
-    ip6tables -D INPUT -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
-    ip6tables -D OUTPUT -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
-fi
-
-# Whitelist rules (higher priority) - always apply to both directions
-iptables -I INPUT 1 -m set --match-set dnsniper-whitelist src -j ACCEPT
-iptables -I OUTPUT 1 -m set --match-set dnsniper-whitelist dst -j ACCEPT
-iptables -I INPUT 2 -m set --match-set dnsniper-range-whitelist src -j ACCEPT
-iptables -I OUTPUT 2 -m set --match-set dnsniper-range-whitelist dst -j ACCEPT
-
-# Add blocklist rules based on block rule type
-if [ "$BLOCK_RULE_TYPE" = "source" ]; then
-    print_info "Adding blocklist rules for source-only blocking..."
-    iptables -I INPUT 3 -m set --match-set dnsniper-blocklist src -j DROP
-    iptables -I INPUT 4 -m set --match-set dnsniper-range-blocklist src -j DROP
-elif [ "$BLOCK_RULE_TYPE" = "destination" ]; then
-    print_info "Adding blocklist rules for destination-only blocking..."
-    iptables -I OUTPUT 3 -m set --match-set dnsniper-blocklist dst -j DROP
-    iptables -I OUTPUT 4 -m set --match-set dnsniper-range-blocklist dst -j DROP
-else
-    print_info "Adding blocklist rules for blocking both source and destination..."
-    iptables -I INPUT 3 -m set --match-set dnsniper-blocklist src -j DROP
-    iptables -I OUTPUT 3 -m set --match-set dnsniper-blocklist dst -j DROP
-    iptables -I INPUT 4 -m set --match-set dnsniper-range-blocklist src -j DROP
-    iptables -I OUTPUT 4 -m set --match-set dnsniper-range-blocklist dst -j DROP
-fi
-
-# Setup IPv6 rules similarly
-if command_exists ip6tables; then
-    # Whitelist rules for IPv6
-    ip6tables -I INPUT 1 -m set --match-set dnsniper-whitelist src -j ACCEPT
-    ip6tables -I OUTPUT 1 -m set --match-set dnsniper-whitelist dst -j ACCEPT
-    ip6tables -I INPUT 2 -m set --match-set dnsniper-range-whitelist src -j ACCEPT
-    ip6tables -I OUTPUT 2 -m set --match-set dnsniper-range-whitelist dst -j ACCEPT
-
-    # Add IPv6 blocklist rules based on block rule type
-    if [ "$BLOCK_RULE_TYPE" = "source" ]; then
-        ip6tables -I INPUT 3 -m set --match-set dnsniper-blocklist src -j DROP
-        ip6tables -I INPUT 4 -m set --match-set dnsniper-range-blocklist src -j DROP
-    elif [ "$BLOCK_RULE_TYPE" = "destination" ]; then
-        ip6tables -I OUTPUT 3 -m set --match-set dnsniper-blocklist dst -j DROP
-        ip6tables -I OUTPUT 4 -m set --match-set dnsniper-range-blocklist dst -j DROP
+# Function to setup ipset rules
+setup_ipset_rules() {
+    local chains="$1"
+    local direction="$2"
+    
+    # Parse chains
+    if [ "$chains" = "ALL" ]; then
+        CHAINS_TO_APPLY="INPUT OUTPUT FORWARD"
     else
-        ip6tables -I INPUT 3 -m set --match-set dnsniper-blocklist src -j DROP
-        ip6tables -I OUTPUT 3 -m set --match-set dnsniper-blocklist dst -j DROP
-        ip6tables -I INPUT 4 -m set --match-set dnsniper-range-blocklist src -j DROP
-        ip6tables -I OUTPUT 4 -m set --match-set dnsniper-range-blocklist dst -j DROP
+        CHAINS_TO_APPLY=$(echo "$chains" | tr ',' ' ')
     fi
-fi
+    
+    print_info "Setting up ipset rules for chains: $CHAINS_TO_APPLY with direction: $direction"
+    
+    # Remove all existing ipset rules first
+    for chain in INPUT OUTPUT FORWARD; do
+        iptables -D $chain -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
+        iptables -D $chain -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
+        iptables -D $chain -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
+        iptables -D $chain -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
+        iptables -D $chain -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
+        iptables -D $chain -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
+        iptables -D $chain -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
+        iptables -D $chain -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
+        
+        # Same for IPv6
+        ip6tables -D $chain -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
+        ip6tables -D $chain -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
+        ip6tables -D $chain -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
+        ip6tables -D $chain -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
+        ip6tables -D $chain -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
+        ip6tables -D $chain -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
+        ip6tables -D $chain -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
+        ip6tables -D $chain -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
+    done
+    
+    # Add whitelist rules to selected chains
+    priority=1
+    for chain in $CHAINS_TO_APPLY; do
+        # Whitelist rules always check the appropriate direction based on chain type
+        if [ "$chain" = "INPUT" ]; then
+            iptables -I $chain $priority -m set --match-set dnsniper-whitelist src -j ACCEPT
+            iptables -I $chain $((priority+1)) -m set --match-set dnsniper-range-whitelist src -j ACCEPT
+            ip6tables -I $chain $priority -m set --match-set dnsniper-whitelist src -j ACCEPT
+            ip6tables -I $chain $((priority+1)) -m set --match-set dnsniper-range-whitelist src -j ACCEPT
+        elif [ "$chain" = "OUTPUT" ]; then
+            iptables -I $chain $priority -m set --match-set dnsniper-whitelist dst -j ACCEPT
+            iptables -I $chain $((priority+1)) -m set --match-set dnsniper-range-whitelist dst -j ACCEPT
+            ip6tables -I $chain $priority -m set --match-set dnsniper-whitelist dst -j ACCEPT
+            ip6tables -I $chain $((priority+1)) -m set --match-set dnsniper-range-whitelist dst -j ACCEPT
+        elif [ "$chain" = "FORWARD" ]; then
+            # For FORWARD, check both src and dst for whitelist
+            iptables -I $chain $priority -m set --match-set dnsniper-whitelist src -j ACCEPT
+            iptables -I $chain $((priority+1)) -m set --match-set dnsniper-whitelist dst -j ACCEPT
+            iptables -I $chain $((priority+2)) -m set --match-set dnsniper-range-whitelist src -j ACCEPT
+            iptables -I $chain $((priority+3)) -m set --match-set dnsniper-range-whitelist dst -j ACCEPT
+            ip6tables -I $chain $priority -m set --match-set dnsniper-whitelist src -j ACCEPT
+            ip6tables -I $chain $((priority+1)) -m set --match-set dnsniper-whitelist dst -j ACCEPT
+            ip6tables -I $chain $((priority+2)) -m set --match-set dnsniper-range-whitelist src -j ACCEPT
+            ip6tables -I $chain $((priority+3)) -m set --match-set dnsniper-range-whitelist dst -j ACCEPT
+        fi
+    done
+    
+    # Add blocklist rules based on direction
+    block_priority=5  # Start after whitelist rules
+    for chain in $CHAINS_TO_APPLY; do
+        if [ "$direction" = "source" ]; then
+            if [ "$chain" = "INPUT" ] || [ "$chain" = "FORWARD" ]; then
+                iptables -I $chain $block_priority -m set --match-set dnsniper-blocklist src -j DROP
+                iptables -I $chain $((block_priority+1)) -m set --match-set dnsniper-range-blocklist src -j DROP
+                ip6tables -I $chain $block_priority -m set --match-set dnsniper-blocklist src -j DROP
+                ip6tables -I $chain $((block_priority+1)) -m set --match-set dnsniper-range-blocklist src -j DROP
+            fi
+        elif [ "$direction" = "destination" ]; then
+            if [ "$chain" = "OUTPUT" ] || [ "$chain" = "FORWARD" ]; then
+                iptables -I $chain $block_priority -m set --match-set dnsniper-blocklist dst -j DROP
+                iptables -I $chain $((block_priority+1)) -m set --match-set dnsniper-range-blocklist dst -j DROP
+                ip6tables -I $chain $block_priority -m set --match-set dnsniper-blocklist dst -j DROP
+                ip6tables -I $chain $((block_priority+1)) -m set --match-set dnsniper-range-blocklist dst -j DROP
+            fi
+        else # both
+            if [ "$chain" = "INPUT" ]; then
+                iptables -I $chain $block_priority -m set --match-set dnsniper-blocklist src -j DROP
+                iptables -I $chain $((block_priority+1)) -m set --match-set dnsniper-range-blocklist src -j DROP
+                ip6tables -I $chain $block_priority -m set --match-set dnsniper-blocklist src -j DROP
+                ip6tables -I $chain $((block_priority+1)) -m set --match-set dnsniper-range-blocklist src -j DROP
+            elif [ "$chain" = "OUTPUT" ]; then
+                iptables -I $chain $block_priority -m set --match-set dnsniper-blocklist dst -j DROP
+                iptables -I $chain $((block_priority+1)) -m set --match-set dnsniper-range-blocklist dst -j DROP
+                ip6tables -I $chain $block_priority -m set --match-set dnsniper-blocklist dst -j DROP
+                ip6tables -I $chain $((block_priority+1)) -m set --match-set dnsniper-range-blocklist dst -j DROP
+            elif [ "$chain" = "FORWARD" ]; then
+                # For FORWARD with both, add rules for both directions
+                iptables -I $chain $block_priority -m set --match-set dnsniper-blocklist src -j DROP
+                iptables -I $chain $((block_priority+1)) -m set --match-set dnsniper-blocklist dst -j DROP
+                iptables -I $chain $((block_priority+2)) -m set --match-set dnsniper-range-blocklist src -j DROP
+                iptables -I $chain $((block_priority+3)) -m set --match-set dnsniper-range-blocklist dst -j DROP
+                ip6tables -I $chain $block_priority -m set --match-set dnsniper-blocklist src -j DROP
+                ip6tables -I $chain $((block_priority+1)) -m set --match-set dnsniper-blocklist dst -j DROP
+                ip6tables -I $chain $((block_priority+2)) -m set --match-set dnsniper-range-blocklist src -j DROP
+                ip6tables -I $chain $((block_priority+3)) -m set --match-set dnsniper-range-blocklist dst -j DROP
+            fi
+        fi
+    done
+}
 
-# 13. Initialize SQLite database for fresh installs and save the block rule type
+# Call the function to setup ipset rules
+setup_ipset_rules "$BLOCK_CHAINS" "$BLOCK_DIRECTION"
+
+# 13. Initialize SQLite database for fresh installs and save the block configuration
 if [ "$CLEAN_INSTALL" = "true" ] || [ ! -f "$INSTALL_DIR/settings.db" ]; then
     print_info "Initializing settings database..."
+    
     # Check if sqlite3 is available
     if command_exists sqlite3; then
         # Create a temporary SQL file
@@ -757,26 +919,31 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL,
     description TEXT NULL
 );
+
 INSERT OR REPLACE INTO settings (key, value, description) VALUES
 ('dns_resolver', '8.8.8.8', 'DNS resolver to use for domain resolution'),
-('block_rule_type', '$BLOCK_RULE_TYPE', 'Type of blocking rule (source, destination, both)'),
+('block_chains', '$BLOCK_CHAINS', 'Chains to apply blocking rules (INPUT,OUTPUT,FORWARD or ALL)'),
+('block_direction', '$BLOCK_DIRECTION', 'Direction of blocking (source, destination, both)'),
 ('logging_enabled', 'false', 'Whether to enable logging'),
 ('rule_expiration', '30d', 'Expiration time for rules (e.g., 30d for 30 days)'),
 ('max_ips_per_domain', '5', 'Maximum number of IPs to track per domain');
 EOSQL
+        
         # Apply the SQL to create the database
         sqlite3 "$INSTALL_DIR/settings.db" < "$SQL_TEMP"
         rm -f "$SQL_TEMP"
-        print_success "Settings database initialized with block rule type: $BLOCK_RULE_TYPE"
+        
+        print_success "Settings database initialized with configuration: chains=$BLOCK_CHAINS, direction=$BLOCK_DIRECTION"
     else
         print_warning "sqlite3 not available, settings will be initialized when first running dnsniper"
     fi
 elif [ "$REINSTALL" = "true" ]; then
-    # If reinstalling, update the block rule type in the existing database
+    # If reinstalling, update the block configuration in the existing database
     if command_exists sqlite3; then
-        print_info "Updating block rule type in existing database to: $BLOCK_RULE_TYPE"
-        sqlite3 "$INSTALL_DIR/settings.db" "UPDATE settings SET value = '$BLOCK_RULE_TYPE' WHERE key = 'block_rule_type';"
-        print_success "Block rule type updated in database"
+        print_info "Updating block configuration in existing database..."
+        sqlite3 "$INSTALL_DIR/settings.db" "UPDATE settings SET value = '$BLOCK_CHAINS' WHERE key = 'block_chains';"
+        sqlite3 "$INSTALL_DIR/settings.db" "UPDATE settings SET value = '$BLOCK_DIRECTION' WHERE key = 'block_direction';"
+        print_success "Block configuration updated in database"
     fi
 fi
 
@@ -790,11 +957,14 @@ if [ "$OS" = "debian" ]; then
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4
     ip6tables-save > /etc/iptables/rules.v6
+    
     # Enable and start ipset and netfilter persistence services
     print_info "Enabling and starting persistence services..."
+    
     # Enable and restart netfilter-persistent service
     systemctl enable netfilter-persistent
     systemctl restart netfilter-persistent
+    
     # Enable and start ipset.service if available
     if systemctl list-unit-files | grep -q ipset.service; then
         systemctl enable ipset.service
@@ -805,6 +975,7 @@ else
     ipset save > /etc/ipset.conf
     service iptables save
     service ip6tables save
+    
     # Enable ipset.service if available
     if systemctl list-unit-files | grep -q ipset.service; then
         systemctl enable ipset.service
@@ -837,13 +1008,21 @@ if [ "$USE_LOCAL_BUILD" = true ]; then
 fi
 
 # Final message
-print_success "╔════════════════════════════════════════╗"
-print_success "║     DNSniper Installation Complete     ║"
-print_success "╚════════════════════════════════════════╝"
+print_success "╔════════════════════════════════════════════╗"
+print_success "║       DNSniper Installation Complete       ║"
+print_success "╚════════════════════════════════════════════╝"
+print_success ""
 print_success "Version ${LATEST_VERSION} has been installed"
-print_success "Block rule type: $BLOCK_RULE_TYPE"
-print_success "The agent will run every $FRIENDLY_INTERVAL"
-print_info "Run 'dnsniper' to start the interactive menu"
-print_info "You can check service status with 'systemctl status dnsniper-agent.service'"
-print_info "You can check timer status with 'systemctl status dnsniper-agent.timer'"
-print_info "IPSet is now the exclusive method used for IP blocking for improved performance"
+print_success ""
+print_success "Configuration Summary:"
+print_success "  • Chains: $BLOCK_CHAINS"
+print_success "  • Direction: $BLOCK_DIRECTION"
+print_success "  • Timer Interval: $FRIENDLY_INTERVAL"
+print_success ""
+print_info "To start using DNSniper:"
+print_info "  • Run 'dnsniper' for the interactive menu"
+print_info "  • Check service: systemctl status dnsniper-agent.service"
+print_info "  • Check timer: systemctl status dnsniper-agent.timer"
+print_info ""
+print_info "IPSet is now the exclusive method for IP blocking,"
+print_info "providing improved performance and scalability."

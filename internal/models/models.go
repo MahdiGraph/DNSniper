@@ -8,7 +8,9 @@ import (
 // Settings represents application settings
 type Settings struct {
 	DNSResolver     string        // DNS resolver to use for domain resolution
-	BlockRuleType   string        // Type of blocking rule (source, destination, both)
+	BlockRuleType   string        // DEPRECATED: Type of blocking rule (source, destination, both)
+	BlockChains     string        // Chains to apply blocking rules (e.g., "INPUT,OUTPUT,FORWARD" or "ALL")
+	BlockDirection  string        // Direction of blocking (source, destination, both)
 	LoggingEnabled  bool          // Whether to enable logging
 	RuleExpiration  time.Duration // Expiration time for rules
 	UpdateURL       string        // URL to download domain list from (deprecated, kept for backward compatibility)
