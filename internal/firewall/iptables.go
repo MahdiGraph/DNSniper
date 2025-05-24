@@ -525,35 +525,98 @@ func (m *IPTablesManager) UnwhitelistIPRange(cidr string) error {
 	return fmt.Errorf("ipset manager not available, cannot unwhitelist IP range %s", cidr)
 }
 
+// RemoveAllIPSetRules removes all iptables rules that reference DNSniper ipsets
+func (m *IPTablesManager) RemoveAllIPSetRules() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// List of chains to check
+	chains := []string{"INPUT", "OUTPUT", "FORWARD"}
+
+	// Remove from IPv4
+	for _, chain := range chains {
+		rules, err := m.ipv4.List("filter", chain)
+		if err != nil {
+			log.Warnf("Failed to list IPv4 %s rules: %v", chain, err)
+			continue
+		}
+
+		// Remove in reverse order to avoid index issues
+		for i := len(rules) - 1; i >= 0; i-- {
+			rule := rules[i]
+			if strings.Contains(rule, "dnsniper-") && strings.Contains(rule, "match-set") {
+				// Parse and delete the rule
+				args := parseRuleForDeletion(rule, chain)
+				if len(args) > 0 {
+					if err := m.ipv4.Delete("filter", chain, args...); err != nil {
+						if !isRuleNotExistsError(err) {
+							log.Warnf("Failed to delete IPv4 rule from %s: %v", chain, err)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Remove from IPv6
+	for _, chain := range chains {
+		rules, err := m.ipv6.List("filter", chain)
+		if err != nil {
+			log.Warnf("Failed to list IPv6 %s rules: %v", chain, err)
+			continue
+		}
+
+		// Remove in reverse order
+		for i := len(rules) - 1; i >= 0; i-- {
+			rule := rules[i]
+			if strings.Contains(rule, "dnsniper-") && strings.Contains(rule, "match-set") {
+				// Parse and delete the rule
+				args := parseRuleForDeletion(rule, chain)
+				if len(args) > 0 {
+					if err := m.ipv6.Delete("filter", chain, args...); err != nil {
+						if !isRuleNotExistsError(err) {
+							log.Warnf("Failed to delete IPv6 rule from %s: %v", chain, err)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	log.Info("All ipset-related iptables rules removed")
+	return nil
+}
+
 // ClearRules clears all rules in ipsets and DNSniper chains
 func (m *IPTablesManager) ClearRules() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Only flush ipsets, return error if not available
+	// Only flush ipsets, don't remove iptables rules here
 	if m.ipsetMgr != nil {
 		if err := m.ipsetMgr.FlushSets(); err != nil {
 			log.Warnf("Failed to flush ipsets: %v", err)
 			return err
 		}
+		log.Info("All ipset entries cleared")
 	} else {
 		return fmt.Errorf("ipset manager not available, cannot clear rules")
 	}
 
-	// Clear chains but don't remove them
+	// Clear DNSniper chains (legacy)
 	if err := m.ipv4.ClearChain("filter", ChainNameIPv4); err != nil {
 		if !isChainNotExistsError(err) {
-			return err
-		}
-	}
-	if err := m.ipv6.ClearChain("filter", ChainNameIPv6); err != nil {
-		if !isChainNotExistsError(err) {
-			return err
+			log.Warnf("Failed to clear IPv4 chain: %v", err)
 		}
 	}
 
-	// Save changes to persistent files
-	return m.saveRulesToPersistentFilesInternal()
+	if err := m.ipv6.ClearChain("filter", ChainNameIPv6); err != nil {
+		if !isChainNotExistsError(err) {
+			log.Warnf("Failed to clear IPv6 chain: %v", err)
+		}
+	}
+
+	return nil
 }
 
 // saveRulesToPersistentFilesInternal is the internal implementation

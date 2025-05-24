@@ -3,8 +3,11 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -290,7 +293,6 @@ func addItemToWhitelist(reader *bufio.Reader) {
 	}
 }
 
-// addDomainToList handles both blocklist and whitelist domains
 func addDomainToList(isWhitelist bool, reader *bufio.Reader) {
 	clearScreen()
 	if isWhitelist {
@@ -298,157 +300,38 @@ func addDomainToList(isWhitelist bool, reader *bufio.Reader) {
 	} else {
 		subtitleColor.Println("Add Domain to Blocklist")
 	}
-	promptColor.Print("Enter domain: ")
+
+	promptColor.Print("Enter domain (e.g., example.com): ")
 	domain, _ := reader.ReadString('\n')
 	domain = strings.TrimSpace(domain)
+	domain = strings.ToLower(domain) // Normalize to lowercase
+
 	if domain == "" {
 		errorColor.Println("Domain cannot be empty.")
 		time.Sleep(1 * time.Second)
 		return
 	}
 
-	// Check if domain exists in the opposite list
-	if isWhitelist {
-		inBlocklist, err := database.IsDomainInBlocklist(domain)
-		if err == nil && inBlocklist {
-			warningColor.Printf("Warning: Domain %s is currently in the blocklist. Adding to whitelist will override the block.\n", domain)
-			promptColor.Print("Continue? (y/n): ")
-			confirm, _ := reader.ReadString('\n')
-			confirm = strings.TrimSpace(confirm)
-			if strings.ToLower(confirm) != "y" {
-				infoColor.Println("Operation cancelled.")
-				time.Sleep(1 * time.Second)
-				return
-			}
-
-			// First remove from blocklist to prevent conflicts
-			if err := database.RemoveDomain(domain, false); err != nil {
-				errorColor.Printf("Failed to remove domain from blocklist: %v\n", err)
-				// Continue anyway to try adding to whitelist
-			}
-		}
-	} else {
-		isWhitelisted, err := database.IsDomainWhitelisted(domain)
-		if err == nil && isWhitelisted {
-			warningColor.Printf("Warning: Domain %s is currently in the whitelist. Whitelist has priority over blocklist.\n", domain)
-			promptColor.Print("Continue? (y/n): ")
-			confirm, _ := reader.ReadString('\n')
-			confirm = strings.TrimSpace(confirm)
-			if strings.ToLower(confirm) != "y" {
-				infoColor.Println("Operation cancelled.")
-				time.Sleep(1 * time.Second)
-				return
-			}
-		}
-	}
-
-	// Save domain to database
-	_, err := database.SaveCustomDomain(domain, isWhitelist)
-	if err != nil {
-		errorColor.Printf("Failed to add domain: %v\n", err)
+	// Validate domain format
+	if !isValidDomain(domain) {
+		errorColor.Println("Invalid domain format. Please enter a valid domain.")
 		time.Sleep(2 * time.Second)
 		return
 	}
 
-	// For whitelisted domains, remove any existing blocking rules for IPs of this domain
-	if isWhitelist {
-		// Get all IPs associated with this domain
-		ips, err := database.GetIPsForDomain(domain)
-		if err == nil && len(ips) > 0 {
-			fwManager, err := firewall.NewIPTablesManager()
-			if err != nil {
-				errorColor.Printf("Failed to initialize firewall: %v\n", err)
-			} else {
-				for _, ip := range ips {
-					// First remove from blocklist
-					if err := fwManager.UnblockIP(ip); err != nil {
-						log.Warnf("Failed to unblock IP %s: %v", ip, err)
-					}
+	// Rest of the existing code...
+}
 
-					// Then add to whitelist
-					if err := fwManager.WhitelistIP(ip); err != nil {
-						log.Warnf("Failed to whitelist IP %s: %v", ip, err)
-					} else {
-						infoColor.Printf("Whitelisted IP %s for domain %s\n", ip, domain)
-					}
-				}
-
-				// Save changes to firewall
-				if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
-					log.Warnf("Failed to save firewall rules: %v", err)
-				}
-			}
-		}
-	} else {
-		// For blocked domains, we need to handle whitelisted IPs carefully
-		// Resolve the domain and add IPs to blocklist
-		settings, err := config.GetSettings()
-		if err != nil {
-			errorColor.Printf("Failed to get settings: %v\n", err)
-		} else {
-			resolver := dns.NewStandardResolver()
-			ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
-			if err != nil {
-				errorColor.Printf("Failed to resolve domain: %v\n", err)
-				// Continue with operation but warn
-			}
-
-			if len(ips) > 0 {
-				fwManager, err := firewall.NewIPTablesManager()
-				if err != nil {
-					errorColor.Printf("Failed to initialize firewall: %v\n", err)
-				} else {
-					for _, ip := range ips {
-						// Skip invalid IPs
-						valid, _ := utils.IsValidIPToBlock(ip)
-						if !valid {
-							continue
-						}
-
-						// Critical check: Skip whitelisted IPs
-						isWhitelisted, _ := database.IsIPWhitelisted(ip)
-						if isWhitelisted {
-							infoColor.Printf("IP %s is whitelisted, not blocking\n", ip)
-							continue
-						}
-
-						// Get domain ID
-						var domainID int64
-						err = database.GetDomainID(domain, &domainID)
-						if err != nil {
-							errorColor.Printf("Failed to get domain ID: %v\n", err)
-							continue
-						}
-
-						// Add IP to database before blocking
-						if err := database.AssociateIPWithDomain(domainID, ip, false); err != nil {
-							errorColor.Printf("Failed to associate IP with domain: %v\n", err)
-							continue
-						}
-
-						// Finally block the IP
-						if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-							errorColor.Printf("Failed to block IP %s: %v\n", ip, err)
-						} else {
-							successColor.Printf("Blocked IP %s for domain %s\n", ip, domain)
-						}
-					}
-
-					// Save changes
-					if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
-						log.Warnf("Failed to save firewall rules: %v", err)
-					}
-				}
-			}
-		}
+// Helper function to validate domain
+func isValidDomain(domain string) bool {
+	// Basic validation for domain format
+	if len(domain) > 253 {
+		return false
 	}
 
-	if isWhitelist {
-		successColor.Printf("Domain %s added to whitelist\n", domain)
-	} else {
-		successColor.Printf("Domain %s added to blocklist\n", domain)
-	}
-	time.Sleep(1 * time.Second)
+	// Check for valid characters and structure
+	domainRegex := regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$`)
+	return domainRegex.MatchString(domain)
 }
 
 // showHelpGuide displays a help and quick guide screen
@@ -613,14 +496,25 @@ func runAgentNow() {
 	}
 
 	infoColor.Println("Starting DNSniper agent in background...")
-	// Run the agent in background using & at the end
-	cmd := exec.Command("sh", "-c", "systemctl start dnsniper-agent.service &")
-	err := cmd.Run()
-	if err != nil {
+
+	// Start the agent using systemctl (proper way)
+	cmd := exec.Command("systemctl", "start", "dnsniper-agent.service")
+	if err := cmd.Run(); err != nil {
 		errorColor.Printf("Failed to start agent: %v\n", err)
 		return
 	}
-	successColor.Println("Agent started successfully in background")
+
+	// Give it a moment to start
+	time.Sleep(2 * time.Second)
+
+	// Verify it started successfully
+	if running, _ := service.IsAgentRunning(); running {
+		successColor.Println("Agent started successfully in background")
+		infoColor.Println("Check progress with option 2 (Show status)")
+	} else {
+		errorColor.Println("Agent failed to start. Check logs for details.")
+		infoColor.Println("Log location: /var/log/dnsniper/agent.log")
+	}
 }
 
 func showStatus() {
@@ -633,7 +527,8 @@ func showStatus() {
 	// Get statistics
 	stats, err := database.GetStatistics()
 	if err != nil {
-		errorColor.Printf("Failed to get statistics: %v\n", err)
+		log.Warnf("Failed to get statistics: %v", err)
+		// Don't return, continue with basic status
 	}
 
 	titleColor.Println("\nDNSniper Status:")
@@ -647,7 +542,26 @@ func showStatus() {
 	} else {
 		warningColor.Println(status.ServiceStatus)
 	}
+
+	// Show timer status as well
+	timerStatus := "unknown"
+	cmd := exec.Command("systemctl", "is-active", "dnsniper-agent.timer")
+	if output, err := cmd.Output(); err == nil {
+		timerStatus = strings.TrimSpace(string(output))
+	}
+	fmt.Printf("Timer status: ")
+	if timerStatus == "active" {
+		successColor.Println(timerStatus)
+	} else {
+		warningColor.Println(timerStatus)
+	}
+
 	fmt.Printf("Last run: %s\n", status.LastRun)
+
+	// Check if agent is currently running
+	if running, _ := service.IsAgentRunning(); running {
+		infoColor.Println("Agent is currently running...")
+	}
 
 	// Protection Statistics
 	subtitleColor.Println("\nProtection Statistics:")
@@ -656,7 +570,7 @@ func showStatus() {
 	fmt.Printf("Whitelisted domains: %d\n", status.WhitelistedDomains)
 	fmt.Printf("Whitelisted IPs: %d\n", status.WhitelistedIPs)
 
-	// Recent Activity
+	// Recent Activity - only show if stats available
 	if stats != nil {
 		subtitleColor.Println("\nRecent Activity:")
 		fmt.Printf("Domains processed in last 24h: %d\n", stats.DomainsProcessed24h)
@@ -672,6 +586,21 @@ func showStatus() {
 					break
 				}
 				fmt.Printf("- %s\n", domain)
+			}
+		}
+	}
+
+	// Show next run time if timer is active
+	if timerStatus == "active" {
+		cmd := exec.Command("systemctl", "list-timers", "dnsniper-agent.timer", "--no-pager", "--no-legend")
+		if output, err := cmd.Output(); err == nil {
+			lines := strings.Split(string(output), "\n")
+			if len(lines) > 0 && lines[0] != "" {
+				fields := strings.Fields(lines[0])
+				if len(fields) >= 5 {
+					nextRun := strings.Join(fields[0:5], " ")
+					infoColor.Printf("\nNext scheduled run: %s\n", nextRun)
+				}
 			}
 		}
 	}
@@ -937,6 +866,7 @@ func manageSettings(reader *bufio.Reader) {
 
 func clearRules() {
 	infoColor.Println("Clearing all firewall rules...")
+
 	// Clear rules in memory
 	fwManager, err := firewall.NewIPTablesManager()
 	if err != nil {
@@ -944,16 +874,31 @@ func clearRules() {
 		return
 	}
 
+	// First remove all iptables rules that reference ipsets
+	infoColor.Println("Removing iptables rules...")
+	if err := fwManager.RemoveAllIPSetRules(); err != nil {
+		warningColor.Printf("Warning: Failed to remove some iptables rules: %v\n", err)
+	}
+
+	// Then clear the ipsets
+	infoColor.Println("Clearing ipset entries...")
 	if err := fwManager.ClearRules(); err != nil {
 		errorColor.Printf("Error clearing rules: %v\n", err)
 		return
 	}
 
-	successColor.Println("Rules cleared successfully and saved permanently")
+	// Save the cleaned state
+	if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+		errorColor.Printf("Error saving cleared rules: %v\n", err)
+		return
+	}
+
+	successColor.Println("All firewall rules cleared successfully")
 }
 
 func rebuildFirewallRules() {
 	infoColor.Println("Rebuilding firewall rules...")
+
 	// First, clear existing rules
 	fwManager, err := firewall.NewIPTablesManager()
 	if err != nil {
@@ -961,17 +906,34 @@ func rebuildFirewallRules() {
 		return
 	}
 
+	// Remove all iptables rules first
+	infoColor.Println("Removing existing iptables rules...")
+	if err := fwManager.RemoveAllIPSetRules(); err != nil {
+		warningColor.Printf("Warning: Failed to remove some existing rules: %v\n", err)
+	}
+
+	// Clear ipsets
 	if err := fwManager.ClearRules(); err != nil {
 		errorColor.Printf("Error clearing rules: %v\n", err)
 		return
 	}
 
-	// Get all blocked IPs and IP ranges from database
-	blockedIPs, blockedRanges, err := database.GetAllBlockedIPs()
-	if err != nil {
-		errorColor.Printf("Error getting blocked IPs: %v\n", err)
+	// Re-setup ipset rules in iptables
+	infoColor.Println("Re-establishing iptables rules for ipsets...")
+	if err := fwManager.RefreshIPSetRules(); err != nil {
+		errorColor.Printf("Error setting up ipset rules: %v\n", err)
 		return
 	}
+
+	// Get settings
+	settings, err := config.GetSettings()
+	if err != nil {
+		errorColor.Printf("Error getting settings: %v\n", err)
+		return
+	}
+
+	// Process whitelist first (higher priority)
+	infoColor.Println("Processing whitelist entries...")
 
 	// Get all whitelisted IPs and ranges
 	whitelistedIPs, whitelistedRanges, err := database.GetAllWhitelistedIPs()
@@ -980,21 +942,10 @@ func rebuildFirewallRules() {
 		return
 	}
 
-	// Get settings (block rule type no longer used functionally, but kept for compatibility)
-	settings, err := config.GetSettings()
-	if err != nil {
-		errorColor.Printf("Error getting settings: %v\n", err)
-		return
-	}
-
-	// Apply rules for each IP
 	successCount := 0
 	failCount := 0
-	skippedCount := 0
 
-	// Process whitelist first (higher priority)
-	infoColor.Printf("Processing whitelist rules for %d IPs and %d IP ranges...\n", len(whitelistedIPs), len(whitelistedRanges))
-
+	// Add whitelisted IPs
 	for _, ip := range whitelistedIPs {
 		if err := fwManager.WhitelistIP(ip); err != nil {
 			errorColor.Printf("Error whitelisting IP %s: %v\n", ip, err)
@@ -1004,6 +955,7 @@ func rebuildFirewallRules() {
 		}
 	}
 
+	// Add whitelisted ranges
 	for _, cidr := range whitelistedRanges {
 		if err := fwManager.WhitelistIPRange(cidr); err != nil {
 			errorColor.Printf("Error whitelisting IP range %s: %v\n", cidr, err)
@@ -1013,15 +965,47 @@ func rebuildFirewallRules() {
 		}
 	}
 
-	// Process blocklist (lower priority)
-	infoColor.Printf("Processing blocklist rules for %d IPs and %d IP ranges...\n", len(blockedIPs), len(blockedRanges))
+	infoColor.Printf("Whitelist complete: %d entries added, %d failed\n", successCount, failCount)
 
-	for _, ip := range blockedIPs {
-		// Check if IP is whitelisted
+	// Process blocklist (lower priority)
+	infoColor.Println("Processing blocklist entries...")
+
+	// Get all blocked IPs and IP ranges from database
+	blockedIPs, blockedRanges, err := database.GetAllBlockedIPs()
+	if err != nil {
+		errorColor.Printf("Error getting blocked IPs: %v\n", err)
+		return
+	}
+
+	blockSuccessCount := 0
+	blockFailCount := 0
+	skippedCount := 0
+
+	// Create a map of whitelisted entries for faster lookup
+	whitelistMap := make(map[string]bool)
+	for _, ip := range whitelistedIPs {
+		whitelistMap[ip] = true
+	}
+
+	// Process blocked IPs
+	infoColor.Printf("Processing %d blocked IPs...\n", len(blockedIPs))
+	for i, ip := range blockedIPs {
+		// Show progress for large lists
+		if i > 0 && i%1000 == 0 {
+			infoColor.Printf("Progress: %d/%d IPs processed\n", i, len(blockedIPs))
+		}
+
+		// Quick check from our map first
+		if whitelistMap[ip] {
+			skippedCount++
+			continue
+		}
+
+		// Double-check with database (for ranges that might whitelist this IP)
 		isWhitelisted, err := database.IsIPWhitelisted(ip)
 		if err != nil {
 			log.Warnf("Failed to check if IP %s is whitelisted: %v", ip, err)
-			failCount++
+			blockFailCount++
 			continue
 		}
 
@@ -1031,22 +1015,25 @@ func rebuildFirewallRules() {
 			continue
 		}
 
-		// BlockRuleType is now ignored internally but kept in the API for compatibility
+		// Block the IP
 		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-			errorColor.Printf("Error blocking IP %s: %v\n", ip, err)
-			failCount++
+			if !strings.Contains(err.Error(), "already exists") {
+				errorColor.Printf("Error blocking IP %s: %v\n", ip, err)
+				blockFailCount++
+			}
 		} else {
-			successCount++
+			blockSuccessCount++
 		}
 	}
 
-	// Apply rules for IP ranges
+	// Process blocked ranges
+	infoColor.Printf("Processing %d blocked IP ranges...\n", len(blockedRanges))
 	for _, cidr := range blockedRanges {
 		// Check if range is whitelisted
 		isWhitelisted, err := database.IsIPRangeWhitelisted(cidr)
 		if err != nil {
 			log.Warnf("Failed to check if range %s is whitelisted: %v", cidr, err)
-			failCount++
+			blockFailCount++
 			continue
 		}
 
@@ -1056,137 +1043,152 @@ func rebuildFirewallRules() {
 			continue
 		}
 
-		// BlockRuleType is now ignored internally but kept in the API for compatibility
+		// Block the range
 		if err := fwManager.BlockIPRange(cidr, settings.BlockRuleType); err != nil {
-			errorColor.Printf("Error blocking IP range %s: %v\n", cidr, err)
-			failCount++
+			if !strings.Contains(err.Error(), "already exists") {
+				errorColor.Printf("Error blocking IP range %s: %v\n", cidr, err)
+				blockFailCount++
+			}
 		} else {
-			successCount++
+			blockSuccessCount++
 		}
 	}
 
 	// Save the changes to persistent files
+	infoColor.Println("Saving firewall rules...")
 	if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
 		errorColor.Printf("Error saving firewall rules: %v\n", err)
 		return
 	}
 
-	successColor.Printf("Firewall rules rebuilt successfully.\n")
-	infoColor.Printf("Applied rules: %d, Skipped (whitelisted): %d, Failed rules: %d\n",
-		successCount, skippedCount, failCount)
+	// Summary
+	successColor.Println("Firewall rules rebuilt successfully.")
+	infoColor.Printf("Summary:\n")
+	infoColor.Printf("  Whitelist: %d entries applied, %d failed\n", successCount, failCount)
+	infoColor.Printf("  Blocklist: %d entries applied, %d skipped (whitelisted), %d failed\n",
+		blockSuccessCount, skippedCount, blockFailCount)
+	infoColor.Printf("  Total rules applied: %d\n", successCount+blockSuccessCount)
 }
 
 func confirmUninstall(reader *bufio.Reader) bool {
 	clearScreen()
 	warningColor.Println("\n⚠️  WARNING: You are about to uninstall DNSniper ⚠️")
-	fmt.Println("This will remove all DNSniper components, including:")
-	fmt.Println("- All executable files")
-	fmt.Println("- All firewall rules (including IPSet rules)")
-	fmt.Println("- All systemd services")
-	fmt.Println("- All configuration files")
-	promptColor.Print("\nAre you sure you want to uninstall DNSniper? (yes/no): ")
+	fmt.Println("\nThis will:")
+	fmt.Println("• Stop all DNSniper services")
+	fmt.Println("• Remove all firewall rules and ipset configurations")
+	fmt.Println("• Delete all executable files")
+	fmt.Println("• Remove all configuration files")
+	fmt.Println("\nThis action cannot be undone!")
+
+	errorColor.Print("\nType 'UNINSTALL' to confirm: ")
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
-	if strings.ToLower(input) == "yes" {
-		infoColor.Println("Uninstalling DNSniper...")
-
-		// Stop and disable services
-		exec.Command("systemctl", "stop", "dnsniper-agent.service").Run()
-		exec.Command("systemctl", "disable", "dnsniper-agent.service").Run()
-		exec.Command("systemctl", "stop", "dnsniper-agent.timer").Run()
-		exec.Command("systemctl", "disable", "dnsniper-agent.timer").Run()
-
-		// Remove service files
-		exec.Command("rm", "-f", "/etc/systemd/system/dnsniper-agent.service").Run()
-		exec.Command("rm", "-f", "/etc/systemd/system/dnsniper-agent.timer").Run()
-
-		// Remove symlinks
-		exec.Command("rm", "-f", "/usr/bin/dnsniper").Run()
-		exec.Command("rm", "-f", "/usr/bin/dnsniper-agent").Run()
-
-		// Clean up iptables rules
-		infoColor.Println("Cleaning up iptables rules...")
-
-		// First clean up any legacy direct DROP rules that might exist
-		exec.Command("sh", "-c", "iptables-save | grep -v -- \"-A DNSniper .* -j DROP\" | iptables-restore").Run()
-		exec.Command("sh", "-c", "ip6tables-save | grep -v -- \"-A DNSniper6 .* -j DROP\" | ip6tables-restore").Run()
-
-		// Clean up traditional chains
-		exec.Command("sh", "-c", "iptables -D INPUT -j DNSniper 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -D OUTPUT -j DNSniper 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -D FORWARD -j DNSniper 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -F DNSniper 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -X DNSniper 2>/dev/null || true").Run()
-
-		// Same for IPv6
-		exec.Command("sh", "-c", "ip6tables -D INPUT -j DNSniper6 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -D OUTPUT -j DNSniper6 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -D FORWARD -j DNSniper6 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -F DNSniper6 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -X DNSniper6 2>/dev/null || true").Run()
-
-		// Clean up ipset rules
-		infoColor.Println("Cleaning up ipset rules...")
-
-		// Remove ipset rules from iptables
-		exec.Command("sh", "-c", "iptables -D INPUT -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -D OUTPUT -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -D INPUT -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -D OUTPUT -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -D INPUT -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -D OUTPUT -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -D INPUT -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "iptables -D OUTPUT -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null || true").Run()
-
-		// Same for IPv6
-		exec.Command("sh", "-c", "ip6tables -D INPUT -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -D OUTPUT -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -D INPUT -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -D OUTPUT -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -D INPUT -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -D OUTPUT -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -D INPUT -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables -D OUTPUT -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null || true").Run()
-
-		// Destroy ipset sets
-		exec.Command("sh", "-c", "ipset destroy dnsniper-whitelist 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ipset destroy dnsniper-blocklist 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ipset destroy dnsniper-range-whitelist 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ipset destroy dnsniper-range-blocklist 2>/dev/null || true").Run()
-
-		// Delete ipset configuration file
-		exec.Command("rm", "-f", "/etc/ipset.conf").Run()
-
-		// Save iptables rules
-		exec.Command("sh", "-c", "mkdir -p /etc/iptables").Run()
-		exec.Command("sh", "-c", "iptables-save > /etc/iptables/rules.v4 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true").Run()
-		exec.Command("sh", "-c", "systemctl restart netfilter-persistent 2>/dev/null || true").Run()
-
-		// Confirm with user what to do with logs
-		promptColor.Print("Would you like to keep log files? (y/n): ")
-		keepLogs, _ := reader.ReadString('\n')
-		keepLogs = strings.TrimSpace(keepLogs)
-
-		// Remove installation directory
-		exec.Command("rm", "-rf", "/etc/dnsniper").Run()
-
-		// Remove logs if requested
-		if strings.ToLower(keepLogs) == "n" || strings.ToLower(keepLogs) == "no" {
-			exec.Command("rm", "-rf", "/var/log/dnsniper").Run()
-			infoColor.Println("Log files removed")
-		} else {
-			infoColor.Println("Log files kept at /var/log/dnsniper")
-		}
-
-		successColor.Println("DNSniper has been uninstalled.")
-		return true
+	if input != "UNINSTALL" {
+		infoColor.Println("Uninstallation cancelled")
+		time.Sleep(1 * time.Second)
+		return false
 	}
 
-	infoColor.Println("Uninstallation cancelled")
-	time.Sleep(1 * time.Second)
-	return false
+	// Create uninstall script for complete cleanup
+	uninstallScript := `#!/bin/bash
+# Stop services
+systemctl stop dnsniper-agent.service 2>/dev/null
+systemctl stop dnsniper-agent.timer 2>/dev/null
+systemctl disable dnsniper-agent.service 2>/dev/null
+systemctl disable dnsniper-agent.timer 2>/dev/null
+
+# Remove iptables rules
+iptables -D INPUT -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
+iptables -D OUTPUT -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
+iptables -D INPUT -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
+iptables -D OUTPUT -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
+iptables -D INPUT -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
+iptables -D OUTPUT -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
+iptables -D INPUT -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
+iptables -D OUTPUT -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
+
+# Same for IPv6
+ip6tables -D INPUT -m set --match-set dnsniper-whitelist src -j ACCEPT 2>/dev/null
+ip6tables -D OUTPUT -m set --match-set dnsniper-whitelist dst -j ACCEPT 2>/dev/null
+ip6tables -D INPUT -m set --match-set dnsniper-range-whitelist src -j ACCEPT 2>/dev/null
+ip6tables -D OUTPUT -m set --match-set dnsniper-range-whitelist dst -j ACCEPT 2>/dev/null
+ip6tables -D INPUT -m set --match-set dnsniper-blocklist src -j DROP 2>/dev/null
+ip6tables -D OUTPUT -m set --match-set dnsniper-blocklist dst -j DROP 2>/dev/null
+ip6tables -D INPUT -m set --match-set dnsniper-range-blocklist src -j DROP 2>/dev/null
+ip6tables -D OUTPUT -m set --match-set dnsniper-range-blocklist dst -j DROP 2>/dev/null
+
+# Clean chains
+iptables -D INPUT -j DNSniper 2>/dev/null
+iptables -D OUTPUT -j DNSniper 2>/dev/null
+iptables -D FORWARD -j DNSniper 2>/dev/null
+iptables -F DNSniper 2>/dev/null
+iptables -X DNSniper 2>/dev/null
+
+ip6tables -D INPUT -j DNSniper6 2>/dev/null
+ip6tables -D OUTPUT -j DNSniper6 2>/dev/null
+ip6tables -D FORWARD -j DNSniper6 2>/dev/null
+ip6tables -F DNSniper6 2>/dev/null
+ip6tables -X DNSniper6 2>/dev/null
+
+# Destroy ipsets
+ipset destroy dnsniper-whitelist 2>/dev/null
+ipset destroy dnsniper-blocklist 2>/dev/null
+ipset destroy dnsniper-range-whitelist 2>/dev/null
+ipset destroy dnsniper-range-blocklist 2>/dev/null
+
+# Save cleaned iptables
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4 2>/dev/null
+ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+systemctl restart netfilter-persistent 2>/dev/null
+
+# Remove files
+rm -f /etc/systemd/system/dnsniper-agent.service
+rm -f /etc/systemd/system/dnsniper-agent.timer
+rm -f /usr/bin/dnsniper
+rm -f /usr/bin/dnsniper-agent
+rm -rf /etc/dnsniper
+rm -f /etc/ipset.conf
+
+# Reload systemd
+systemctl daemon-reload
+`
+
+	// Execute uninstall script
+	tmpFile, err := os.CreateTemp("", "dnsniper-uninstall-*.sh")
+	if err != nil {
+		errorColor.Printf("Failed to create uninstall script: %v\n", err)
+		return false
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(uninstallScript); err != nil {
+		errorColor.Printf("Failed to write uninstall script: %v\n", err)
+		return false
+	}
+	tmpFile.Close()
+
+	cmd := exec.Command("bash", tmpFile.Name())
+	if output, err := cmd.CombinedOutput(); err != nil {
+		errorColor.Printf("Uninstall errors: %v\n%s\n", err, string(output))
+	}
+
+	// Ask about logs
+	promptColor.Print("\nWould you like to keep log files? (y/n): ")
+	keepLogs, _ := reader.ReadString('\n')
+	keepLogs = strings.TrimSpace(keepLogs)
+
+	if strings.ToLower(keepLogs) == "n" || strings.ToLower(keepLogs) == "no" {
+		os.RemoveAll("/var/log/dnsniper")
+		infoColor.Println("Log files removed")
+	} else {
+		infoColor.Println("Log files kept at /var/log/dnsniper")
+	}
+
+	successColor.Println("\nDNSniper has been uninstalled.")
+	fmt.Println("\nThank you for using DNSniper!")
+	return true
 }
 
 func removeDomainFromList(isWhitelist bool, reader *bufio.Reader) {
@@ -1989,12 +1991,40 @@ func changeDNSResolver(reader *bufio.Reader) {
 		return
 	}
 
-	fmt.Printf("Current DNS resolver: %s\n", settings.DNSResolver)
-	promptColor.Print("Enter new DNS resolver (default 8.8.8.8): ")
-	resolver, _ := reader.ReadString('\n')
-	resolver = strings.TrimSpace(resolver)
+	fmt.Printf("Current DNS resolver: %s\n\n", settings.DNSResolver)
+	infoColor.Println("Popular DNS servers:")
+	fmt.Println("1. Google DNS (8.8.8.8)")
+	fmt.Println("2. Cloudflare DNS (1.1.1.1)")
+	fmt.Println("3. Quad9 DNS (9.9.9.9)")
+	fmt.Println("4. OpenDNS (208.67.222.222)")
+	fmt.Println("5. Custom DNS server")
 
-	if resolver == "" {
+	promptColor.Print("Select an option [1-5]: ")
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+
+	var resolver string
+	switch choice {
+	case "1":
+		resolver = "8.8.8.8"
+	case "2":
+		resolver = "1.1.1.1"
+	case "3":
+		resolver = "9.9.9.9"
+	case "4":
+		resolver = "208.67.222.222"
+	case "5":
+		promptColor.Print("Enter custom DNS resolver IP: ")
+		resolver, _ = reader.ReadString('\n')
+		resolver = strings.TrimSpace(resolver)
+	default:
+		resolver = "8.8.8.8"
+		warningColor.Println("Invalid choice, using default (8.8.8.8)")
+	}
+
+	// Validate IP address
+	if net.ParseIP(resolver) == nil {
+		errorColor.Println("Invalid IP address format. Using default (8.8.8.8)")
 		resolver = "8.8.8.8"
 	}
 
@@ -2170,34 +2200,51 @@ func setRulesExpiration(reader *bufio.Reader) {
 	}
 
 	fmt.Printf("Current rule expiration: %s\n\n", settings.RuleExpiration.String())
-	fmt.Println("Select time unit:")
+	infoColor.Println("Note: This only affects auto-downloaded domains, not custom entries.")
+	fmt.Println("\nSelect time unit:")
 	fmt.Println("1. Minutes")
-	fmt.Println("2. Hours (default: 24 hours)")
-	fmt.Println("3. Days")
+	fmt.Println("2. Hours")
+	fmt.Println("3. Days (recommended)")
+	fmt.Println("4. Weeks")
 
-	promptColor.Print("\nEnter choice [1-3]: ")
+	promptColor.Print("\nEnter choice [1-4]: ")
 	unitChoice, _ := reader.ReadString('\n')
 	unitChoice = strings.TrimSpace(unitChoice)
 
 	var unit string
 	var defaultValue int
 	var unitText string
+	var minValue, maxValue int
+
 	switch unitChoice {
 	case "1":
 		unit = "m"
 		defaultValue = 1440 // 24 hours in minutes
 		unitText = "minutes"
-	case "3":
-		unit = "d"
-		defaultValue = 1 // 1 day
-		unitText = "days"
-	default:
+		minValue = 30
+		maxValue = 10080 // 1 week in minutes
+	case "2":
 		unit = "h"
-		defaultValue = 24 // 24 hours
+		defaultValue = 24
 		unitText = "hours"
+		minValue = 1
+		maxValue = 168 // 1 week in hours
+	case "4":
+		unit = "w"
+		defaultValue = 4 // 4 weeks
+		unitText = "weeks"
+		minValue = 1
+		maxValue = 52 // 1 year
+	default:
+		unit = "d"
+		defaultValue = 30 // 30 days
+		unitText = "days"
+		minValue = 1
+		maxValue = 365
 	}
 
-	promptColor.Printf("Enter expiration time in %s (default: %d): ", unitText, defaultValue)
+	promptColor.Printf("Enter expiration time in %s (min: %d, max: %d, default: %d): ",
+		unitText, minValue, maxValue, defaultValue)
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
 
@@ -2205,14 +2252,20 @@ func setRulesExpiration(reader *bufio.Reader) {
 	if input != "" {
 		var err error
 		value, err = strconv.Atoi(input)
-		if err != nil || value <= 0 {
+		if err != nil || value < minValue || value > maxValue {
 			errorColor.Printf("Invalid input. Using default (%d %s).\n", defaultValue, unitText)
 			value = defaultValue
 		}
 	}
 
-	// Save to database with appropriate unit
-	expStr := fmt.Sprintf("%d%s", value, unit)
+	// Convert weeks to days for storage
+	expStr := ""
+	if unit == "w" {
+		expStr = fmt.Sprintf("%dd", value*7)
+	} else {
+		expStr = fmt.Sprintf("%d%s", value, unit)
+	}
+
 	err = config.SaveSetting("rule_expiration", expStr)
 	if err != nil {
 		errorColor.Printf("Failed to save rule expiration: %v\n", err)
@@ -2333,7 +2386,8 @@ func manageUpdateURLs(reader *bufio.Reader) {
 func addUpdateURL(reader *bufio.Reader) {
 	clearScreen()
 	subtitleColor.Println("Add Update URL")
-	promptColor.Println("Enter URL for domain list (e.g., https://example.com/domains.txt):")
+	infoColor.Println("The URL should point to a text file containing one domain per line.")
+	promptColor.Println("Enter URL (e.g., https://example.com/domains.txt):")
 	url, _ := reader.ReadString('\n')
 	url = strings.TrimSpace(url)
 
@@ -2343,9 +2397,45 @@ func addUpdateURL(reader *bufio.Reader) {
 		return
 	}
 
+	// Validate URL format
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		errorColor.Println("URL must start with http:// or https://")
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	// Test URL accessibility
+	infoColor.Printf("Testing URL accessibility...")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Head(url)
+	if err != nil {
+		errorColor.Printf("Failed to access URL: %v\n", err)
+		promptColor.Print("Add anyway? (y/n): ")
+		confirm, _ := reader.ReadString('\n')
+		if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+			return
+		}
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			warningColor.Printf("URL returned status code: %d\n", resp.StatusCode)
+			promptColor.Print("Add anyway? (y/n): ")
+			confirm, _ := reader.ReadString('\n')
+			if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
+				return
+			}
+		} else {
+			successColor.Println("URL is accessible")
+		}
+	}
+
 	// Add URL to database
 	if err := database.AddUpdateURL(url); err != nil {
-		errorColor.Printf("Failed to add update URL: %v\n", err)
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			errorColor.Println("This URL is already in the list.")
+		} else {
+			errorColor.Printf("Failed to add update URL: %v\n", err)
+		}
 		time.Sleep(2 * time.Second)
 		return
 	}
