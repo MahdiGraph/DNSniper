@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -270,7 +271,6 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 	if err != nil {
 		return fmt.Errorf("failed to get update URLs: %w", err)
 	}
-
 	if len(urls) == 0 {
 		log.Warn("No update URLs configured. Adding default URL.")
 		if err := database.AddUpdateURL("https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"); err != nil {
@@ -285,10 +285,34 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 	totalProcessed := 0
 	totalBlocked := 0
 
+	// Rate limiting settings
+	maxConcurrent := 5 // Maximum concurrent domain processing
+	domainChan := make(chan string, maxConcurrent)
+	resultChan := make(chan Result, maxConcurrent)
+	errorChan := make(chan error, maxConcurrent)
+	var wg sync.WaitGroup
+
+	// Start worker goroutines
+	for i := 0; i < maxConcurrent; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for domain := range domainChan {
+				result, err := processDomain(domain, settings, runID, "")
+				if err != nil {
+					errorChan <- fmt.Errorf("error processing domain %s: %w", domain, err)
+					continue
+				}
+				resultChan <- result
+			}
+		}()
+	}
+
 	// Process each URL
 	for _, url := range urls {
 		select {
 		case <-ctx.Done():
+			close(domainChan) // Stop workers
 			return fmt.Errorf("processing interrupted")
 		default:
 			log.Infof("Processing domains from URL: %s", url)
@@ -307,34 +331,31 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 			fmt.Printf("Downloaded %d domains from %s\n", len(domains), url)
 
 			// Process domains
+			domainsToProcess := 0
 			for _, domain := range domains {
-				select {
-				case <-ctx.Done():
-					return fmt.Errorf("processing interrupted")
-				default:
-					// Skip if we've already seen this domain in this run
-					if seenDomains[domain] {
-						continue
-					}
-					seenDomains[domain] = true
-					totalProcessed++
+				if seenDomains[domain] {
+					continue
+				}
+				seenDomains[domain] = true
+				domainsToProcess++
 
-					if totalProcessed%100 == 0 || totalProcessed == totalDomains {
-						fmt.Printf("Progress: %d/%d domains processed\n", totalProcessed, totalDomains)
-					}
+				// Send domain for processing
+				domainChan <- domain
 
-					log.Infof("Processing domain %d/%d: %s", totalProcessed, totalDomains, domain)
-					result, err := processDomain(domain, settings, runID, url)
-					if err != nil {
-						log.Errorf("Failed to process domain %s: %v", domain, err)
-						// Continue with the next domain
-						continue
-					}
-					totalBlocked += result.IPsBlocked
+				// Process results periodically to update progress
+				if domainsToProcess%20 == 0 || domainsToProcess == len(domains) {
+					processResults(resultChan, errorChan, &totalProcessed, &totalBlocked, totalDomains)
 				}
 			}
 		}
 	}
+
+	// Close channel and wait for workers to finish
+	close(domainChan)
+	wg.Wait()
+
+	// Process any remaining results
+	processResults(resultChan, errorChan, &totalProcessed, &totalBlocked, totalDomains)
 
 	// Update expiration for domains that weren't seen in this run
 	if err := database.ExpireUnseenDomains(seenDomains); err != nil {
@@ -343,8 +364,28 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 
 	fmt.Printf("Completed: %d domains processed, %d IPs blocked\n", totalProcessed, totalBlocked)
 	log.Infof("Completed: %d domains processed, %d IPs blocked", totalProcessed, totalBlocked)
-
 	return nil
+}
+
+func processResults(resultChan chan Result, errorChan chan error, totalProcessed *int, totalBlocked *int, totalDomains int) {
+	// Process all available results without blocking
+processingLoop:
+	for {
+		select {
+		case result := <-resultChan:
+			*totalProcessed++
+			*totalBlocked += result.IPsBlocked
+			if *totalProcessed%100 == 0 || *totalProcessed == totalDomains {
+				fmt.Printf("Progress: %d/%d domains processed, %d IPs blocked\n",
+					*totalProcessed, totalDomains, *totalBlocked)
+			}
+		case err := <-errorChan:
+			log.Error(err)
+		default:
+			// No more results available at this moment
+			break processingLoop
+		}
+	}
 }
 
 // Result holds processing statistics
@@ -365,14 +406,31 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		return result, nil
 	}
 
-	// Resolve domain (includes both IPv4 and IPv6)
+	const maxRetries = 3
+	var ips []string
 	resolver := dns.NewStandardResolver()
-	ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
-	if err != nil {
-		return result, err
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		ips, err = resolver.ResolveDomain(domain, settings.DNSResolver)
+		if err == nil || attempt == maxRetries {
+			break
+		}
+		log.Warnf("Attempt %d: Failed to resolve domain %s: %v. Retrying in %d seconds...",
+			attempt, domain, err, attempt)
+		time.Sleep(time.Duration(attempt) * time.Second)
 	}
+
+	if err != nil {
+		log.Errorf("Failed to resolve domain %s after %d attempts: %v", domain, maxRetries, err)
+		// We'll continue with an empty IPs list
+	}
+
 	if len(ips) == 0 {
 		log.Infof("No IPs found for domain %s", domain)
+		// Still save the domain to database for tracking
+		if _, err := database.SaveDomain(domain, settings.RuleExpiration, sourceURL); err != nil {
+			return result, err
+		}
 		return result, nil
 	}
 

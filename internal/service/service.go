@@ -77,23 +77,28 @@ func IsAgentRunning() (bool, error) {
 		return false, nil
 	}
 
-	// If the last run started less than 10 minutes ago and has no completion time, assume it's running
-	if time.Since(lastRun.StartedAt) < 10*time.Minute {
-		return true, nil
-	}
-
-	// Check active processes as a backup method
-	cmd := exec.Command("pgrep", "-f", "dnsniper-agent")
-	output, err := cmd.Output()
-	if err != nil {
-		// If command returns non-zero exit status, no matching processes found
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return false, nil
+	// If the last run started less than 30 minutes ago and has no completion time,
+	// it's likely still running (or terminated abnormally)
+	if time.Since(lastRun.StartedAt) < 30*time.Minute {
+		// Check active processes to confirm
+		cmd := exec.Command("pgrep", "-f", "dnsniper-agent")
+		if err := cmd.Run(); err == nil {
+			// Process exists, so it's running
+			return true, nil
 		}
-		return false, fmt.Errorf("failed to check agent process: %w", err)
+
+		// Process doesn't exist but database shows it's running
+		// This indicates abnormal termination
+		fmt.Printf("Agent started %v ago but process not found - possible abnormal termination\n",
+			time.Since(lastRun.StartedAt))
+		return false, nil
 	}
 
-	return len(output) > 0, nil
+	// If it's been more than 30 minutes since the start without completion,
+	// assume it's stalled or crashed
+	fmt.Printf("Agent started %v ago without completion - assuming stalled or crashed\n",
+		time.Since(lastRun.StartedAt))
+	return false, nil
 }
 
 // UpdateServiceLogging updates the systemd service file to enable/disable logging

@@ -76,6 +76,51 @@ func IsDomainInBlocklist(domain string) (bool, error) {
 	return exists, err
 }
 
+// GetAllWhitelistedIPs returns all whitelisted IPs and IP ranges
+func GetAllWhitelistedIPs() ([]string, []string, error) {
+	// Get individual IPs
+	rows, err := db.Query("SELECT ip_address FROM ips WHERE is_whitelisted = 1")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+
+	var ips []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, nil, err
+		}
+		ips = append(ips, ip)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	// Get IP ranges
+	rangeRows, err := db.Query("SELECT cidr FROM ip_ranges WHERE is_whitelisted = 1")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rangeRows.Close()
+
+	var ranges []string
+	for rangeRows.Next() {
+		var cidr string
+		if err := rangeRows.Scan(&cidr); err != nil {
+			return nil, nil, err
+		}
+		ranges = append(ranges, cidr)
+	}
+
+	if err := rangeRows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	return ips, ranges, nil
+}
+
 // GetIPsForDomain gets all IPs associated with a domain
 func GetIPsForDomain(domain string) ([]string, error) {
 	// First get domain ID
