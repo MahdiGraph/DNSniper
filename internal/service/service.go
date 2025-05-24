@@ -2,7 +2,6 @@ package service
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"regexp"
@@ -16,6 +15,7 @@ import (
 // GetAgentStatus returns the current status of the DNSniper agent
 func GetAgentStatus() (models.AgentStatus, error) {
 	var status models.AgentStatus
+
 	// Check if the timer is active first
 	cmd := exec.Command("systemctl", "is-active", "dnsniper-agent.timer")
 	output, err := cmd.Output()
@@ -77,27 +77,29 @@ func IsAgentRunning() (bool, error) {
 		return false, nil
 	}
 
-	// If the last run started less than 30 minutes ago and has no completion time,
-	// it's likely still running (or terminated abnormally)
+	// If the process started less than 30 minutes ago and has no completion time,
+	// check if it's still running via process check
 	if time.Since(lastRun.StartedAt) < 30*time.Minute {
-		// Check active processes to confirm
+		// Check active processes as a more reliable method
 		cmd := exec.Command("pgrep", "-f", "dnsniper-agent")
-		if err := cmd.Run(); err == nil {
-			// Process exists, so it's running
-			return true, nil
+		output, err := cmd.Output()
+		if err != nil {
+			// Process not found but within time window, check for system resource issues
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				fmt.Printf("Agent started %v ago but process not found - possible abnormal termination\n",
+					time.Since(lastRun.StartedAt))
+				return false, nil
+			}
+			return false, fmt.Errorf("failed to check agent process: %w", err)
 		}
 
-		// Process doesn't exist but database shows it's running
-		// This indicates abnormal termination
-		fmt.Printf("Agent started %v ago but process not found - possible abnormal termination\n",
-			time.Since(lastRun.StartedAt))
-		return false, nil
+		// If we found a process, it's definitely running
+		if len(output) > 0 {
+			return true, nil
+		}
 	}
 
-	// If it's been more than 30 minutes since the start without completion,
-	// assume it's stalled or crashed
-	fmt.Printf("Agent started %v ago without completion - assuming stalled or crashed\n",
-		time.Since(lastRun.StartedAt))
+	// Process not running or took too long
 	return false, nil
 }
 
@@ -108,7 +110,7 @@ func UpdateServiceLogging(enable bool) error {
 	serviceFile := "/etc/systemd/system/dnsniper-agent.service"
 
 	// Read the current content
-	content, err := ioutil.ReadFile(serviceFile)
+	content, err := os.ReadFile(serviceFile)
 	if err != nil {
 		return fmt.Errorf("failed to read service file: %w", err)
 	}
@@ -153,7 +155,7 @@ func UpdateServiceLogging(enable bool) error {
 	newContent := contentStr[:execStartIdx] + newLine + contentStr[lineEndIdx:]
 
 	// Write back to the file
-	if err := ioutil.WriteFile(serviceFile, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(serviceFile, []byte(newContent), 0644); err != nil {
 		return fmt.Errorf("failed to write service file: %w", err)
 	}
 
@@ -359,7 +361,7 @@ func UpdateAgentTimerInterval(interval string) error {
 	timerFile := "/etc/systemd/system/dnsniper-agent.timer"
 
 	// Read the current content
-	content, err := ioutil.ReadFile(timerFile)
+	content, err := os.ReadFile(timerFile)
 	if err != nil {
 		return fmt.Errorf("failed to read timer file: %w", err)
 	}
@@ -369,7 +371,7 @@ func UpdateAgentTimerInterval(interval string) error {
 	newContent := re.ReplaceAll(content, []byte("$1"+interval))
 
 	// Write the modified content back to the file
-	if err := ioutil.WriteFile(timerFile, newContent, 0644); err != nil {
+	if err := os.WriteFile(timerFile, newContent, 0644); err != nil {
 		return fmt.Errorf("failed to write timer file: %w", err)
 	}
 

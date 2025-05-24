@@ -48,33 +48,40 @@ func NewIPTablesManager() (*IPTablesManager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize IPv4 iptables: %w", err)
 	}
+
 	ipv6, err := iptables.NewWithProtocol(iptables.ProtocolIPv6)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize IPv6 iptables: %w", err)
 	}
+
 	// Initialize ipset manager
 	ipsetMgr, err := ipset.NewIPSetManager()
 	if err != nil {
 		log.Warnf("Failed to initialize ipset: %v", err)
 		return nil, fmt.Errorf("failed to initialize ipset manager: %w", err)
 	}
+
 	manager := &IPTablesManager{
 		ipv4:     ipv4,
 		ipv6:     ipv6,
 		ipsetMgr: ipsetMgr,
 	}
+
 	// Ensure iptables tools are properly configured
 	if err := manager.ensureIPTablesTools(); err != nil {
 		log.Warnf("Failed to ensure iptables tools: %v", err)
 	}
+
 	// Make sure the iptables chains exist
 	if err := manager.ensureChain(); err != nil {
 		log.Warnf("Failed to ensure iptables chains: %v", err)
 	}
+
 	// Setup ipset rules based on current block rule type
 	if err := manager.ensureIPSetRules(); err != nil {
 		log.Warnf("Failed to ensure ipset iptables rules: %v", err)
 	}
+
 	return manager, nil
 }
 
@@ -88,10 +95,12 @@ func (m *IPTablesManager) ensureIPTablesTools() error {
 		cmd = exec.Command("sh", "-c", "systemctl restart netfilter-persistent")
 		_ = cmd.Run() // Ignore error as it might not be installed
 	}
+
 	// Ensure directories exist
 	if err := os.MkdirAll("/etc/iptables", 0755); err != nil {
 		return fmt.Errorf("failed to create iptables directory: %w", err)
 	}
+
 	return nil
 }
 
@@ -116,159 +125,162 @@ func (m *IPTablesManager) HasRule(chain, setName, direction string) (bool, error
 
 // ensureIPSetRules ensures that the iptables rules for ipset are in place
 func (m *IPTablesManager) ensureIPSetRules() error {
-	// First get the current block rule type
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Get current block rule type
 	settings, err := config.GetSettings()
 	if err != nil {
 		log.Warnf("Failed to get settings, using default block rule type 'both': %v", err)
-		// Default to 'both' if we can't get settings
 		settings.BlockRuleType = "both"
 	}
 
-	// کاملاً قوانین قبلی را حذف می‌کنیم به جای بررسی موردی
-	// Remove all existing ipset rules from IPv4 chains
-	log.Info("Removing all existing IPv4 IPSet rules")
-	chains := []string{"INPUT", "OUTPUT"}
-	for _, chain := range chains {
-		rules, err := m.ipv4.List("filter", chain)
-		if err != nil {
-			log.Warnf("Failed to list IPv4 %s rules: %v", chain, err)
-			continue
-		}
+	log.Info("Setting up ipset rules...")
 
-		// Remove all rules that contain ipset match
-		for _, rule := range rules {
-			if strings.Contains(rule, "match-set dnsniper-") {
-				args := parseRuleForDeletion(rule, chain)
-				if len(args) > 0 {
-					m.ipv4.Delete("filter", chain, args...)
+	// Remove all existing ipset rules first to avoid duplication
+	chainDirections := []struct {
+		Chain     string
+		Direction string
+	}{
+		{"INPUT", "src"},
+		{"OUTPUT", "dst"},
+	}
+
+	ipTables := []*iptables.IPTables{m.ipv4, m.ipv6}
+	ipNames := []string{"IPv4", "IPv6"}
+
+	for i, ipt := range ipTables {
+		log.Infof("Clearing existing %s ipset rules...", ipNames[i])
+
+		for _, cd := range chainDirections {
+			rules, err := ipt.List("filter", cd.Chain)
+			if err != nil {
+				log.Warnf("Failed to list %s %s rules: %v", ipNames[i], cd.Chain, err)
+				continue
+			}
+
+			for _, rule := range rules {
+				if strings.Contains(rule, "match-set dnsniper-") {
+					args := parseRuleForDelete(rule)
+					if len(args) > 0 {
+						if err := ipt.Delete("filter", cd.Chain, args...); err != nil {
+							log.Debugf("Failed to delete rule %v: %v", args, err)
+							// Continue anyway - the rule might be gone already or there might be syntax issues
+						}
+					}
 				}
 			}
 		}
 	}
 
-	// Same for IPv6
-	log.Info("Removing all existing IPv6 IPSet rules")
-	for _, chain := range chains {
-		rules, err := m.ipv6.List("filter", chain)
-		if err != nil {
-			log.Warnf("Failed to list IPv6 %s rules: %v", chain, err)
-			continue
-		}
+	// Add new rules in the correct order:
+	// 1. First whitelist rules (always both directions)
+	// 2. Then blocklist rules based on block rule type
 
-		for _, rule := range rules {
-			if strings.Contains(rule, "match-set dnsniper-") {
-				args := parseRuleForDeletion(rule, chain)
-				if len(args) > 0 {
-					m.ipv6.Delete("filter", chain, args...)
-				}
-			}
-		}
-	}
-
-	// Now add new rules based on block rule type
-	// ===== Add IPv4 whitelist rules (always apply to both directions) =====
+	// IPv4 rules
+	log.Info("Adding IPv4 whitelist rules...")
 	m.ipv4.Insert("filter", "INPUT", 1, "-m", "set", "--match-set", "dnsniper-whitelist", "src", "-j", "ACCEPT")
 	m.ipv4.Insert("filter", "OUTPUT", 1, "-m", "set", "--match-set", "dnsniper-whitelist", "dst", "-j", "ACCEPT")
 	m.ipv4.Insert("filter", "INPUT", 2, "-m", "set", "--match-set", "dnsniper-range-whitelist", "src", "-j", "ACCEPT")
 	m.ipv4.Insert("filter", "OUTPUT", 2, "-m", "set", "--match-set", "dnsniper-range-whitelist", "dst", "-j", "ACCEPT")
 
-	// ===== Add IPv4 blocklist rules based on blockRuleType =====
+	// IPv4 blocklist rules
+	log.Infof("Adding IPv4 blocklist rules with type: %s", settings.BlockRuleType)
 	switch settings.BlockRuleType {
 	case "source":
-		// Block only as source
 		m.ipv4.Insert("filter", "INPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
 		m.ipv4.Insert("filter", "INPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
-		log.Info("Applied IPv4 IPSet rules for source-only blocking")
 	case "destination":
-		// Block only as destination
 		m.ipv4.Insert("filter", "OUTPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
 		m.ipv4.Insert("filter", "OUTPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
-		log.Info("Applied IPv4 IPSet rules for destination-only blocking")
-	case "both":
-		// Block as both source and destination (default)
+	default: // "both" or any other value
 		m.ipv4.Insert("filter", "INPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
 		m.ipv4.Insert("filter", "OUTPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
 		m.ipv4.Insert("filter", "INPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
 		m.ipv4.Insert("filter", "OUTPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
-		log.Info("Applied IPv4 IPSet rules for both source and destination blocking")
-	default:
-		// Default to both if invalid setting
-		m.ipv4.Insert("filter", "INPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
-		m.ipv4.Insert("filter", "OUTPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
-		m.ipv4.Insert("filter", "INPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
-		m.ipv4.Insert("filter", "OUTPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
-		log.Info("Applied IPv4 IPSet rules for both source and destination blocking (default)")
 	}
 
-	// ===== Add IPv6 whitelist rules (always apply to both directions) =====
-	// Apply IPv6 rules with error handling to make this non-fatal
+	// IPv6 rules (with error handling)
+	log.Info("Adding IPv6 whitelist rules...")
 	if err := m.ipv6.Insert("filter", "INPUT", 1, "-m", "set", "--match-set", "dnsniper-whitelist", "src", "-j", "ACCEPT"); err != nil {
-		log.Warnf("Failed to add IPv6 whitelist rule to INPUT: %v", err)
+		log.Warnf("Failed to add IPv6 whitelist rule: %v", err)
 	}
 	if err := m.ipv6.Insert("filter", "OUTPUT", 1, "-m", "set", "--match-set", "dnsniper-whitelist", "dst", "-j", "ACCEPT"); err != nil {
-		log.Warnf("Failed to add IPv6 whitelist rule to OUTPUT: %v", err)
+		log.Warnf("Failed to add IPv6 whitelist rule: %v", err)
 	}
 	if err := m.ipv6.Insert("filter", "INPUT", 2, "-m", "set", "--match-set", "dnsniper-range-whitelist", "src", "-j", "ACCEPT"); err != nil {
-		log.Warnf("Failed to add IPv6 whitelist range rule to INPUT: %v", err)
+		log.Warnf("Failed to add IPv6 whitelist range rule: %v", err)
 	}
 	if err := m.ipv6.Insert("filter", "OUTPUT", 2, "-m", "set", "--match-set", "dnsniper-range-whitelist", "dst", "-j", "ACCEPT"); err != nil {
-		log.Warnf("Failed to add IPv6 whitelist range rule to OUTPUT: %v", err)
+		log.Warnf("Failed to add IPv6 whitelist range rule: %v", err)
 	}
 
-	// ===== Add IPv6 blocklist rules based on blockRuleType =====
+	// IPv6 blocklist rules
+	log.Infof("Adding IPv6 blocklist rules with type: %s", settings.BlockRuleType)
 	switch settings.BlockRuleType {
 	case "source":
-		// Block only as source
-		if err := m.ipv6.Insert("filter", "INPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist rule to INPUT: %v", err)
-		}
-		if err := m.ipv6.Insert("filter", "INPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist range rule to INPUT: %v", err)
-		}
-		log.Info("Applied IPv6 IPSet rules for source-only blocking")
+		m.ipv6.Insert("filter", "INPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
+		m.ipv6.Insert("filter", "INPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
 	case "destination":
-		// Block only as destination
-		if err := m.ipv6.Insert("filter", "OUTPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist rule to OUTPUT: %v", err)
-		}
-		if err := m.ipv6.Insert("filter", "OUTPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist range rule to OUTPUT: %v", err)
-		}
-		log.Info("Applied IPv6 IPSet rules for destination-only blocking")
-	case "both":
-		// Block as both source and destination (default)
-		if err := m.ipv6.Insert("filter", "INPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist rule to INPUT: %v", err)
-		}
-		if err := m.ipv6.Insert("filter", "OUTPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist rule to OUTPUT: %v", err)
-		}
-		if err := m.ipv6.Insert("filter", "INPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist range rule to INPUT: %v", err)
-		}
-		if err := m.ipv6.Insert("filter", "OUTPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist range rule to OUTPUT: %v", err)
-		}
-		log.Info("Applied IPv6 IPSet rules for both source and destination blocking")
-	default:
-		// Default to both if invalid setting
-		if err := m.ipv6.Insert("filter", "INPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist rule to INPUT: %v", err)
-		}
-		if err := m.ipv6.Insert("filter", "OUTPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist rule to OUTPUT: %v", err)
-		}
-		if err := m.ipv6.Insert("filter", "INPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist range rule to INPUT: %v", err)
-		}
-		if err := m.ipv6.Insert("filter", "OUTPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP"); err != nil {
-			log.Warnf("Failed to add IPv6 blocklist range rule to OUTPUT: %v", err)
-		}
-		log.Info("Applied IPv6 IPSet rules for both source and destination blocking (default)")
+		m.ipv6.Insert("filter", "OUTPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
+		m.ipv6.Insert("filter", "OUTPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
+	default: // "both" or any other value
+		m.ipv6.Insert("filter", "INPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "src", "-j", "DROP")
+		m.ipv6.Insert("filter", "OUTPUT", 3, "-m", "set", "--match-set", "dnsniper-blocklist", "dst", "-j", "DROP")
+		m.ipv6.Insert("filter", "INPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "src", "-j", "DROP")
+		m.ipv6.Insert("filter", "OUTPUT", 4, "-m", "set", "--match-set", "dnsniper-range-blocklist", "dst", "-j", "DROP")
 	}
 
-	log.Info("IPSet rules setup completed successfully")
+	log.Info("IPSet rules setup completed")
 	return nil
+}
+
+// Helper function to parse a rule string into args for deletion
+func parseRuleForDelete(rule string) []string {
+	if !strings.Contains(rule, "match-set dnsniper-") {
+		return nil
+	}
+
+	// Example rule: "-A INPUT -m set --match-set dnsniper-blocklist src -j DROP"
+	parts := strings.Fields(rule)
+	var args []string
+
+	// Find the "-m" until "-j" sequence
+	startFound := false
+	for i := 0; i < len(parts); i++ {
+		if parts[i] == "-m" && i+1 < len(parts) && parts[i+1] == "set" {
+			startFound = true
+			args = append(args, "-m", "set")
+			i++ // Skip "set"
+			continue
+		}
+
+		if startFound {
+			if parts[i] == "-j" {
+				// Add the target
+				if i+1 < len(parts) {
+					args = append(args, "-j", parts[i+1])
+				}
+				break
+			}
+
+			// Add other parameters
+			if parts[i] == "--match-set" && i+2 < len(parts) {
+				args = append(args, "--match-set", parts[i+1], parts[i+2])
+				i += 2 // Skip the next two parts
+			}
+		}
+	}
+
+	return args
+}
+
+// EnsureIPSetRules ensures that the iptables rules for ipset are in place
+// This is a public wrapper around the private ensureIPSetRules method
+func (m *IPTablesManager) EnsureIPSetRules() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ensureIPSetRules()
 }
 
 // hasJumpRule checks if a jump rule to the target chain already exists
@@ -297,6 +309,7 @@ func (m *IPTablesManager) ensureChain() error {
 			return err
 		}
 	}
+
 	// Check for and handle duplicate jump rules in INPUT, OUTPUT, and FORWARD chains for IPv4
 	for _, chain := range []string{"INPUT", "OUTPUT", "FORWARD"} {
 		// Get all rules in the chain
@@ -304,6 +317,7 @@ func (m *IPTablesManager) ensureChain() error {
 		if err != nil {
 			return fmt.Errorf("failed to list %s chain rules: %w", chain, err)
 		}
+
 		// Count how many times the jump rule appears
 		jumpRuleCount := 0
 		for _, rule := range rules {
@@ -311,6 +325,7 @@ func (m *IPTablesManager) ensureChain() error {
 				jumpRuleCount++
 			}
 		}
+
 		// If there are duplicate rules, remove all and add one
 		if jumpRuleCount > 1 {
 			log.Infof("Found %d duplicate jump rules to %s in %s chain. Fixing...",
@@ -347,6 +362,7 @@ func (m *IPTablesManager) ensureChain() error {
 			return err
 		}
 	}
+
 	// Check for and handle duplicate jump rules in INPUT, OUTPUT and FORWARD chains for IPv6
 	for _, chain := range []string{"INPUT", "OUTPUT", "FORWARD"} {
 		// Get all rules in the chain
@@ -354,6 +370,7 @@ func (m *IPTablesManager) ensureChain() error {
 		if err != nil {
 			return fmt.Errorf("failed to list %s chain rules: %w", chain, err)
 		}
+
 		// Count how many times the jump rule appears
 		jumpRuleCount := 0
 		for _, rule := range rules {
@@ -361,6 +378,7 @@ func (m *IPTablesManager) ensureChain() error {
 				jumpRuleCount++
 			}
 		}
+
 		// If there are duplicate rules, remove all and add one
 		if jumpRuleCount > 1 {
 			log.Infof("Found %d duplicate jump rules to %s in %s chain. Fixing...",
@@ -386,6 +404,7 @@ func (m *IPTablesManager) ensureChain() error {
 		}
 		// If exactly one rule exists, do nothing
 	}
+
 	return nil
 }
 
@@ -394,13 +413,17 @@ func (m *IPTablesManager) BlockIP(ip string, blockType string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Only use ipset, return error if not available
+	// First check if the IP is whitelisted
 	if m.ipsetMgr != nil {
+		if m.ipsetMgr.IsWhitelisted(ip) {
+			log.Infof("IP %s is whitelisted, not adding to blocklist", ip)
+			return nil
+		}
+
 		// Add to ipset only
 		if err := m.ipsetMgr.AddToBlocklist(ip); err != nil {
 			return err
 		}
-
 		// Rules are already set up by ensureIPSetRules based on blockType
 		log.Debugf("IP %s added to blocklist", ip)
 		return nil
@@ -457,7 +480,6 @@ func (m *IPTablesManager) BlockIPRange(cidr string, blockType string) error {
 		if err := m.ipsetMgr.AddRangeToBlocklist(cidr); err != nil {
 			return err
 		}
-
 		// Rules are already set up by ensureIPSetRules based on blockType
 		log.Debugf("IP Range %s added to blocklist", cidr)
 		return nil
@@ -524,7 +546,6 @@ func (m *IPTablesManager) ClearRules() error {
 			return err
 		}
 	}
-
 	if err := m.ipv6.ClearChain("filter", ChainNameIPv6); err != nil {
 		if !isChainNotExistsError(err) {
 			return err
@@ -614,7 +635,6 @@ func (m *IPTablesManager) RefreshIPSetRules() error {
 			}
 		}
 	}
-
 	for _, rule := range rulesOutput {
 		if strings.Contains(rule, "match-set dnsniper-") {
 			args := parseRuleForDeletion(rule, "OUTPUT")
@@ -638,7 +658,6 @@ func (m *IPTablesManager) RefreshIPSetRules() error {
 			}
 		}
 	}
-
 	for _, rule := range rulesOutputV6 {
 		if strings.Contains(rule, "match-set dnsniper-") {
 			args := parseRuleForDeletion(rule, "OUTPUT")
@@ -649,7 +668,6 @@ func (m *IPTablesManager) RefreshIPSetRules() error {
 	}
 
 	// Now add the rules back in the correct order
-
 	// Whitelist rules for IPv4 (always apply)
 	log.Info("Adding whitelist rules for IPv4")
 	m.ipv4.Insert("filter", "INPUT", 1, "-m", "set", "--match-set", "dnsniper-whitelist", "src", "-j", "ACCEPT")

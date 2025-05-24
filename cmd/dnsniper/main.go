@@ -112,13 +112,11 @@ func showMainMenu() {
 		titleColor.Println("===============================================")
 		menuColor.Println("1. Run agent now")
 		menuColor.Println("2. Show status")
-		menuColor.Println("3. Manage domain blocklist")
-		menuColor.Println("4. Manage domain whitelist")
-		menuColor.Println("5. Manage IP blocklist")
-		menuColor.Println("6. Manage IP whitelist")
-		menuColor.Println("7. Settings")
-		menuColor.Println("8. Clear firewall rules")
-		menuColor.Println("9. Rebuild firewall rules")
+		menuColor.Println("3. Manage blocklist")
+		menuColor.Println("4. Manage whitelist")
+		menuColor.Println("5. Settings")
+		menuColor.Println("6. Clear firewall rules")
+		menuColor.Println("7. Rebuild firewall rules")
 		menuColor.Println("H. Help / Quick Guide")
 		menuColor.Println("0. Exit")
 		warningColor.Println("U. Uninstall DNSniper")
@@ -136,16 +134,12 @@ func showMainMenu() {
 			showStatus()
 			pressEnterToContinue(reader)
 		case "3":
-			manageDomainList("Domain Blocklist", false, reader)
+			manageBlocklist(reader)
 		case "4":
-			manageDomainList("Domain Whitelist", true, reader)
+			manageWhitelist(reader)
 		case "5":
-			manageIPList("IP Blocklist", false, reader)
-		case "6":
-			manageIPList("IP Whitelist", true, reader)
-		case "7":
 			manageSettings(reader)
-		case "8":
+		case "6":
 			clearScreen()
 			// Check if agent is running before clearing rules
 			if isAgentRunning() {
@@ -156,7 +150,7 @@ func showMainMenu() {
 				clearRules()
 				pressEnterToContinue(reader)
 			}
-		case "9":
+		case "7":
 			clearScreen()
 			// Check if agent is running before rebuilding rules
 			if isAgentRunning() {
@@ -184,6 +178,280 @@ func showMainMenu() {
 	}
 }
 
+// manageBlocklist displays a menu for managing the blocklist (both domains and IPs)
+func manageBlocklist(reader *bufio.Reader) {
+	for {
+		clearScreen()
+		titleColor.Println("\nBlocklist Management:")
+		subtitleColor.Println("\nChoose what to manage:")
+		menuColor.Println("1. Manage blocked domains")
+		menuColor.Println("2. Manage blocked IP addresses")
+		menuColor.Println("3. Add item to blocklist")
+		menuColor.Println("0. Back to main menu")
+
+		promptColor.Print("\nSelect an option: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		switch input {
+		case "1":
+			manageDomainList("Domain Blocklist", false, reader)
+		case "2":
+			manageIPList("IP Blocklist", false, reader)
+		case "3":
+			addItemToBlocklist(reader)
+		case "0":
+			return
+		default:
+			errorColor.Println("Invalid option. Please try again.")
+			time.Sleep(1 * time.Second)
+		}
+	}
+}
+
+// manageWhitelist displays a menu for managing the whitelist (both domains and IPs)
+func manageWhitelist(reader *bufio.Reader) {
+	for {
+		clearScreen()
+		titleColor.Println("\nWhitelist Management:")
+		subtitleColor.Println("\nChoose what to manage:")
+		menuColor.Println("1. Manage whitelisted domains")
+		menuColor.Println("2. Manage whitelisted IP addresses")
+		menuColor.Println("3. Add item to whitelist")
+		menuColor.Println("0. Back to main menu")
+
+		promptColor.Print("\nSelect an option: ")
+		input, _ := reader.ReadString('\n')
+		input = strings.TrimSpace(input)
+
+		switch input {
+		case "1":
+			manageDomainList("Domain Whitelist", true, reader)
+		case "2":
+			manageIPList("IP Whitelist", true, reader)
+		case "3":
+			addItemToWhitelist(reader)
+		case "0":
+			return
+		default:
+			errorColor.Println("Invalid option. Please try again.")
+			time.Sleep(1 * time.Second)
+		}
+	}
+}
+
+// addItemToBlocklist handles adding either a domain or IP to the blocklist
+func addItemToBlocklist(reader *bufio.Reader) {
+	clearScreen()
+	titleColor.Println("\nAdd Item to Blocklist:")
+	menuColor.Println("1. Add domain")
+	menuColor.Println("2. Add IP address or range")
+	menuColor.Println("0. Back")
+
+	promptColor.Print("\nSelect an option: ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	switch input {
+	case "1":
+		addDomainToList(false, reader)
+	case "2":
+		addIPToList(false, reader)
+	case "0":
+		return
+	default:
+		errorColor.Println("Invalid option. Please try again.")
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// addItemToWhitelist handles adding either a domain or IP to the whitelist
+func addItemToWhitelist(reader *bufio.Reader) {
+	clearScreen()
+	titleColor.Println("\nAdd Item to Whitelist:")
+	menuColor.Println("1. Add domain")
+	menuColor.Println("2. Add IP address or range")
+	menuColor.Println("0. Back")
+
+	promptColor.Print("\nSelect an option: ")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	switch input {
+	case "1":
+		addDomainToList(true, reader)
+	case "2":
+		addIPToList(true, reader)
+	case "0":
+		return
+	default:
+		errorColor.Println("Invalid option. Please try again.")
+		time.Sleep(1 * time.Second)
+	}
+}
+
+// addDomainToList handles both blocklist and whitelist domains
+func addDomainToList(isWhitelist bool, reader *bufio.Reader) {
+	clearScreen()
+	if isWhitelist {
+		subtitleColor.Println("Add Domain to Whitelist")
+	} else {
+		subtitleColor.Println("Add Domain to Blocklist")
+	}
+	promptColor.Print("Enter domain: ")
+	domain, _ := reader.ReadString('\n')
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		errorColor.Println("Domain cannot be empty.")
+		time.Sleep(1 * time.Second)
+		return
+	}
+
+	// Check if domain exists in the opposite list
+	if isWhitelist {
+		inBlocklist, err := database.IsDomainInBlocklist(domain)
+		if err == nil && inBlocklist {
+			warningColor.Printf("Warning: Domain %s is currently in the blocklist. Adding to whitelist will override the block.\n", domain)
+			promptColor.Print("Continue? (y/n): ")
+			confirm, _ := reader.ReadString('\n')
+			confirm = strings.TrimSpace(confirm)
+			if strings.ToLower(confirm) != "y" {
+				infoColor.Println("Operation cancelled.")
+				time.Sleep(1 * time.Second)
+				return
+			}
+
+			// First remove from blocklist to prevent conflicts
+			if err := database.RemoveDomain(domain, false); err != nil {
+				errorColor.Printf("Failed to remove domain from blocklist: %v\n", err)
+				// Continue anyway to try adding to whitelist
+			}
+		}
+	} else {
+		isWhitelisted, err := database.IsDomainWhitelisted(domain)
+		if err == nil && isWhitelisted {
+			warningColor.Printf("Warning: Domain %s is currently in the whitelist. Whitelist has priority over blocklist.\n", domain)
+			promptColor.Print("Continue? (y/n): ")
+			confirm, _ := reader.ReadString('\n')
+			confirm = strings.TrimSpace(confirm)
+			if strings.ToLower(confirm) != "y" {
+				infoColor.Println("Operation cancelled.")
+				time.Sleep(1 * time.Second)
+				return
+			}
+		}
+	}
+
+	// Save domain to database
+	_, err := database.SaveCustomDomain(domain, isWhitelist)
+	if err != nil {
+		errorColor.Printf("Failed to add domain: %v\n", err)
+		time.Sleep(2 * time.Second)
+		return
+	}
+
+	// For whitelisted domains, remove any existing blocking rules for IPs of this domain
+	if isWhitelist {
+		// Get all IPs associated with this domain
+		ips, err := database.GetIPsForDomain(domain)
+		if err == nil && len(ips) > 0 {
+			fwManager, err := firewall.NewIPTablesManager()
+			if err != nil {
+				errorColor.Printf("Failed to initialize firewall: %v\n", err)
+			} else {
+				for _, ip := range ips {
+					// First remove from blocklist
+					if err := fwManager.UnblockIP(ip); err != nil {
+						log.Warnf("Failed to unblock IP %s: %v", ip, err)
+					}
+
+					// Then add to whitelist
+					if err := fwManager.WhitelistIP(ip); err != nil {
+						log.Warnf("Failed to whitelist IP %s: %v", ip, err)
+					} else {
+						infoColor.Printf("Whitelisted IP %s for domain %s\n", ip, domain)
+					}
+				}
+
+				// Save changes to firewall
+				if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+					log.Warnf("Failed to save firewall rules: %v", err)
+				}
+			}
+		}
+	} else {
+		// For blocked domains, we need to handle whitelisted IPs carefully
+		// Resolve the domain and add IPs to blocklist
+		settings, err := config.GetSettings()
+		if err != nil {
+			errorColor.Printf("Failed to get settings: %v\n", err)
+		} else {
+			resolver := dns.NewStandardResolver()
+			ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
+			if err != nil {
+				errorColor.Printf("Failed to resolve domain: %v\n", err)
+				// Continue with operation but warn
+			}
+
+			if len(ips) > 0 {
+				fwManager, err := firewall.NewIPTablesManager()
+				if err != nil {
+					errorColor.Printf("Failed to initialize firewall: %v\n", err)
+				} else {
+					for _, ip := range ips {
+						// Skip invalid IPs
+						valid, _ := utils.IsValidIPToBlock(ip)
+						if !valid {
+							continue
+						}
+
+						// Critical check: Skip whitelisted IPs
+						isWhitelisted, _ := database.IsIPWhitelisted(ip)
+						if isWhitelisted {
+							infoColor.Printf("IP %s is whitelisted, not blocking\n", ip)
+							continue
+						}
+
+						// Get domain ID
+						var domainID int64
+						err = database.GetDomainID(domain, &domainID)
+						if err != nil {
+							errorColor.Printf("Failed to get domain ID: %v\n", err)
+							continue
+						}
+
+						// Add IP to database before blocking
+						if err := database.AssociateIPWithDomain(domainID, ip, false); err != nil {
+							errorColor.Printf("Failed to associate IP with domain: %v\n", err)
+							continue
+						}
+
+						// Finally block the IP
+						if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+							errorColor.Printf("Failed to block IP %s: %v\n", ip, err)
+						} else {
+							successColor.Printf("Blocked IP %s for domain %s\n", ip, domain)
+						}
+					}
+
+					// Save changes
+					if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+						log.Warnf("Failed to save firewall rules: %v", err)
+					}
+				}
+			}
+		}
+	}
+
+	if isWhitelist {
+		successColor.Printf("Domain %s added to whitelist\n", domain)
+	} else {
+		successColor.Printf("Domain %s added to blocklist\n", domain)
+	}
+	time.Sleep(1 * time.Second)
+}
+
+// showHelpGuide displays a help and quick guide screen
 func showHelpGuide(reader *bufio.Reader) {
 	clearScreen()
 	titleColor.Println("\nDNSniper - Quick Guide")
@@ -192,15 +460,13 @@ func showHelpGuide(reader *bufio.Reader) {
 	subtitleColor.Println("\nMain Features:")
 	fmt.Println("1. Run agent now - Start the DNSniper agent to process domains and block suspicious IPs")
 	fmt.Println("2. Show status - Display the current status of DNSniper including statistics")
-	fmt.Println("3. Manage domain blocklist - Add or remove domains from the blocklist")
-	fmt.Println("4. Manage domain whitelist - Add or remove domains from the whitelist (will never be blocked)")
-	fmt.Println("5. Manage IP blocklist - Add or remove specific IP addresses from the blocklist")
-	fmt.Println("6. Manage IP whitelist - Add or remove specific IP addresses from the whitelist")
+	fmt.Println("3. Manage blocklist - Add or remove domains and IPs from the blocklist")
+	fmt.Println("4. Manage whitelist - Add or remove domains and IPs from the whitelist (will never be blocked)")
 
 	subtitleColor.Println("\nAdvanced Options:")
-	fmt.Println("7. Settings - Configure DNSniper settings (DNS resolver, block rule type, update URLs, etc.)")
-	fmt.Println("8. Clear firewall rules - Remove all DNSniper rules from the firewall")
-	fmt.Println("9. Rebuild firewall rules - Rebuild all firewall rules from the database")
+	fmt.Println("5. Settings - Configure DNSniper settings (DNS resolver, block rule type, update URLs, etc.)")
+	fmt.Println("6. Clear firewall rules - Remove all DNSniper rules from the firewall")
+	fmt.Println("7. Rebuild firewall rules - Rebuild all firewall rules from the database")
 
 	subtitleColor.Println("\nHow It Works:")
 	fmt.Println("- DNSniper periodically checks domains from configured sources")
@@ -921,159 +1187,6 @@ func confirmUninstall(reader *bufio.Reader) bool {
 	infoColor.Println("Uninstallation cancelled")
 	time.Sleep(1 * time.Second)
 	return false
-}
-
-// Domain management functions
-func addDomainToList(isWhitelist bool, reader *bufio.Reader) {
-	clearScreen()
-	if isWhitelist {
-		subtitleColor.Println("Add Domain to Whitelist")
-	} else {
-		subtitleColor.Println("Add Domain to Blocklist")
-	}
-
-	promptColor.Print("Enter domain: ")
-	domain, _ := reader.ReadString('\n')
-	domain = strings.TrimSpace(domain)
-	if domain == "" {
-		errorColor.Println("Domain cannot be empty.")
-		time.Sleep(1 * time.Second)
-		return
-	}
-
-	// Check if domain exists in the opposite list
-	if isWhitelist {
-		inBlocklist, err := database.IsDomainInBlocklist(domain)
-		if err == nil && inBlocklist {
-			warningColor.Printf("Warning: Domain %s is currently in the blocklist. Adding to whitelist will override the block.\n", domain)
-			promptColor.Print("Continue? (y/n): ")
-			confirm, _ := reader.ReadString('\n')
-			confirm = strings.TrimSpace(confirm)
-			if strings.ToLower(confirm) != "y" {
-				infoColor.Println("Operation cancelled.")
-				time.Sleep(1 * time.Second)
-				return
-			}
-		}
-	} else {
-		isWhitelisted, err := database.IsDomainWhitelisted(domain)
-		if err == nil && isWhitelisted {
-			warningColor.Printf("Warning: Domain %s is currently in the whitelist. Whitelist has priority over blocklist.\n", domain)
-			promptColor.Print("Continue? (y/n): ")
-			confirm, _ := reader.ReadString('\n')
-			confirm = strings.TrimSpace(confirm)
-			if strings.ToLower(confirm) != "y" {
-				infoColor.Println("Operation cancelled.")
-				time.Sleep(1 * time.Second)
-				return
-			}
-		}
-	}
-
-	// Save domain to database
-	_, err := database.SaveCustomDomain(domain, isWhitelist)
-	if err != nil {
-		errorColor.Printf("Failed to add domain: %v\n", err)
-		time.Sleep(2 * time.Second)
-		return
-	}
-
-	// For whitelisted domains, remove any existing blocking rules
-	if isWhitelist {
-		// Check if domain has IPs in the database
-		ips, err := database.GetIPsForDomain(domain)
-		if err == nil && len(ips) > 0 {
-			fwManager, err := firewall.NewIPTablesManager()
-			if err != nil {
-				errorColor.Printf("Failed to initialize firewall: %v\n", err)
-			} else {
-				for _, ip := range ips {
-					if err := fwManager.UnblockIP(ip); err != nil {
-						log.Warnf("Failed to unblock IP %s: %v", ip, err)
-					} else {
-						infoColor.Printf("Unblocked IP %s because domain %s is now whitelisted\n", ip, domain)
-					}
-				}
-				// Save changes to firewall
-				if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
-					log.Warnf("Failed to save firewall rules: %v", err)
-				}
-			}
-		}
-	} else {
-		// For blocked domains, immediately apply firewall rules IF not whitelisted
-		isWhitelisted, err := database.IsDomainWhitelisted(domain)
-		if err != nil {
-			log.Warnf("Failed to check if domain %s is whitelisted: %v", domain, err)
-		} else if isWhitelisted {
-			infoColor.Printf("Domain %s is whitelisted, not applying block rules\n", domain)
-		} else {
-			// Domain is not whitelisted, resolve and block IPs
-			settings, err := config.GetSettings()
-			if err != nil {
-				errorColor.Printf("Failed to get settings: %v\n", err)
-				time.Sleep(2 * time.Second)
-				return
-			}
-			resolver := dns.NewStandardResolver()
-			ips, err := resolver.ResolveDomain(domain, settings.DNSResolver)
-			if err != nil {
-				errorColor.Printf("Failed to resolve domain: %v\n", err)
-				// Continue even if resolution fails
-			}
-
-			// Apply firewall rules for resolved IPs
-			if len(ips) > 0 {
-				fwManager, err := firewall.NewIPTablesManager()
-				if err != nil {
-					errorColor.Printf("Failed to initialize firewall: %v\n", err)
-					time.Sleep(2 * time.Second)
-					return
-				}
-				for _, ip := range ips {
-					// Check if IP is valid to block
-					valid, err := utils.IsValidIPToBlock(ip)
-					if err != nil || !valid {
-						continue
-					}
-					// Check if IP is whitelisted
-					isIPWhitelisted, err := database.IsIPWhitelisted(ip)
-					if err != nil || isIPWhitelisted {
-						infoColor.Printf("IP %s is whitelisted, skipping\n", ip)
-						continue
-					}
-
-					// Get domain ID again to ensure we have it
-					var domainID int64
-					err = database.GetDomainID(domain, &domainID)
-					if err != nil {
-						errorColor.Printf("Failed to get domain ID: %v\n", err)
-						continue
-					}
-
-					// Associate the IP with this domain in the database
-					if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, 0); err != nil {
-						errorColor.Printf("Failed to associate IP with domain: %v\n", err)
-						continue
-					}
-
-					// Block IP
-					if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-						errorColor.Printf("Failed to block IP %s: %v\n", ip, err)
-					} else {
-						infoColor.Printf("Blocked IP %s for domain %s\n", ip, domain)
-					}
-				}
-			}
-		}
-	}
-
-	if isWhitelist {
-		successColor.Printf("Domain %s added to whitelist\n", domain)
-	} else {
-		successColor.Printf("Domain %s added to blocklist\n", domain)
-	}
-	time.Sleep(1 * time.Second)
 }
 
 func removeDomainFromList(isWhitelist bool, reader *bufio.Reader) {

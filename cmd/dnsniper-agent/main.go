@@ -4,8 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -38,6 +40,7 @@ func init() {
 	log.SetLevel(logrus.ErrorLevel)
 }
 
+// setupLogger configures the logger with proper rotation
 func setupLogger(enabled bool) {
 	if !enabled {
 		log.SetOutput(os.Stderr)
@@ -57,13 +60,96 @@ func setupLogger(enabled bool) {
 	}
 
 	// Set up lumberjack for log rotation
-	log.SetOutput(&lumberjack.Logger{
+	logFile := &lumberjack.Logger{
 		Filename:   "/var/log/dnsniper/agent.log",
 		MaxSize:    10, // megabytes
 		MaxBackups: 7,  // number of backups
 		MaxAge:     30, // days
 		Compress:   true,
-	})
+	}
+
+	// Create a multi-writer to log to both file and stderr
+	multiWriter := io.MultiWriter(logFile, os.Stderr)
+	log.SetOutput(multiWriter)
+
+	// Add hook to log to a separate file for each run ID
+	log.AddHook(&RunIDLogHook{basePath: "/var/log/dnsniper"})
+
+	log.Info("Logging setup complete")
+}
+
+// RunIDLogHook is a custom hook that logs to a separate file for each run ID
+type RunIDLogHook struct {
+	basePath string
+	runID    int64
+	logFile  *os.File
+	mu       sync.Mutex
+}
+
+// SetRunID sets the current run ID for logging
+func (hook *RunIDLogHook) SetRunID(runID int64) {
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+
+	hook.runID = runID
+
+	// Close any existing file
+	if hook.logFile != nil {
+		hook.logFile.Close()
+		hook.logFile = nil
+	}
+
+	// Open a new file for this run ID
+	if runID > 0 {
+		runLogDir := filepath.Join(hook.basePath, "runs")
+		err := os.MkdirAll(runLogDir, 0755)
+		if err != nil {
+			log.Errorf("Failed to create run log directory: %v", err)
+			return
+		}
+
+		filename := filepath.Join(runLogDir, fmt.Sprintf("run_%d.log", runID))
+		f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Errorf("Failed to open run log file: %v", err)
+			return
+		}
+		hook.logFile = f
+	}
+}
+
+// Levels returns the log levels this hook should fire for
+func (hook *RunIDLogHook) Levels() []logrus.Level {
+	return []logrus.Level{
+		logrus.PanicLevel,
+		logrus.FatalLevel,
+		logrus.ErrorLevel,
+		logrus.WarnLevel,
+		logrus.InfoLevel,
+	}
+}
+
+// Fire is called when a log event occurs
+func (hook *RunIDLogHook) Fire(entry *logrus.Entry) error {
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+
+	if hook.logFile == nil || hook.runID <= 0 {
+		return nil
+	}
+
+	// Format log entry
+	line, err := entry.String()
+	if err != nil {
+		return err
+	}
+
+	// Write to run's log file
+	if _, err := hook.logFile.WriteString(line); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func main() {
@@ -87,9 +173,7 @@ func main() {
 	}
 
 	// Setup logging based on the final decision
-	if enableLogging {
-		setupLogger(true)
-	}
+	setupLogger(enableLogging)
 
 	// Clean up expired records before acquiring lock
 	if err := database.CleanupExpiredRecords(); err != nil {
@@ -121,6 +205,14 @@ func main() {
 		log.Errorf("Failed to log agent start: %v", err)
 		fmt.Fprintf(os.Stderr, "Failed to log agent start: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Set the run ID for per-run logging if hook exists
+	for _, hook := range log.Hooks {
+		if runIDHook, ok := hook.(*RunIDLogHook); ok {
+			runIDHook.SetRunID(runID)
+			break
+		}
 	}
 
 	fmt.Println("DNSniper agent started")
@@ -285,38 +377,58 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 	totalProcessed := 0
 	totalBlocked := 0
 
-	// Rate limiting settings
-	maxConcurrent := 5 // Maximum concurrent domain processing
-	domainChan := make(chan string, maxConcurrent)
-	resultChan := make(chan Result, maxConcurrent)
-	errorChan := make(chan error, maxConcurrent)
+	// Setup worker pool for concurrent domain processing
+	workerCount := 5
+	domainChan := make(chan string, 100)
+	resultChan := make(chan Result, 100)
+	errorChan := make(chan error, 100)
+
+	// Set up a wait group for workers
 	var wg sync.WaitGroup
 
 	// Start worker goroutines
-	for i := 0; i < maxConcurrent; i++ {
+	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for domain := range domainChan {
-				result, err := processDomain(domain, settings, runID, "")
+				// Process with timeout context
+				procCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				result, err := processDomain(procCtx, domain, settings, runID, "")
+				cancel()
+
 				if err != nil {
-					errorChan <- fmt.Errorf("error processing domain %s: %w", domain, err)
-					continue
+					// Don't break on error, just report it
+					select {
+					case errorChan <- fmt.Errorf("failed to process domain %s: %w", domain, err):
+					default:
+						// Channel is full, log instead
+						log.Errorf("Failed to process domain %s: %v", domain, err)
+					}
+				} else {
+					select {
+					case resultChan <- result:
+					default:
+						// Channel is full, log instead
+						log.Infof("Processed domain %s: %+v", domain, result)
+					}
 				}
-				resultChan <- result
 			}
 		}()
 	}
 
 	// Process each URL
+	urlProcessed := 0
 	for _, url := range urls {
 		select {
 		case <-ctx.Done():
-			close(domainChan) // Stop workers
+			close(domainChan) // Tell workers to stop
+			wg.Wait()         // Wait for them to finish
 			return fmt.Errorf("processing interrupted")
 		default:
-			log.Infof("Processing domains from URL: %s", url)
-			fmt.Printf("Processing domains from URL: %s\n", url)
+			urlProcessed++
+			log.Infof("Processing domains from URL %d/%d: %s", urlProcessed, len(urls), url)
+			fmt.Printf("Processing domains from URL %d/%d: %s\n", urlProcessed, len(urls), url)
 
 			// Download domain list from this URL
 			domains, err := utils.DownloadDomainList(url)
@@ -330,28 +442,45 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 			log.Infof("Downloaded %d domains from %s", len(domains), url)
 			fmt.Printf("Downloaded %d domains from %s\n", len(domains), url)
 
-			// Process domains
-			domainsToProcess := 0
+			// Add domains to processing channel
+			domainsSent := 0
+			batchSize := 50 // Process in batches to avoid overwhelming channels
 			for _, domain := range domains {
+				// Skip if we've already seen this domain in this run
 				if seenDomains[domain] {
 					continue
 				}
+
 				seenDomains[domain] = true
-				domainsToProcess++
 
 				// Send domain for processing
-				domainChan <- domain
+				select {
+				case domainChan <- domain:
+					domainsSent++
 
-				// Process results periodically to update progress
-				if domainsToProcess%20 == 0 || domainsToProcess == len(domains) {
-					processResults(resultChan, errorChan, &totalProcessed, &totalBlocked, totalDomains)
+					// Process results after each batch
+					if domainsSent%batchSize == 0 {
+						processResults(resultChan, errorChan, &totalProcessed, &totalBlocked, totalDomains)
+
+						// Small delay between batches to avoid overwhelming system
+						time.Sleep(100 * time.Millisecond)
+					}
+				case <-ctx.Done():
+					close(domainChan)
+					wg.Wait()
+					return fmt.Errorf("processing interrupted")
 				}
 			}
+
+			// Process remaining results for this URL
+			processResults(resultChan, errorChan, &totalProcessed, &totalBlocked, totalDomains)
 		}
 	}
 
-	// Close channel and wait for workers to finish
+	// Close the domain channel to signal no more domains will be sent
 	close(domainChan)
+
+	// Wait for all workers to finish
 	wg.Wait()
 
 	// Process any remaining results
@@ -367,23 +496,22 @@ func runAgentProcess(ctx context.Context, runID int64) error {
 	return nil
 }
 
+// processResults handles processing results and errors from channels
 func processResults(resultChan chan Result, errorChan chan error, totalProcessed *int, totalBlocked *int, totalDomains int) {
 	// Process all available results without blocking
-processingLoop:
 	for {
 		select {
 		case result := <-resultChan:
 			*totalProcessed++
 			*totalBlocked += result.IPsBlocked
 			if *totalProcessed%100 == 0 || *totalProcessed == totalDomains {
-				fmt.Printf("Progress: %d/%d domains processed, %d IPs blocked\n",
-					*totalProcessed, totalDomains, *totalBlocked)
+				fmt.Printf("Progress: %d/%d domains processed, %d IPs blocked\n", *totalProcessed, totalDomains, *totalBlocked)
 			}
 		case err := <-errorChan:
 			log.Error(err)
 		default:
 			// No more results available at this moment
-			break processingLoop
+			return
 		}
 	}
 }
@@ -393,7 +521,8 @@ type Result struct {
 	IPsBlocked int
 }
 
-func processDomain(domain string, settings models.Settings, runID int64, sourceURL string) (Result, error) {
+// processDomain now accepts a context for timeout support
+func processDomain(ctx context.Context, domain string, settings models.Settings, runID int64, sourceURL string) (Result, error) {
 	result := Result{}
 
 	// Check whitelist
@@ -406,27 +535,44 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		return result, nil
 	}
 
+	// Resolve domain with retry and timeout
 	const maxRetries = 3
 	var ips []string
 	resolver := dns.NewStandardResolver()
+	var lastErr error
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
+		// Check if context has been canceled
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+		}
+
+		// Resolve the domain - NOTE: Adjusted to work with the standard DNS resolver
 		ips, err = resolver.ResolveDomain(domain, settings.DNSResolver)
-		if err == nil || attempt == maxRetries {
+
+		if err == nil {
 			break
 		}
-		log.Warnf("Attempt %d: Failed to resolve domain %s: %v. Retrying in %d seconds...",
-			attempt, domain, err, attempt)
-		time.Sleep(time.Duration(attempt) * time.Second)
+
+		lastErr = err
+		log.Warnf("Attempt %d: Failed to resolve domain %s: %v", attempt, domain, err)
+
+		// Check context before sleeping
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+			// Only sleep if not the last attempt
+			if attempt < maxRetries {
+				time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+			}
+		}
 	}
 
-	if err != nil {
-		log.Errorf("Failed to resolve domain %s after %d attempts: %v", domain, maxRetries, err)
-		// We'll continue with an empty IPs list
-	}
-
-	if len(ips) == 0 {
-		log.Infof("No IPs found for domain %s", domain)
+	if lastErr != nil && len(ips) == 0 {
+		log.Errorf("Failed to resolve domain %s after %d attempts: %v", domain, maxRetries, lastErr)
 		// Still save the domain to database for tracking
 		if _, err := database.SaveDomain(domain, settings.RuleExpiration, sourceURL); err != nil {
 			return result, err
@@ -447,8 +593,17 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		log.Warnf("Failed to get domain custom status: %v", err)
 	}
 
-	// Process IPs
+	// Process IPs with batching to avoid overwhelming the database and firewall
+	ipBatchSize := 10
+	ipBatch := make([]string, 0, ipBatchSize)
+
 	for _, ip := range ips {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+		}
+
 		// Validate IP
 		valid, err := utils.IsValidIPToBlock(ip)
 		if err != nil || !valid {
@@ -459,51 +614,95 @@ func processDomain(domain string, settings models.Settings, runID int64, sourceU
 		// Check IP whitelist - skip if whitelisted
 		isIPWhitelisted, err := database.IsIPWhitelisted(ip)
 		if err != nil {
-			return result, err
-		}
-		if isIPWhitelisted {
-			log.Infof("IP %s is whitelisted, skipping", ip)
+			log.Warnf("Error checking if IP %s is whitelisted: %v", ip, err)
 			continue
 		}
 
-		// Add IP to database with rotation mechanism (will handle FIFO)
-		// Use 0 expiration for custom domains
-		var expirationToUse time.Duration
-		if isCustomDomain {
-			expirationToUse = 0
-		} else {
-			expirationToUse = settings.RuleExpiration
+		if isIPWhitelisted {
+			log.Infof("IP %s is whitelisted for domain %s, skipping", ip, domain)
+			continue
 		}
 
-		if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, expirationToUse); err != nil {
-			return result, err
-		}
+		// Add to the batch
+		ipBatch = append(ipBatch, ip)
 
-		// Apply iptables rules
-		fwManager, err := firewall.NewIPTablesManager()
-		if err != nil {
-			return result, err
+		// Process batch when it reaches the batch size
+		if len(ipBatch) >= ipBatchSize {
+			blockedCount := processIPBatch(ipBatch, domainID, domain, isCustomDomain, settings, runID)
+			result.IPsBlocked += blockedCount
+			ipBatch = ipBatch[:0] // Clear batch
 		}
-		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
-			return result, err
-		}
+	}
 
-		// Log action
-		if settings.LoggingEnabled {
-			database.LogAction(runID, "block", ip, "success", "")
-		}
-		log.Infof("Blocked IP %s for domain %s", ip, domain)
-		result.IPsBlocked++
+	// Process any remaining IPs in the batch
+	if len(ipBatch) > 0 {
+		blockedCount := processIPBatch(ipBatch, domainID, domain, isCustomDomain, settings, runID)
+		result.IPsBlocked += blockedCount
 	}
 
 	// Check for CDN status and update if needed
 	isCDN, err := database.CheckForCDN(domainID, settings.MaxIPsPerDomain)
 	if err != nil {
-		return result, err
+		log.Warnf("Failed to check CDN status for domain %s: %v", domain, err)
 	}
 	if isCDN {
 		log.Infof("Domain %s flagged as potential CDN (has %d+ IPs)", domain, settings.MaxIPsPerDomain)
 	}
 
 	return result, nil
+}
+
+// processIPBatch processes a batch of IPs for efficient database and firewall updates
+func processIPBatch(ips []string, domainID int64, domain string, isCustomDomain bool, settings models.Settings, runID int64) int {
+	if len(ips) == 0 {
+		return 0
+	}
+
+	blockedCount := 0
+	var expirationToUse time.Duration
+
+	if isCustomDomain {
+		expirationToUse = 0 // No expiration for custom domains
+	} else {
+		expirationToUse = settings.RuleExpiration
+	}
+
+	// Initialize firewall manager once for the batch
+	fwManager, err := firewall.NewIPTablesManager()
+	if err != nil {
+		log.Errorf("Failed to initialize firewall manager: %v", err)
+		return 0
+	}
+
+	// Process each IP in the batch
+	for _, ip := range ips {
+		// Add IP to database with rotation mechanism
+		if err := database.AddIPWithRotation(domainID, ip, settings.MaxIPsPerDomain, expirationToUse); err != nil {
+			log.Warnf("Failed to add IP %s to database: %v", ip, err)
+			continue
+		}
+
+		// Apply iptables rules
+		if err := fwManager.BlockIP(ip, settings.BlockRuleType); err != nil {
+			log.Warnf("Failed to block IP %s: %v", ip, err)
+			continue
+		}
+
+		// Log action
+		if settings.LoggingEnabled {
+			database.LogAction(runID, "block", ip, "success", domain)
+		}
+
+		log.Infof("Blocked IP %s for domain %s", ip, domain)
+		blockedCount++
+	}
+
+	// Save firewall changes after processing the batch
+	if blockedCount > 0 {
+		if err := fwManager.SaveRulesToPersistentFiles(); err != nil {
+			log.Warnf("Failed to save firewall rules: %v", err)
+		}
+	}
+
+	return blockedCount
 }

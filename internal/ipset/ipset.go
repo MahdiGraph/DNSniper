@@ -2,6 +2,7 @@ package ipset
 
 import (
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 	"sync"
@@ -126,7 +127,6 @@ func (m *IPSetManager) AddToWhitelist(ip string) error {
 
 	// Remove from blocklist if it exists there
 	m.RemoveFromBlocklist(ip)
-
 	return nil
 }
 
@@ -135,21 +135,19 @@ func (m *IPSetManager) AddToBlocklist(ip string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Check if IP is in whitelist first
-	cmd := exec.Command("ipset", "test", m.whitelistName, ip)
-	if cmd.Run() == nil {
+	// Check if IP is in whitelist first - directly check with ipset
+	if m.IsWhitelisted(ip) {
 		// IP is whitelisted, don't add to blocklist
 		log.Infof("IP %s is whitelisted, not adding to blocklist", ip)
 		return nil
 	}
 
 	// Add to blocklist set
-	cmd = exec.Command("ipset", "add", m.blocklistName, ip, "-exist")
+	cmd := exec.Command("ipset", "add", m.blocklistName, ip, "-exist")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to add IP %s to blocklist: %w - %s", ip, err, output)
 	}
-
 	return nil
 }
 
@@ -167,7 +165,6 @@ func (m *IPSetManager) AddRangeToWhitelist(cidr string) error {
 
 	// Remove from blocklist range if it exists there
 	m.RemoveRangeFromBlocklist(cidr)
-
 	return nil
 }
 
@@ -190,7 +187,6 @@ func (m *IPSetManager) AddRangeToBlocklist(cidr string) error {
 	if err != nil {
 		return fmt.Errorf("failed to add CIDR %s to blocklist: %w - %s", cidr, err, output)
 	}
-
 	return nil
 }
 
@@ -236,9 +232,37 @@ func (m *IPSetManager) RemoveRangeFromBlocklist(cidr string) error {
 
 // IsWhitelisted checks if an IP is in the whitelist
 func (m *IPSetManager) IsWhitelisted(ip string) bool {
+	// Check direct IP whitelist
 	cmd := exec.Command("ipset", "test", m.whitelistName, ip)
-	err := cmd.Run()
-	return err == nil
+	if cmd.Run() == nil {
+		return true
+	}
+
+	// Check if IP is in any whitelisted range
+	// For each range, we need to check if the IP is contained
+	ranges, err := m.ListWhitelistRanges()
+	if err != nil {
+		log.Warnf("Failed to list whitelist ranges: %v", err)
+		return false
+	}
+
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		log.Warnf("Failed to parse IP %s", ip)
+		return false
+	}
+
+	for _, cidr := range ranges {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if ipNet.Contains(parsedIP) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // IsBlocked checks if an IP is in the blocklist
@@ -304,6 +328,30 @@ func (m *IPSetManager) RestoreSets() error {
 		return fmt.Errorf("failed to restore ipsets: %w - %s", err, output)
 	}
 	return nil
+}
+
+// ListWhitelistRanges returns all ranges in the whitelist
+func (m *IPSetManager) ListWhitelistRanges() ([]string, error) {
+	cmd := exec.Command("ipset", "list", m.whitelistRangeName)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var ranges []string
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "/") {
+			// This looks like a CIDR notation
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				ranges = append(ranges, fields[0])
+			}
+		}
+	}
+
+	return ranges, nil
 }
 
 // Helper function to check if a slice contains a string
