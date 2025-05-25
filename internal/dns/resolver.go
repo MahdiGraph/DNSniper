@@ -4,117 +4,126 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
+	"time"
 )
 
 // Resolver interface for domain resolution
 type Resolver interface {
-	ResolveDomain(domain, dnsServer string) ([]string, error)
+	ResolveDomain(domain string, resolver string) ([]string, error)
 }
 
-// StandardResolver implements the standard DNS resolver
-type StandardResolver struct{}
+// StandardResolver implements domain resolution using the Go standard library
+type StandardResolver struct {
+	Timeout time.Duration
+}
 
 // NewStandardResolver creates a new standard resolver
 func NewStandardResolver() *StandardResolver {
-	return &StandardResolver{}
+	return &StandardResolver{
+		Timeout: 5 * time.Second,
+	}
 }
 
-// ResolveDomain resolves a domain to its IP addresses (both IPv4 and IPv6)
-func (r *StandardResolver) ResolveDomain(domain, dnsServer string) ([]string, error) {
+// ResolveDomain resolves a domain to its IP addresses using the specified resolver
+func (r *StandardResolver) ResolveDomain(domain string, resolver string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.Timeout)
+	defer cancel()
+
+	// If no resolver specified, use system default
+	if resolver == "" {
+		return r.resolveWithSystemDNS(ctx, domain)
+	}
+
+	// Use custom resolver
+	return r.resolveWithCustomDNS(ctx, domain, resolver)
+}
+
+// resolveWithSystemDNS resolves a domain using system DNS settings
+func (r *StandardResolver) resolveWithSystemDNS(ctx context.Context, domain string) ([]string, error) {
 	var ips []string
 
-	// If no custom DNS server is specified, use system default
-	if dnsServer == "" {
-		ipv4, ipv6, err := resolveWithSystemDNS(domain)
-		if err != nil {
-			return nil, err
+	// Perform lookup with context for timeout
+	addrs, err := net.DefaultResolver.LookupHost(ctx, domain)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve domain %s: %w", domain, err)
+	}
+
+	// Extract valid IP addresses
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip != nil {
+			ips = append(ips, addr)
 		}
-		ips = append(ips, ipv4...)
-		ips = append(ips, ipv6...)
-	} else {
-		// Using custom DNS server
-		ipv4, ipv6, err := resolveWithCustomDNS(domain, dnsServer)
-		if err != nil {
-			return nil, err
-		}
-		ips = append(ips, ipv4...)
-		ips = append(ips, ipv6...)
 	}
 
 	return ips, nil
 }
 
-// resolveWithSystemDNS resolves a domain using the system DNS settings
-func resolveWithSystemDNS(domain string) ([]string, []string, error) {
-	// Resolve IP addresses
-	allAddrs, err := net.LookupIP(domain)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to resolve domain %s: %w", domain, err)
-	}
-
-	// Extract IP addresses as strings
-	var ipv4s []string
-	var ipv6s []string
-
-	for _, ip := range allAddrs {
-		if ipv4 := ip.To4(); ipv4 != nil {
-			ipv4s = append(ipv4s, ipv4.String())
-		} else {
-			// This is an IPv6 address
-			ipv6s = append(ipv6s, ip.String())
-		}
-	}
-
-	return ipv4s, ipv6s, nil
-}
-
 // resolveWithCustomDNS resolves a domain using a custom DNS server
-func resolveWithCustomDNS(domain, dnsServer string) ([]string, []string, error) {
-	// Create a custom resolver
-	r := &net.Resolver{
+func (r *StandardResolver) resolveWithCustomDNS(ctx context.Context, domain string, dnsServer string) ([]string, error) {
+	// Ensure DNS server has port
+	if !strings.Contains(dnsServer, ":") {
+		dnsServer = dnsServer + ":53"
+	}
+
+	// Create custom resolver
+	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{}
-			return d.DialContext(ctx, "udp", dnsServer+":53")
+			dialer := net.Dialer{
+				Timeout: r.Timeout,
+			}
+			return dialer.DialContext(ctx, "udp", dnsServer)
 		},
 	}
 
-	// Lookup addresses
-	addrs, err := r.LookupHost(context.Background(), domain)
+	// Perform lookup with context for timeout
+	addrs, err := resolver.LookupHost(ctx, domain)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to resolve domain %s with DNS server %s: %w", domain, dnsServer, err)
+		return nil, fmt.Errorf("failed to resolve domain %s with DNS server %s: %w", domain, dnsServer, err)
 	}
 
-	// Separate IPv4 and IPv6 addresses
-	var ipv4s []string
-	var ipv6s []string
-
+	// Extract valid IP addresses
+	var ips []string
 	for _, addr := range addrs {
 		ip := net.ParseIP(addr)
-		if ip == nil {
-			continue
-		}
-
-		if ip.To4() != nil {
-			ipv4s = append(ipv4s, addr)
-		} else {
-			ipv6s = append(ipv6s, addr)
+		if ip != nil {
+			ips = append(ips, addr)
 		}
 	}
 
-	return ipv4s, ipv6s, nil
+	return ips, nil
 }
 
-// MockResolver implements a mock resolver for testing
+// MockResolver is a resolver implementation for testing
 type MockResolver struct {
 	Results map[string][]string
 	Errors  map[string]error
 }
 
+// NewMockResolver creates a new mock resolver for testing
+func NewMockResolver() *MockResolver {
+	return &MockResolver{
+		Results: make(map[string][]string),
+		Errors:  make(map[string]error),
+	}
+}
+
 // ResolveDomain implements the Resolver interface for testing
-func (m *MockResolver) ResolveDomain(domain, dnsServer string) ([]string, error) {
-	if err, ok := m.Errors[domain]; ok {
+func (r *MockResolver) ResolveDomain(domain string, resolver string) ([]string, error) {
+	if err, ok := r.Errors[domain]; ok {
 		return nil, err
 	}
-	return m.Results[domain], nil
+	return r.Results[domain], nil
+}
+
+// SetResult sets the mock result for a domain
+func (r *MockResolver) SetResult(domain string, ips []string) {
+	r.Results[domain] = ips
+}
+
+// SetError sets the mock error for a domain
+func (r *MockResolver) SetError(domain string, err error) {
+	r.Errors[domain] = err
 }
