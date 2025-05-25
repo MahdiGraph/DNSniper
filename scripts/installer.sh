@@ -27,6 +27,9 @@ GITHUB_REPO="MahdiGraph/DNSniper"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_REPO}"
 
+# Flag to track if binaries were built locally
+BUILT_LOCALLY=false
+
 # Check for root access
 if [ "$(id -u)" -ne 0 ]; then
     print_error "This script must be run as root"
@@ -213,7 +216,7 @@ save_rules_for_persistence() {
     fi
 }
 
-# Function to build the binaries directly to installation directory
+# Function to build the binaries
 build_binaries() {
     print_info "Building DNSniper binaries..."
     
@@ -223,31 +226,28 @@ build_binaries() {
     # Go one level up from scripts directory
     cd "$(dirname "$SCRIPT_DIR")"
     
-    # Ensure install directory exists
-    mkdir -p "$INSTALL_DIR"
+    # Create installation directory if it doesn't exist
+    mkdir -p "$INSTALL_DIR/bin"
     
     # Build dnsniper directly to installation directory
     print_info "Building dnsniper..."
-    go build -o "$INSTALL_DIR/dnsniper" "./cmd/dnsniper"
+    go build -o "$INSTALL_DIR/bin/dnsniper" "./cmd/dnsniper"
     if [ $? -ne 0 ]; then
         print_error "Failed to build dnsniper"
-        exit 1
+        return 1
     fi
     
-    # Build dnsniper-agent directly to installation directory
+    # Build dnsniper-agent
     print_info "Building dnsniper-agent..."
-    go build -o "$INSTALL_DIR/dnsniper-agent" "./cmd/dnsniper-agent"
+    go build -o "$INSTALL_DIR/bin/dnsniper-agent" "./cmd/dnsniper-agent"
     if [ $? -ne 0 ]; then
         print_error "Failed to build dnsniper-agent"
-        exit 1
+        return 1
     fi
     
-    # Create symlinks
-    ln -sf "$INSTALL_DIR/dnsniper" "$BIN_DIR/dnsniper"
-    ln -sf "$INSTALL_DIR/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
-    
-    print_success "Binaries built and installed successfully"
-    exit 0
+    print_success "Binaries built successfully in $INSTALL_DIR/bin/"
+    BUILT_LOCALLY=true
+    return 0
 }
 
 # Function to download binaries from GitHub
@@ -374,19 +374,18 @@ download_binaries() {
         exit 1
     fi
     
-    # Install binaries to installation directory
-    cp "$MAIN_BINARY" "$INSTALL_DIR/dnsniper"
-    cp "$AGENT_BINARY" "$INSTALL_DIR/dnsniper-agent"
+    # Create the bin directory in installation path
+    mkdir -p "$INSTALL_DIR/bin"
     
-    # Create symlinks
-    ln -sf "$INSTALL_DIR/dnsniper" "$BIN_DIR/dnsniper"
-    ln -sf "$INSTALL_DIR/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
+    # Install binaries to installation directory
+    cp "$MAIN_BINARY" "$INSTALL_DIR/bin/dnsniper"
+    cp "$AGENT_BINARY" "$INSTALL_DIR/bin/dnsniper-agent"
     
     # Set executable permissions
-    chmod +x "$INSTALL_DIR/dnsniper"
-    chmod +x "$INSTALL_DIR/dnsniper-agent"
+    chmod +x "$INSTALL_DIR/bin/dnsniper"
+    chmod +x "$INSTALL_DIR/bin/dnsniper-agent"
     
-    print_success "Binaries installed successfully"
+    print_success "Binaries installed successfully to $INSTALL_DIR/bin/"
     return 0
 }
 
@@ -461,30 +460,18 @@ uninstall_dnsniper() {
     exit 0
 }
 
-# Check command line arguments
-if [ "$1" = "--build" ]; then
-    build_binaries
-    # build_binaries will exit after completion
-elif [ "$1" = "uninstall" ]; then
-    uninstall_dnsniper
-fi
-
 # Detect OS
 detect_os
+
+# Process command line arguments
+if [ "$1" = "uninstall" ]; then
+    uninstall_dnsniper
+fi
 
 # Install dependencies
 install_dependencies
 
-# Clean install or reinstall
-print_info "Installing DNSniper v2.0..."
-
-# Stop and disable any existing service
-systemctl stop dnsniper-agent.service 2>/dev/null
-systemctl disable dnsniper-agent.service 2>/dev/null
-systemctl stop dnsniper-agent.timer 2>/dev/null
-systemctl disable dnsniper-agent.timer 2>/dev/null
-
-# Create directories
+# Create necessary directories
 mkdir -p "$INSTALL_DIR"
 mkdir -p "$LOG_DIR"
 mkdir -p "$IPTABLES_DIR"
@@ -532,12 +519,20 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SYSTEMD_DIR/dns
             print_info "Performing clean install..."
             INSTALL_TYPE="clean"
             
-            # Remove old files to ensure clean installation
+            # Stop and disable any existing service
+            systemctl stop dnsniper-agent.service 2>/dev/null
+            systemctl disable dnsniper-agent.service 2>/dev/null
+            systemctl stop dnsniper-agent.timer 2>/dev/null
+            systemctl disable dnsniper-agent.timer 2>/dev/null
+            
+            # Remove old files
             rm -f "$BIN_DIR/dnsniper" "$BIN_DIR/dnsniper-agent"
             rm -f "${SYSTEMD_DIR}/dnsniper-agent.service"
             rm -f "${SYSTEMD_DIR}/dnsniper-agent.timer"
             rm -rf "$INSTALL_DIR"
             rm -rf "$LOG_DIR"
+            
+            # Recreate directories
             mkdir -p "$INSTALL_DIR"
             mkdir -p "$LOG_DIR"
             
@@ -642,24 +637,46 @@ if [ "$INSTALL_TYPE" = "clean" ] || [ "$CONFIG_EXISTS" = "false" ]; then
     print_info "Using update interval: $UPDATE_INTERVAL"
 fi
 
-# Check for already built binaries in install directory
-if [ -f "$INSTALL_DIR/dnsniper" ] && [ -f "$INSTALL_DIR/dnsniper-agent" ]; then
-    print_info "Using existing binaries in $INSTALL_DIR..."
+# Process --build flag and get binaries
+if [ "$1" = "--build" ]; then
+    print_info "Build flag detected, building binaries locally..."
+    if build_binaries; then
+        print_success "Successfully built binaries"
+    else
+        print_error "Failed to build binaries"
+        exit 1
+    fi
 else
-    # No local binaries, download from GitHub
-    download_binaries
+    # No build flag, check for local binaries or download
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+    BIN_PATH="${PROJECT_DIR}/bin"
+    
+    if [ -f "${BIN_PATH}/dnsniper" ] && [ -f "${BIN_PATH}/dnsniper-agent" ]; then
+        print_info "Using locally available binaries..."
+        mkdir -p "$INSTALL_DIR/bin"
+        cp "${BIN_PATH}/dnsniper" "$INSTALL_DIR/bin/dnsniper"
+        cp "${BIN_PATH}/dnsniper-agent" "$INSTALL_DIR/bin/dnsniper-agent"
+        chmod +x "$INSTALL_DIR/bin/dnsniper"
+        chmod +x "$INSTALL_DIR/bin/dnsniper-agent"
+        BUILT_LOCALLY=true
+    else
+        # No local binaries, download from GitHub
+        if ! download_binaries; then
+            print_error "Failed to download binaries"
+            exit 1
+        fi
+    fi
 fi
 
-# Create symlinks (in case they were deleted)
-ln -sf "$INSTALL_DIR/dnsniper" "$BIN_DIR/dnsniper"
-ln -sf "$INSTALL_DIR/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
-
-# Set executable permissions
-chmod +x "$INSTALL_DIR/dnsniper"
-chmod +x "$INSTALL_DIR/dnsniper-agent"
+# Create symlinks to binaries
+print_info "Creating symlinks to binaries..."
+ln -sf "$INSTALL_DIR/bin/dnsniper" "$BIN_DIR/dnsniper"
+ln -sf "$INSTALL_DIR/bin/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
 
 # Create config.yaml if it doesn't exist
 if [ "$CONFIG_EXISTS" = "false" ]; then
+    print_info "Creating configuration file..."
     cat > "$CONFIG_FILE" << EOF
 # DNSniper v2.0 Configuration
 dns_resolvers:
@@ -693,6 +710,7 @@ EOF
 fi
 
 # Create systemd service
+print_info "Creating systemd service files..."
 cat > "${SYSTEMD_DIR}/dnsniper-agent.service" << EOF
 [Unit]
 Description=DNSniper Agent Service
@@ -700,7 +718,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=$INSTALL_DIR/dnsniper-agent
+ExecStart=$BIN_DIR/dnsniper-agent
 LockPersonality=true
 
 [Install]
@@ -809,7 +827,6 @@ systemctl enable dnsniper-agent.timer
 systemctl start dnsniper-agent.timer
 
 # Create a symlink for the installer
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ln -sf "$SCRIPT_DIR/installer.sh" "$BIN_DIR/dnsniper-installer"
 
 print_success "DNSniper v2.0 has been installed successfully!"
