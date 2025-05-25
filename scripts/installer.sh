@@ -22,6 +22,11 @@ SYSTEMD_DIR="/etc/systemd/system"
 IPTABLES_DIR="/etc/iptables"
 CONFIG_FILE="${INSTALL_DIR}/config.yaml"
 
+# GitHub repository information
+GITHUB_REPO="MahdiGraph/DNSniper"
+GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
+GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_REPO}"
+
 # Check for root access
 if [ "$(id -u)" -ne 0 ]; then
     print_error "This script must be run as root"
@@ -208,37 +213,181 @@ save_rules_for_persistence() {
     fi
 }
 
-# Function to build the binaries
+# Function to build the binaries directly to installation directory
 build_binaries() {
     print_info "Building DNSniper binaries..."
     
     # Determine script location
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
     
-    # Go one level up as required
-    cd ..
+    # Go one level up from scripts directory
+    cd "$(dirname "$SCRIPT_DIR")"
     
-    # Create bin directory if it doesn't exist
-    mkdir -p "bin"
+    # Ensure install directory exists
+    mkdir -p "$INSTALL_DIR"
     
-    # Build dnsniper
+    # Build dnsniper directly to installation directory
     print_info "Building dnsniper..."
-    go build -o "bin/dnsniper" "./cmd/dnsniper"
+    go build -o "$INSTALL_DIR/dnsniper" "./cmd/dnsniper"
     if [ $? -ne 0 ]; then
         print_error "Failed to build dnsniper"
         exit 1
     fi
     
-    # Build dnsniper-agent
+    # Build dnsniper-agent directly to installation directory
     print_info "Building dnsniper-agent..."
-    go build -o "bin/dnsniper-agent" "./cmd/dnsniper-agent"
+    go build -o "$INSTALL_DIR/dnsniper-agent" "./cmd/dnsniper-agent"
     if [ $? -ne 0 ]; then
         print_error "Failed to build dnsniper-agent"
         exit 1
     fi
     
-    print_success "Binaries built successfully in bin/"
+    # Create symlinks
+    ln -sf "$INSTALL_DIR/dnsniper" "$BIN_DIR/dnsniper"
+    ln -sf "$INSTALL_DIR/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
+    
+    print_success "Binaries built and installed successfully"
     exit 0
+}
+
+# Function to download binaries from GitHub
+download_binaries() {
+    print_info "Downloading DNSniper binaries..."
+    
+    # Create temporary directory
+    TEMP_DIR=$(mktemp -d)
+    trap 'rm -rf "$TEMP_DIR"' EXIT
+    
+    # Detect architecture
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64)
+            ARCH="amd64"
+            ;;
+        aarch64)
+            ARCH="arm64"
+            ;;
+        armv7*)
+            ARCH="arm"
+            ;;
+        i386|i686)
+            ARCH="386"
+            ;;
+        *)
+            print_error "Unsupported architecture: $ARCH"
+            exit 1
+            ;;
+    esac
+    
+    print_info "Detected architecture: $ARCH"
+    
+    # Find latest release
+    print_info "Fetching latest release information..."
+    LATEST_VERSION=""
+    
+    if command_exists curl && command_exists jq; then
+        # Try with GitHub API first
+        API_RESPONSE=$(curl -s "${GITHUB_API}/releases/latest")
+        if [ $? -eq 0 ] && [ -n "$API_RESPONSE" ]; then
+            LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r .tag_name 2>/dev/null)
+        fi
+    fi
+    
+    # Fallback if API call failed or jq is not available
+    if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
+        print_warning "Could not determine latest version from GitHub API. Using fallback method."
+        # Parse HTML page as a fallback (less reliable)
+        RELEASES_PAGE=$(curl -s "https://github.com/${GITHUB_REPO}/releases")
+        if [ $? -eq 0 ] && [ -n "$RELEASES_PAGE" ]; then
+            # Extract the first release tag with grep and sed
+            LATEST_VERSION=$(echo "$RELEASES_PAGE" | grep -o "/${GITHUB_REPO}/releases/tag/[^ \"]*" | head -1 | sed "s/.*\/tag\///")
+        fi
+        # If still no version found, use a hardcoded fallback
+        if [ -z "$LATEST_VERSION" ]; then
+            LATEST_VERSION="v2.0.0"  # Fallback version
+            print_warning "Could not determine latest version. Using fallback version ${LATEST_VERSION}."
+        else
+            print_info "Found latest version: ${LATEST_VERSION}"
+        fi
+    else
+        print_info "Found latest version: ${LATEST_VERSION}"
+    fi
+    
+    # Construct download URLs
+    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/dnsniper-linux-${ARCH}.zip"
+    CHECKSUM_URL="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/dnsniper-linux-${ARCH}.zip.sha256"
+    
+    # Download package
+    print_info "Downloading DNSniper binary package for ${ARCH}..."
+    print_info "Download URL: ${DOWNLOAD_URL}"
+    curl -L --fail "${DOWNLOAD_URL}" -o "${TEMP_DIR}/dnsniper.zip"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to download DNSniper. Please check your internet connection and try again."
+        print_error "If the problem persists, visit https://github.com/${GITHUB_REPO}/releases for manual download."
+        exit 1
+    fi
+    
+    # Verify checksum if available
+    if command_exists sha256sum; then
+        print_info "Downloading checksum file..."
+        if curl -L --fail -s "${CHECKSUM_URL}" -o "${TEMP_DIR}/checksum.sha256"; then
+            print_info "Verifying package integrity..."
+            # Extract just the hash from the checksum file
+            EXPECTED_HASH=$(cut -d ' ' -f 1 "${TEMP_DIR}/checksum.sha256")
+            # Calculate hash of the downloaded file
+            ACTUAL_HASH=$(sha256sum "${TEMP_DIR}/dnsniper.zip" | cut -d ' ' -f 1)
+            # Compare hashes
+            if [ "$EXPECTED_HASH" = "$ACTUAL_HASH" ]; then
+                print_success "Checksum verification passed!"
+            else
+                print_error "Checksum verification failed! The downloaded package may be corrupted."
+                print_error "Expected: $EXPECTED_HASH"
+                print_error "Actual:   $ACTUAL_HASH"
+                print_error "Please try again or download manually from https://github.com/${GITHUB_REPO}/releases"
+                exit 1
+            fi
+        else
+            print_warning "Could not download checksum file. Skipping integrity check."
+        fi
+    else
+        print_warning "sha256sum not found. Skipping integrity check."
+    fi
+    
+    # Extract the package
+    print_info "Extracting DNSniper binaries..."
+    unzip -q "${TEMP_DIR}/dnsniper.zip" -d "${TEMP_DIR}"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to extract DNSniper binaries."
+        exit 1
+    fi
+    
+    # Find the binaries
+    MAIN_BINARY="${TEMP_DIR}/dnsniper-linux-${ARCH}"
+    AGENT_BINARY="${TEMP_DIR}/dnsniper-agent-linux-${ARCH}"
+    
+    # Check if binaries were found
+    if [ ! -f "$MAIN_BINARY" ] || [ ! -f "$AGENT_BINARY" ]; then
+        print_error "Could not find expected DNSniper executables in the downloaded package."
+        print_error "Files in package:"
+        ls -la "${TEMP_DIR}"
+        print_error "Installation failed."
+        exit 1
+    fi
+    
+    # Install binaries to installation directory
+    cp "$MAIN_BINARY" "$INSTALL_DIR/dnsniper"
+    cp "$AGENT_BINARY" "$INSTALL_DIR/dnsniper-agent"
+    
+    # Create symlinks
+    ln -sf "$INSTALL_DIR/dnsniper" "$BIN_DIR/dnsniper"
+    ln -sf "$INSTALL_DIR/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
+    
+    # Set executable permissions
+    chmod +x "$INSTALL_DIR/dnsniper"
+    chmod +x "$INSTALL_DIR/dnsniper-agent"
+    
+    print_success "Binaries installed successfully"
+    return 0
 }
 
 # Function to uninstall DNSniper
@@ -315,6 +464,7 @@ uninstall_dnsniper() {
 # Check command line arguments
 if [ "$1" = "--build" ]; then
     build_binaries
+    # build_binaries will exit after completion
 elif [ "$1" = "uninstall" ]; then
     uninstall_dnsniper
 fi
@@ -322,15 +472,28 @@ fi
 # Detect OS
 detect_os
 
+# Install dependencies
+install_dependencies
+
+# Clean install or reinstall
+print_info "Installing DNSniper v2.0..."
+
+# Stop and disable any existing service
+systemctl stop dnsniper-agent.service 2>/dev/null
+systemctl disable dnsniper-agent.service 2>/dev/null
+systemctl stop dnsniper-agent.timer 2>/dev/null
+systemctl disable dnsniper-agent.timer 2>/dev/null
+
+# Create directories
+mkdir -p "$INSTALL_DIR"
+mkdir -p "$LOG_DIR"
+mkdir -p "$IPTABLES_DIR"
+
 # Check for existing installation and configuration
 CONFIG_EXISTS="false"
 if [ -f "$CONFIG_FILE" ]; then
     CONFIG_EXISTS="true"
 fi
-
-# Set default values
-BLOCK_CHAINS="ALL"
-UPDATE_INTERVAL="3h"
 
 # Determine installation type
 INSTALL_TYPE="clean"
@@ -369,18 +532,14 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SYSTEMD_DIR/dns
             print_info "Performing clean install..."
             INSTALL_TYPE="clean"
             
-            # Stop and disable any existing service
-            systemctl stop dnsniper-agent.service 2>/dev/null
-            systemctl disable dnsniper-agent.service 2>/dev/null
-            systemctl stop dnsniper-agent.timer 2>/dev/null
-            systemctl disable dnsniper-agent.timer 2>/dev/null
-            
-            # Remove old files
+            # Remove old files to ensure clean installation
             rm -f "$BIN_DIR/dnsniper" "$BIN_DIR/dnsniper-agent"
             rm -f "${SYSTEMD_DIR}/dnsniper-agent.service"
             rm -f "${SYSTEMD_DIR}/dnsniper-agent.timer"
             rm -rf "$INSTALL_DIR"
             rm -rf "$LOG_DIR"
+            mkdir -p "$INSTALL_DIR"
+            mkdir -p "$LOG_DIR"
             
             CONFIG_EXISTS="false"
             ;;
@@ -399,13 +558,9 @@ else
     CONFIG_EXISTS="false"
 fi
 
-# Install dependencies
-install_dependencies
-
-# Create directories
-mkdir -p "$INSTALL_DIR"
-mkdir -p "$LOG_DIR"
-mkdir -p "$IPTABLES_DIR"
+# Set default values
+BLOCK_CHAINS="ALL"
+UPDATE_INTERVAL="3h"
 
 # Get configuration settings from user if needed
 if [ "$INSTALL_TYPE" = "clean" ] || [ "$CONFIG_EXISTS" = "false" ]; then
@@ -487,24 +642,21 @@ if [ "$INSTALL_TYPE" = "clean" ] || [ "$CONFIG_EXISTS" = "false" ]; then
     print_info "Using update interval: $UPDATE_INTERVAL"
 fi
 
-# Get binaries - either from local build or download
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BIN_PATH="${PROJECT_DIR}/bin"
-
-if [ -f "${BIN_PATH}/dnsniper" ] && [ -f "${BIN_PATH}/dnsniper-agent" ]; then
-    print_info "Using locally built binaries..."
-    cp "${BIN_PATH}/dnsniper" "$BIN_DIR/"
-    cp "${BIN_PATH}/dnsniper-agent" "$BIN_DIR/"
+# Check for already built binaries in install directory
+if [ -f "$INSTALL_DIR/dnsniper" ] && [ -f "$INSTALL_DIR/dnsniper-agent" ]; then
+    print_info "Using existing binaries in $INSTALL_DIR..."
 else
-    print_error "Binaries not found in ${BIN_PATH}"
-    print_info "Please build the binaries first with: ./installer.sh --build"
-    exit 1
+    # No local binaries, download from GitHub
+    download_binaries
 fi
 
+# Create symlinks (in case they were deleted)
+ln -sf "$INSTALL_DIR/dnsniper" "$BIN_DIR/dnsniper"
+ln -sf "$INSTALL_DIR/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
+
 # Set executable permissions
-chmod +x "$BIN_DIR/dnsniper"
-chmod +x "$BIN_DIR/dnsniper-agent"
+chmod +x "$INSTALL_DIR/dnsniper"
+chmod +x "$INSTALL_DIR/dnsniper-agent"
 
 # Create config.yaml if it doesn't exist
 if [ "$CONFIG_EXISTS" = "false" ]; then
@@ -548,7 +700,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=$BIN_DIR/dnsniper-agent
+ExecStart=$INSTALL_DIR/dnsniper-agent
 LockPersonality=true
 
 [Install]
@@ -657,6 +809,7 @@ systemctl enable dnsniper-agent.timer
 systemctl start dnsniper-agent.timer
 
 # Create a symlink for the installer
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 ln -sf "$SCRIPT_DIR/installer.sh" "$BIN_DIR/dnsniper-installer"
 
 print_success "DNSniper v2.0 has been installed successfully!"
