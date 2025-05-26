@@ -501,10 +501,22 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SYSTEMD_DIR/dns
                 
                 # Try to extract existing configuration
                 if command_exists grep && command_exists awk; then
-                    # Extract block_chains
-                    BLOCK_CHAINS_LINE=$(grep "block_chains:" "$CONFIG_FILE" | awk '{print $2}')
+                    # Extract block_chains - handle both old and new formats
+                    BLOCK_CHAINS_LINE=$(grep "block_chains:" "$CONFIG_FILE" | cut -d':' -f2- | tr -d ' ')
                     if [ -n "$BLOCK_CHAINS_LINE" ]; then
-                        BLOCK_CHAINS="$BLOCK_CHAINS_LINE"
+                        # Convert YAML array format back to simple format for internal processing
+                        if [[ "$BLOCK_CHAINS_LINE" == *"["* ]]; then
+                            # It's already in array format, extract the values
+                            if [[ "$BLOCK_CHAINS_LINE" == *"INPUT"* ]] && [[ "$BLOCK_CHAINS_LINE" == *"OUTPUT"* ]] && [[ "$BLOCK_CHAINS_LINE" == *"FORWARD"* ]]; then
+                                BLOCK_CHAINS="ALL"
+                            else
+                                # Extract individual chains and convert to comma-separated
+                                EXTRACTED_CHAINS=$(echo "$BLOCK_CHAINS_LINE" | sed 's/\[//g' | sed 's/\]//g' | sed 's/"//g' | tr ',' '\n' | tr -d ' ' | paste -sd ',' -)
+                                BLOCK_CHAINS="$EXTRACTED_CHAINS"
+                            fi
+                        else
+                            BLOCK_CHAINS="$BLOCK_CHAINS_LINE"
+                        fi
                     fi
                     
                     # Extract update_interval
@@ -677,6 +689,23 @@ ln -sf "$INSTALL_DIR/bin/dnsniper-agent" "$BIN_DIR/dnsniper-agent"
 # Create config.yaml if it doesn't exist
 if [ "$CONFIG_EXISTS" = "false" ]; then
     print_info "Creating configuration file..."
+    
+    # Convert BLOCK_CHAINS to proper YAML array format
+    if [ "$BLOCK_CHAINS" = "ALL" ]; then
+        BLOCK_CHAINS_YAML='["INPUT", "OUTPUT", "FORWARD"]'
+    else
+        # Convert comma-separated values to YAML array
+        BLOCK_CHAINS_YAML="["
+        IFS=',' read -ra CHAINS <<< "$BLOCK_CHAINS"
+        for i in "${!CHAINS[@]}"; do
+            if [ $i -gt 0 ]; then
+                BLOCK_CHAINS_YAML="${BLOCK_CHAINS_YAML}, "
+            fi
+            BLOCK_CHAINS_YAML="${BLOCK_CHAINS_YAML}\"${CHAINS[i]}\""
+        done
+        BLOCK_CHAINS_YAML="${BLOCK_CHAINS_YAML}]"
+    fi
+    
     cat > "$CONFIG_FILE" << EOF
 # DNSniper v2.0 Configuration
 dns_resolvers:
@@ -684,7 +713,7 @@ dns_resolvers:
   - "1.1.1.1"
 
 # Firewall configuration
-block_chains: $BLOCK_CHAINS
+block_chains: $BLOCK_CHAINS_YAML
 enable_ipv6: true
 
 # Update configuration
@@ -693,7 +722,7 @@ update_urls:
 update_interval: $UPDATE_INTERVAL
 
 # Domain handling
-rule_expiration: 30d
+rule_expiration: 720h
 max_ips_per_domain: 5
 
 # Logging
