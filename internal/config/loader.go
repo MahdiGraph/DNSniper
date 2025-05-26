@@ -44,8 +44,26 @@ func LoadConfig(configPath string) (*Settings, error) {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
 
-		if err := yaml.Unmarshal(data, config); err != nil {
+		// First try to unmarshal into a temporary map to handle backward compatibility
+		var tempConfig map[string]interface{}
+		if err := yaml.Unmarshal(data, &tempConfig); err != nil {
 			return nil, fmt.Errorf("failed to parse config file: %w", err)
+		}
+
+		// Handle backward compatibility: block_chains -> affected_chains
+		if blockChains, exists := tempConfig["block_chains"]; exists && tempConfig["affected_chains"] == nil {
+			tempConfig["affected_chains"] = blockChains
+			delete(tempConfig, "block_chains")
+		}
+
+		// Convert back to YAML and unmarshal into the config struct
+		migratedData, err := yaml.Marshal(tempConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to migrate config: %w", err)
+		}
+
+		if err := yaml.Unmarshal(migratedData, config); err != nil {
+			return nil, fmt.Errorf("failed to parse migrated config: %w", err)
 		}
 	}
 
@@ -88,9 +106,11 @@ func applyEnvironmentOverrides(config *Settings) {
 		config.DNSResolvers = strings.Split(dnsResolvers, ",")
 	}
 
-	// Block chains
-	if blockChains := os.Getenv("DNSNIPER_BLOCK_CHAINS"); blockChains != "" {
-		config.BlockChains = strings.Split(blockChains, ",")
+	// Affected chains (backward compatibility with BLOCK_CHAINS)
+	if affectedChains := os.Getenv("DNSNIPER_AFFECTED_CHAINS"); affectedChains != "" {
+		config.AffectedChains = strings.Split(affectedChains, ",")
+	} else if blockChains := os.Getenv("DNSNIPER_BLOCK_CHAINS"); blockChains != "" {
+		config.AffectedChains = strings.Split(blockChains, ",")
 	}
 
 	// IPv6 support

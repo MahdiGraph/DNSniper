@@ -18,10 +18,10 @@ import (
 	"github.com/nightlyone/lockfile"
 )
 
-// Agent represents the DNSniper agent
+// Agent represents the DNSniper agent with GORM compatibility
 type Agent struct {
 	config          *config.Settings
-	db              *database.Store
+	db              database.DatabaseStore // Use interface for GORM compatibility
 	resolver        dns.Resolver
 	firewallManager *firewall.FirewallManager
 	logger          *logger.Logger
@@ -31,10 +31,10 @@ type Agent struct {
 	ipsBlocked       int32
 }
 
-// NewAgent creates a new DNSniper agent
+// NewAgent creates a new DNSniper agent with GORM interface
 func NewAgent(
 	config *config.Settings,
-	db *database.Store,
+	db database.DatabaseStore, // Changed to interface
 	resolver dns.Resolver,
 	firewallManager *firewall.FirewallManager,
 	logger *logger.Logger,
@@ -48,7 +48,7 @@ func NewAgent(
 	}
 }
 
-// Run executes the agent process
+// Run executes the agent process with enhanced features
 func (a *Agent) Run(ctx context.Context) error {
 	// Clean up expired records
 	a.logger.Info("Cleaning up expired records...")
@@ -70,34 +70,30 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	// Log agent start and create run record
 	a.logger.Info("Agent started")
-	runID, err := a.db.LogAgentStart()
+	runIDInterface, err := a.db.LogAgentStart()
 	if err != nil {
 		return fmt.Errorf("failed to log agent start: %w", err)
 	}
 
-	// Set the run ID for run-specific logging
-	a.logger.SetRunID(runID)
-
-	// Process update URLs
-	updateURLs, err := a.db.GetUpdateURLs()
-	if err != nil {
-		a.logger.Warnf("Failed to get update URLs: %v", err)
-		updateURLs = []database.UpdateURL{}
+	// Convert run ID to the appropriate type (GORM uses uint)
+	var runID uint
+	switch id := runIDInterface.(type) {
+	case uint:
+		runID = id
+	case int64:
+		runID = uint(id)
+	default:
+		return fmt.Errorf("unexpected run ID type: %T", runIDInterface)
 	}
 
-	// If no update URLs, add default
-	if len(updateURLs) == 0 {
-		a.logger.Warn("No update URLs configured, using default")
-		if err := a.db.AddUpdateURL("https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"); err != nil {
-			a.logger.Warnf("Failed to add default update URL: %v", err)
-		}
+	// Set the run ID for run-specific logging
+	a.logger.SetRunID(int64(runID))
 
-		// Fetch updated URLs
-		updateURLs, err = a.db.GetUpdateURLs()
-		if err != nil {
-			a.logger.Warnf("Failed to get update URLs after adding default: %v", err)
-			updateURLs = []database.UpdateURL{}
-		}
+	// Process update URLs from configuration (not database)
+	updateURLs := a.config.UpdateURLs
+	if len(updateURLs) == 0 {
+		a.logger.Warn("No update URLs configured in settings, using default")
+		updateURLs = []string{"https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"}
 	}
 
 	// Process domains from update URLs
@@ -109,22 +105,22 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			a.logger.Infof("Processing update URL: %s", updateURL.URL)
+			a.logger.Infof("Processing update URL: %s", updateURL)
 
 			// Download domain list
-			domains, err := a.downloadDomainList(updateURL.URL)
+			domains, err := a.downloadDomainList(updateURL)
 			if err != nil {
-				a.logger.Warnf("Failed to download domain list from %s: %v", updateURL.URL, err)
+				a.logger.Warnf("Failed to download domain list from %s: %v", updateURL, err)
 				continue
 			}
 
 			// Process domains
-			a.logger.Infof("Downloaded %d domains from %s", len(domains), updateURL.URL)
+			a.logger.Infof("Downloaded %d domains from %s", len(domains), updateURL)
 			totalDomains += len(domains)
 
-			// Create worker pool
-			workerCount := 5 // Default
-			if a.config.MaxIPsPerDomain > 0 {
+			// Create worker pool with reasonable worker count
+			workerCount := 10 // Balanced for concurrent processing
+			if a.config.MaxIPsPerDomain > 0 && a.config.MaxIPsPerDomain < 10 {
 				workerCount = a.config.MaxIPsPerDomain
 			}
 			pool := NewWorkerPool(workerCount)
@@ -141,7 +137,7 @@ func (a *Agent) Run(ctx context.Context) error {
 				// Submit to worker pool
 				pool.Submit(&ProcessDomainItem{
 					Domain: domain,
-					RunID:  runID,
+					RunID:  int64(runID), // Convert to int64 for compatibility
 					Agent:  a,
 				})
 			}
@@ -157,11 +153,6 @@ func (a *Agent) Run(ctx context.Context) error {
 
 			// Stop worker pool
 			pool.Stop()
-
-			// Update URL last used timestamp
-			if err := a.db.UpdateURLLastUsed(updateURL.ID); err != nil {
-				a.logger.Warnf("Failed to update last used timestamp for URL %s: %v", updateURL.URL, err)
-			}
 		}
 	}
 
@@ -230,7 +221,7 @@ func (a *Agent) downloadDomainList(url string) ([]string, error) {
 	return domains, nil
 }
 
-// processDomain processes a single domain
+// processDomain processes a single domain with enhanced features
 func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) error {
 	// Normalize domain
 	domain = strings.ToLower(strings.TrimSpace(domain))
@@ -243,30 +234,42 @@ func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) e
 	// Log domain processing
 	a.logger.Debugf("Processing domain: %s", domain)
 
-	// Check if domain is whitelisted
+	// Check if domain is whitelisted (priority check)
 	isWhitelisted, err := a.db.IsDomainWhitelisted(domain)
 	if err != nil {
 		return fmt.Errorf("failed to check if domain is whitelisted: %w", err)
 	}
 
 	if isWhitelisted {
-		a.logger.Debugf("Domain %s is whitelisted, skipping", domain)
+		a.logger.Debugf("Domain %s is whitelisted (priority protected), skipping", domain)
 		return nil
 	}
 
-	// Save domain to database
-	domainID, err := a.db.SaveDomain(domain, false, false, a.config.RuleExpiration)
+	// Save domain to database as auto-update (not custom)
+	// This will reset expiration if domain appears again
+	domainIDInterface, err := a.db.SaveDomain(domain, false, false, a.config.RuleExpiration)
 	if err != nil {
 		return fmt.Errorf("failed to save domain: %w", err)
+	}
+
+	// Convert domain ID to appropriate type
+	var domainID interface{}
+	switch id := domainIDInterface.(type) {
+	case uint:
+		domainID = id
+	case int64:
+		domainID = id
+	default:
+		return fmt.Errorf("unexpected domain ID type: %T", domainIDInterface)
 	}
 
 	// Increment domains processed counter
 	atomic.AddInt32(&a.domainsProcessed, 1)
 
-	// Resolve domain
+	// Resolve domain using configured DNS resolvers
 	resolver := a.config.DNSResolvers[0]
 	if len(a.config.DNSResolvers) > 1 {
-		// Use a random resolver from the list
+		// Use a different resolver each time for load balancing
 		resolver = a.config.DNSResolvers[int(time.Now().UnixNano())%len(a.config.DNSResolvers)]
 	}
 
@@ -285,7 +288,7 @@ func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) e
 
 	a.logger.Debugf("Found %d IPs for domain %s", len(ips), domain)
 
-	// Process each IP
+	// Process each IP with enhanced validation and FIFO mechanism
 	blocked := 0
 	for _, ip := range ips {
 		// Validate IP
@@ -301,7 +304,7 @@ func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) e
 			continue
 		}
 
-		// Check if IP is whitelisted
+		// Check if IP is whitelisted (priority protection)
 		isIPWhitelisted, err := a.db.IsIPWhitelisted(ip)
 		if err != nil {
 			a.logger.Warnf("Failed to check if IP is whitelisted: %v", err)
@@ -309,25 +312,19 @@ func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) e
 		}
 
 		if isIPWhitelisted {
-			a.logger.Debugf("IP %s is whitelisted, skipping", ip)
+			a.logger.Debugf("IP %s is whitelisted (priority protected), skipping", ip)
 			continue
 		}
 
-		// Add IP to database with rotation
+		// Add IP to database with FIFO rotation mechanism
 		err = a.db.AddIPWithRotation(domainID, ip, a.config.MaxIPsPerDomain, a.config.RuleExpiration)
 		if err != nil {
 			a.logger.Warnf("Failed to add IP to database: %v", err)
 			continue
 		}
 
-		// Block IP
-		err = a.firewallManager.BlockIP(ip)
-		if err != nil {
-			a.logger.Warnf("Failed to block IP: %v", err)
-			continue
-		}
-
-		// Increment counters
+		// The IP is automatically added to ipset via GORM hooks
+		// But we still increment our counter
 		blocked++
 		atomic.AddInt32(&a.ipsBlocked, 1)
 
@@ -336,21 +333,31 @@ func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) e
 		a.db.LogAction(runID, "block", ip, "success", domain)
 	}
 
-	// Check if domain might be a CDN
-	isCDN, err := a.db.CheckForCDN(domainID, a.config.MaxIPsPerDomain)
+	// Check if domain might be a CDN (based on IP count threshold)
+	isCDN, err := a.db.CheckForCDN(domainID, 2) // Flag as CDN if >2 IPs
 	if err != nil {
 		a.logger.Warnf("Failed to check CDN status for domain %s: %v", domain, err)
 	} else if isCDN {
-		a.logger.Infof("Domain %s flagged as potential CDN (has %d+ IPs)", domain, a.config.MaxIPsPerDomain)
+		a.logger.Infof("Domain %s flagged as potential CDN (has multiple IPs)", domain)
 	}
 
 	return nil
 }
 
-// isPrivateIP checks if an IP is private
+// isPrivateIP checks if an IP is private with comprehensive checks
 func isPrivateIP(ip net.IP) bool {
 	// Check for loopback
 	if ip.IsLoopback() {
+		return true
+	}
+
+	// Check for multicast
+	if ip.IsMulticast() {
+		return true
+	}
+
+	// Check for link-local
+	if ip.IsLinkLocalUnicast() {
 		return true
 	}
 
@@ -368,10 +375,17 @@ func isPrivateIP(ip net.IP) bool {
 		if ip4[0] == 192 && ip4[1] == 168 {
 			return true
 		}
+		// 127.0.0.0/8 (loopback)
+		if ip4[0] == 127 {
+			return true
+		}
+		// 169.254.0.0/16 (link-local)
+		if ip4[0] == 169 && ip4[1] == 254 {
+			return true
+		}
 	}
 
-	// Check for private IPv6 ranges
-	// fc00::/7 (Unique Local Address)
+	// Check for private IPv6 ranges using the built-in method
 	if ip.IsPrivate() {
 		return true
 	}

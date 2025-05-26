@@ -8,8 +8,8 @@ import (
 
 // Banner colors
 var (
-	titleColor    = color.New(color.FgHiCyan, color.Bold)
-	subtitleColor = color.New(color.FgCyan)
+	bannerTitleColor    = color.New(color.FgHiCyan, color.Bold)
+	bannerSubtitleColor = color.New(color.FgCyan)
 )
 
 // PrintBanner prints the DNSniper banner
@@ -24,8 +24,8 @@ _____  _   _  _____       _
                             | |              
                             |_|              
 `
-	titleColor.Println(banner)
-	titleColor.Println("DNSniper v2.0 – Peace of Mind")
-	subtitleColor.Println("Lock onto threats, restore your security")
+	bannerTitleColor.Println(banner)
+	bannerTitleColor.Println("DNSniper v2.0 – Peace of Mind")
+	bannerSubtitleColor.Println("Lock onto threats, restore your security")
 	fmt.Println(string(color.New(color.FgHiCyan).Sprint("=================================================")))
 }

@@ -12,13 +12,13 @@ import (
 type IPSetManager struct {
 	whitelistIPv4      string
 	whitelistRangeIPv4 string
-	blocklistIPv4      string
-	blocklistRangeIPv4 string
+	blacklistIPv4      string
+	blacklistRangeIPv4 string
 
 	whitelistIPv6      string
 	whitelistRangeIPv6 string
-	blocklistIPv6      string
-	blocklistRangeIPv6 string
+	blacklistIPv6      string
+	blacklistRangeIPv6 string
 
 	ipsetPath  string
 	enableIPv6 bool
@@ -31,13 +31,13 @@ func NewIPSetManager(ipsetPath string, enableIPv6 bool) (*IPSetManager, error) {
 	manager := &IPSetManager{
 		whitelistIPv4:      "whitelistIP-v4",
 		whitelistRangeIPv4: "whitelistRange-v4",
-		blocklistIPv4:      "blocklistIP-v4",
-		blocklistRangeIPv4: "blocklistRange-v4",
+		blacklistIPv4:      "blacklistIP-v4",
+		blacklistRangeIPv4: "blacklistRange-v4",
 
 		whitelistIPv6:      "whitelistIP-v6",
 		whitelistRangeIPv6: "whitelistRange-v6",
-		blocklistIPv6:      "blocklistIP-v6",
-		blocklistRangeIPv6: "blocklistRange-v6",
+		blacklistIPv6:      "blacklistIP-v6",
+		blacklistRangeIPv6: "blacklistRange-v6",
 
 		ipsetPath:  ipsetPath,
 		enableIPv6: enableIPv6,
@@ -69,10 +69,10 @@ func (m *IPSetManager) createSets() error {
 	if err := m.createSet(m.whitelistRangeIPv4, "hash:net", "inet"); err != nil {
 		return err
 	}
-	if err := m.createSet(m.blocklistIPv4, "hash:ip", "inet"); err != nil {
+	if err := m.createSet(m.blacklistIPv4, "hash:ip", "inet"); err != nil {
 		return err
 	}
-	if err := m.createSet(m.blocklistRangeIPv4, "hash:net", "inet"); err != nil {
+	if err := m.createSet(m.blacklistRangeIPv4, "hash:net", "inet"); err != nil {
 		return err
 	}
 
@@ -84,10 +84,10 @@ func (m *IPSetManager) createSets() error {
 		if err := m.createSet(m.whitelistRangeIPv6, "hash:net", "inet6"); err != nil {
 			return err
 		}
-		if err := m.createSet(m.blocklistIPv6, "hash:ip", "inet6"); err != nil {
+		if err := m.createSet(m.blacklistIPv6, "hash:ip", "inet6"); err != nil {
 			return err
 		}
-		if err := m.createSet(m.blocklistRangeIPv6, "hash:net", "inet6"); err != nil {
+		if err := m.createSet(m.blacklistRangeIPv6, "hash:net", "inet6"); err != nil {
 			return err
 		}
 	}
@@ -146,11 +146,11 @@ func (m *IPSetManager) AddToWhitelist(ip string) error {
 		return fmt.Errorf("failed to add IP %s to %s: %w (%s)", ip, setName, err, output)
 	}
 
-	// If IP is in blocklist, remove it
+	// If IP is in blacklist, remove it
 	if parsedIP.To4() != nil {
-		m.removeFromSet(m.blocklistIPv4, ip)
+		m.removeFromSet(m.blacklistIPv4, ip)
 	} else if m.enableIPv6 {
-		m.removeFromSet(m.blocklistIPv6, ip)
+		m.removeFromSet(m.blacklistIPv6, ip)
 	}
 
 	return nil
@@ -175,9 +175,9 @@ func (m *IPSetManager) AddToBlocklist(ip string) error {
 	// Add to appropriate set
 	var setName string
 	if parsedIP.To4() != nil {
-		setName = m.blocklistIPv4
+		setName = m.blacklistIPv4
 	} else if m.enableIPv6 {
-		setName = m.blocklistIPv6
+		setName = m.blacklistIPv6
 	} else {
 		return fmt.Errorf("IPv6 support is disabled")
 	}
@@ -220,11 +220,11 @@ func (m *IPSetManager) AddRangeToWhitelist(cidr string) error {
 		return fmt.Errorf("failed to add CIDR %s to %s: %w (%s)", cidr, setName, err, output)
 	}
 
-	// If range is in blocklist, remove it
+	// If range is in blacklist, remove it
 	if ipNet.IP.To4() != nil {
-		m.removeFromSet(m.blocklistRangeIPv4, cidr)
+		m.removeFromSet(m.blacklistRangeIPv4, cidr)
 	} else if m.enableIPv6 {
-		m.removeFromSet(m.blocklistRangeIPv6, cidr)
+		m.removeFromSet(m.blacklistRangeIPv6, cidr)
 	}
 
 	return nil
@@ -249,9 +249,9 @@ func (m *IPSetManager) AddRangeToBlocklist(cidr string) error {
 	// Add to appropriate set
 	var setName string
 	if ipNet.IP.To4() != nil {
-		setName = m.blocklistRangeIPv4
+		setName = m.blacklistRangeIPv4
 	} else if m.enableIPv6 {
-		setName = m.blocklistRangeIPv6
+		setName = m.blacklistRangeIPv6
 	} else {
 		return fmt.Errorf("IPv6 support is disabled")
 	}
@@ -304,9 +304,9 @@ func (m *IPSetManager) RemoveFromBlocklist(ip string) error {
 	// Remove from appropriate set
 	var setName string
 	if parsedIP.To4() != nil {
-		setName = m.blocklistIPv4
+		setName = m.blacklistIPv4
 	} else if m.enableIPv6 {
-		setName = m.blocklistIPv6
+		setName = m.blacklistIPv6
 	} else {
 		return fmt.Errorf("IPv6 support is disabled")
 	}
@@ -352,9 +352,9 @@ func (m *IPSetManager) RemoveRangeFromBlocklist(cidr string) error {
 	// Remove from appropriate set
 	var setName string
 	if ipNet.IP.To4() != nil {
-		setName = m.blocklistRangeIPv4
+		setName = m.blacklistRangeIPv4
 	} else if m.enableIPv6 {
-		setName = m.blocklistRangeIPv6
+		setName = m.blacklistRangeIPv6
 	} else {
 		return fmt.Errorf("IPv6 support is disabled")
 	}
@@ -391,11 +391,11 @@ func (m *IPSetManager) FlushAll() error {
 	defer m.mu.Unlock()
 
 	sets := []string{
-		m.whitelistIPv4, m.whitelistRangeIPv4, m.blocklistIPv4, m.blocklistRangeIPv4,
+		m.whitelistIPv4, m.whitelistRangeIPv4, m.blacklistIPv4, m.blacklistRangeIPv4,
 	}
 
 	if m.enableIPv6 {
-		sets = append(sets, m.whitelistIPv6, m.whitelistRangeIPv6, m.blocklistIPv6, m.blocklistRangeIPv6)
+		sets = append(sets, m.whitelistIPv6, m.whitelistRangeIPv6, m.blacklistIPv6, m.blacklistRangeIPv6)
 	}
 
 	for _, set := range sets {
@@ -532,11 +532,11 @@ func (m *IPSetManager) listSet(setName string) ([]string, error) {
 // GetSetNames returns the names of all ipset sets used by this manager
 func (m *IPSetManager) GetSetNames() []string {
 	sets := []string{
-		m.whitelistIPv4, m.whitelistRangeIPv4, m.blocklistIPv4, m.blocklistRangeIPv4,
+		m.whitelistIPv4, m.whitelistRangeIPv4, m.blacklistIPv4, m.blacklistRangeIPv4,
 	}
 
 	if m.enableIPv6 {
-		sets = append(sets, m.whitelistIPv6, m.whitelistRangeIPv6, m.blocklistIPv6, m.blocklistRangeIPv6)
+		sets = append(sets, m.whitelistIPv6, m.whitelistRangeIPv6, m.blacklistIPv6, m.blacklistRangeIPv6)
 	}
 
 	return sets
@@ -548,11 +548,11 @@ func (m *IPSetManager) CleanupAllSets() error {
 	defer m.mu.Unlock()
 
 	sets := []string{
-		m.whitelistIPv4, m.whitelistRangeIPv4, m.blocklistIPv4, m.blocklistRangeIPv4,
+		m.whitelistIPv4, m.whitelistRangeIPv4, m.blacklistIPv4, m.blacklistRangeIPv4,
 	}
 
 	if m.enableIPv6 {
-		sets = append(sets, m.whitelistIPv6, m.whitelistRangeIPv6, m.blocklistIPv6, m.blocklistRangeIPv6)
+		sets = append(sets, m.whitelistIPv6, m.whitelistRangeIPv6, m.blacklistIPv6, m.blacklistRangeIPv6)
 	}
 
 	for _, set := range sets {

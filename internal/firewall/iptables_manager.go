@@ -66,112 +66,122 @@ func (m *IPTablesManager) GenerateRulesFile(chains []string, ipsetNames []string
 		rulesPath = m.rulesV6Path
 	}
 
-	// Get current rules
+	// Get current rules and parse them properly
 	cmd := exec.Command(iptablesPath + "-save")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to save current rules: %w", err)
 	}
 
-	// Convert to lines
+	// Parse current rules and remove DNSniper rules
 	lines := strings.Split(string(output), "\n")
+	var cleanedRules []string
+	var inFilterTable bool
+	var commitSeen bool
 
-	// Extract non-DNSniper lines (keep headers, tables, etc.)
-	var cleanLines []string
 	for _, line := range lines {
-		// Keep all lines except those that reference our ipsets
-		if !containsAny(line, ipsetNames) {
-			cleanLines = append(cleanLines, line)
-		}
-	}
-
-	// Prepare new file content
-	var fileContent strings.Builder
-
-	// Add clean lines
-	for _, line := range cleanLines {
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		fileContent.WriteString(line + "\n")
+
+		// Track table sections
+		if strings.HasPrefix(line, "*filter") {
+			inFilterTable = true
+			cleanedRules = append(cleanedRules, line)
+			continue
+		}
+
+		if line == "COMMIT" && inFilterTable {
+			commitSeen = true
+			// Don't add COMMIT yet - we'll add our rules first
+			continue
+		}
+
+		if strings.HasPrefix(line, "*") && line != "*filter" {
+			// If we were in filter table and haven't seen COMMIT, add it
+			if inFilterTable && !commitSeen {
+				// Add our rules here before COMMIT
+				cleanedRules = append(cleanedRules, m.generateDNSniperRules(chains, isPv6)...)
+				cleanedRules = append(cleanedRules, "COMMIT")
+			}
+			inFilterTable = false
+			commitSeen = false
+			cleanedRules = append(cleanedRules, line)
+			continue
+		}
+
+		// Skip DNSniper rules
+		if containsAny(line, ipsetNames) {
+			continue
+		}
+
+		cleanedRules = append(cleanedRules, line)
 	}
 
-	// Ensure we have the filter table
-	if !strings.Contains(fileContent.String(), "*filter") {
-		fileContent.WriteString("*filter\n")
+	// If we ended in filter table without COMMIT, add our rules and COMMIT
+	if inFilterTable && !commitSeen {
+		cleanedRules = append(cleanedRules, m.generateDNSniperRules(chains, isPv6)...)
+		cleanedRules = append(cleanedRules, "COMMIT")
 	}
 
-	// Add our rules
+	// If no filter table was found, create one
+	if !inFilterTable && len(cleanedRules) == 0 {
+		cleanedRules = append(cleanedRules, "*filter")
+		cleanedRules = append(cleanedRules, ":INPUT ACCEPT [0:0]")
+		cleanedRules = append(cleanedRules, ":FORWARD ACCEPT [0:0]")
+		cleanedRules = append(cleanedRules, ":OUTPUT ACCEPT [0:0]")
+		cleanedRules = append(cleanedRules, m.generateDNSniperRules(chains, isPv6)...)
+		cleanedRules = append(cleanedRules, "COMMIT")
+	}
+
+	// Join all rules
+	fileContent := strings.Join(cleanedRules, "\n") + "\n"
+
+	// Write to file
+	if err := os.WriteFile(rulesPath, []byte(fileContent), 0644); err != nil {
+		return fmt.Errorf("failed to write rules file: %w", err)
+	}
+
+	return nil
+}
+
+// generateDNSniperRules generates DNSniper-specific iptables rules
+func (m *IPTablesManager) generateDNSniperRules(chains []string, isPv6 bool) []string {
+	var rules []string
+
+	// Determine IP version suffix
+	ipSuffix := "v4"
+	if isPv6 {
+		ipSuffix = "v6"
+	}
+
 	for _, chain := range chains {
 		// Only handle valid chains
 		if chain != "INPUT" && chain != "OUTPUT" && chain != "FORWARD" {
 			continue
 		}
 
-		// Order is critical: whitelist rules must come before blocklist rules
-		// For IPv4
-		if !isPv6 {
-			// Whitelist rules
-			fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistIP-v4 src -j ACCEPT\n", chain))
-			fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistRange-v4 src -j ACCEPT\n", chain))
+		// Order is critical: whitelist rules must come before blacklist rules
 
-			// Blocklist rules
-			fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistIP-v4 src -j DROP\n", chain))
-			fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistRange-v4 src -j DROP\n", chain))
+		// Whitelist rules for source traffic
+		rules = append(rules, fmt.Sprintf("-A %s -m set --match-set whitelistIP-%s src -j ACCEPT", chain, ipSuffix))
+		rules = append(rules, fmt.Sprintf("-A %s -m set --match-set whitelistRange-%s src -j ACCEPT", chain, ipSuffix))
 
-			// For OUTPUT chain, also check destination
-			if chain == "OUTPUT" {
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistIP-v4 dst -j ACCEPT\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistRange-v4 dst -j ACCEPT\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistIP-v4 dst -j DROP\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistRange-v4 dst -j DROP\n", chain))
-			}
+		// Blacklist rules for source traffic
+		rules = append(rules, fmt.Sprintf("-A %s -m set --match-set blacklistIP-%s src -j DROP", chain, ipSuffix))
+		rules = append(rules, fmt.Sprintf("-A %s -m set --match-set blacklistRange-%s src -j DROP", chain, ipSuffix))
 
-			// For FORWARD chain, also check destination
-			if chain == "FORWARD" {
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistIP-v4 dst -j ACCEPT\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistRange-v4 dst -j ACCEPT\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistIP-v4 dst -j DROP\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistRange-v4 dst -j DROP\n", chain))
-			}
-		} else { // IPv6
-			// Whitelist rules
-			fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistIP-v6 src -j ACCEPT\n", chain))
-			fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistRange-v6 src -j ACCEPT\n", chain))
-
-			// Blocklist rules
-			fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistIP-v6 src -j DROP\n", chain))
-			fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistRange-v6 src -j DROP\n", chain))
-
-			// For OUTPUT chain, also check destination
-			if chain == "OUTPUT" {
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistIP-v6 dst -j ACCEPT\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistRange-v6 dst -j ACCEPT\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistIP-v6 dst -j DROP\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistRange-v6 dst -j DROP\n", chain))
-			}
-
-			// For FORWARD chain, also check destination
-			if chain == "FORWARD" {
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistIP-v6 dst -j ACCEPT\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set whitelistRange-v6 dst -j ACCEPT\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistIP-v6 dst -j DROP\n", chain))
-				fileContent.WriteString(fmt.Sprintf("-A %s -m set --match-set blocklistRange-v6 dst -j DROP\n", chain))
-			}
+		// For OUTPUT and FORWARD chains, also check destination
+		if chain == "OUTPUT" || chain == "FORWARD" {
+			rules = append(rules, fmt.Sprintf("-A %s -m set --match-set whitelistIP-%s dst -j ACCEPT", chain, ipSuffix))
+			rules = append(rules, fmt.Sprintf("-A %s -m set --match-set whitelistRange-%s dst -j ACCEPT", chain, ipSuffix))
+			rules = append(rules, fmt.Sprintf("-A %s -m set --match-set blacklistIP-%s dst -j DROP", chain, ipSuffix))
+			rules = append(rules, fmt.Sprintf("-A %s -m set --match-set blacklistRange-%s dst -j DROP", chain, ipSuffix))
 		}
 	}
 
-	// Ensure we end the filter table if we added rules
-	if !strings.Contains(fileContent.String(), "COMMIT") {
-		fileContent.WriteString("COMMIT\n")
-	}
-
-	// Write to file
-	if err := os.WriteFile(rulesPath, []byte(fileContent.String()), 0644); err != nil {
-		return fmt.Errorf("failed to write rules file: %w", err)
-	}
-
-	return nil
+	return rules
 }
 
 // ApplyRules applies the iptables rules from the rules file

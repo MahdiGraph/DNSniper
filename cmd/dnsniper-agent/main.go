@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/MahdiGraph/DNSniper/internal/agent"
@@ -37,30 +36,13 @@ func main() {
 	log := logger.New(logConfig)
 	defer log.Close()
 
-	// Ensure database directory exists
-	dbDir := filepath.Dir(cfg.DatabasePath)
-	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		log.Errorf("Failed to create database directory: %v", err)
-		fmt.Fprintf(os.Stderr, "Failed to create database directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Initialize database
-	db, err := database.NewStore(cfg.DatabasePath)
-	if err != nil {
-		log.Errorf("Failed to initialize database: %v", err)
-		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
-		os.Exit(1)
-	}
-	defer db.Close()
-
-	// Initialize firewall manager with cleanup for fresh start
+	// Initialize firewall manager first (needed for database callbacks)
 	fwManager, err := firewall.NewFirewallManager(
 		cfg.IPSetPath,
 		cfg.IPTablesPath,
 		cfg.IP6TablesPath,
 		cfg.EnableIPv6,
-		cfg.BlockChains,
+		cfg.AffectedChains,
 	)
 	if err != nil {
 		log.Errorf("Failed to initialize firewall manager: %v", err)
@@ -68,10 +50,35 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize database using enhanced factory system with callback integration
+	dbFactory := database.NewDatabaseFactory(fwManager)
+	db, err := dbFactory.CreateDatabaseWithAutoDetection(cfg.DatabasePath)
+	if err != nil {
+		log.Errorf("Failed to initialize database: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// Validate callback service integration
+	if err := database.ValidateCallbackService(); err != nil {
+		log.Warnf("Callback service validation failed: %v", err)
+		// Continue anyway - callbacks are optional for basic functionality
+	} else {
+		log.Info("GORM callback service initialized successfully")
+
+		// Test callback functionality (non-intrusive)
+		if err := database.TestCallbackFunctionality(db); err != nil {
+			log.Warnf("Callback functionality test failed: %v", err)
+		} else {
+			log.Info("Callback functionality verified")
+		}
+	}
+
 	// Initialize DNS resolver
 	resolver := dns.NewStandardResolver()
 
-	// Create agent
+	// Create agent with GORM interface
 	agent := agent.NewAgent(cfg, db, resolver, fwManager, log)
 
 	// Setup context for graceful shutdown

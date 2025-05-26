@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -104,7 +105,7 @@ func (l *Logger) SetRunID(runID int64) error {
 	}
 
 	// Open a new file for this run
-	filename := filepath.Join(l.runLogDir, filepath.Clean(filepath.Join("/", "run_"+string(runID)+".log")))
+	filename := filepath.Join(l.runLogDir, filepath.Clean(filepath.Join("/", "run_"+fmt.Sprintf("%d", runID)+".log")))
 	f, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
