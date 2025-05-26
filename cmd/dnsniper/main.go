@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,43 @@ import (
 )
 
 func main() {
+	// Parse command line flags
+	var showHelp = flag.Bool("help", false, "Show help information")
+	var showVersion = flag.Bool("version", false, "Show version information")
+	flag.Parse()
+
+	// Handle help flag
+	if *showHelp {
+		fmt.Println("DNSniper v2.0 Enhanced Edition")
+		fmt.Println("Linux DNS firewall with advanced features")
+		fmt.Println("")
+		fmt.Println("Usage: dnsniper [options]")
+		fmt.Println("")
+		fmt.Println("Options:")
+		fmt.Println("  --help     Show this help message")
+		fmt.Println("  --version  Show version information")
+		fmt.Println("")
+		fmt.Println("Enhanced Features:")
+		fmt.Println("✅ GORM Database Integration with automatic firewall sync")
+		fmt.Println("✅ Enhanced Firewall Management with rebuild fixes")
+		fmt.Println("✅ Complete Blocklist Management with pagination")
+		fmt.Println("✅ Whitelist Priority System with conflict resolution")
+		fmt.Println("✅ Enhanced Clear/Rebuild with visual progress bars")
+		fmt.Println("✅ Complete Settings Management")
+		fmt.Println("✅ OS-Specific Path Management with auto-detection")
+		fmt.Println("✅ Complete Agent Compatibility")
+		fmt.Println("✅ Main Menu Full Compatibility with enhanced UI")
+		os.Exit(0)
+	}
+
+	// Handle version flag
+	if *showVersion {
+		fmt.Println("DNSniper v2.0 Enhanced Edition")
+		fmt.Println("Feature Compatibility Level: 8")
+		fmt.Println("GORM Integration: Enabled")
+		fmt.Println("Enhanced Features: All Active")
+		os.Exit(0)
+	}
 	// Load configuration
 	cfg, err := config.LoadConfig("")
 	if err != nil {

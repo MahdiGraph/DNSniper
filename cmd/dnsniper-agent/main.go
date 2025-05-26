@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -16,6 +17,41 @@ import (
 )
 
 func main() {
+	// Parse command line flags
+	var showHelp = flag.Bool("help", false, "Show help information")
+	var showVersion = flag.Bool("version", false, "Show version information")
+	flag.Parse()
+
+	// Handle help flag
+	if *showHelp {
+		fmt.Println("DNSniper Agent v2.0 Enhanced Edition")
+		fmt.Println("Automated DNS firewall agent with GORM integration")
+		fmt.Println("")
+		fmt.Println("Usage: dnsniper-agent [options]")
+		fmt.Println("")
+		fmt.Println("Options:")
+		fmt.Println("  --help     Show this help message")
+		fmt.Println("  --version  Show version information")
+		fmt.Println("")
+		fmt.Println("Agent Features:")
+		fmt.Println("✅ GORM database integration with automatic callbacks")
+		fmt.Println("✅ Enhanced DNS resolution with load balancing")
+		fmt.Println("✅ Whitelist priority protection system")
+		fmt.Println("✅ CDN detection and handling")
+		fmt.Println("✅ FIFO IP management per domain")
+		fmt.Println("✅ Real-time firewall rule synchronization")
+		fmt.Println("✅ Comprehensive error handling and logging")
+		os.Exit(0)
+	}
+
+	// Handle version flag
+	if *showVersion {
+		fmt.Println("DNSniper Agent v2.0 Enhanced Edition")
+		fmt.Println("Feature Compatibility Level: 8")
+		fmt.Println("GORM Integration: Enabled")
+		fmt.Println("Enhanced Agent Features: All Active")
+		os.Exit(0)
+	}
 	// Load configuration
 	cfg, err := config.LoadConfig("")
 	if err != nil {
