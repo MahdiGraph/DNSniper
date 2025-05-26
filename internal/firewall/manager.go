@@ -11,26 +11,22 @@ type FirewallManager struct {
 	ipsetManager    *IPSetManager
 	iptablesManager *IPTablesManager
 	chains          []string
-	ipsetPath       string
-	ipTablesPath    string
-	ip6TablesPath   string
 	enableIPv6      bool
 }
 
 // NewFirewallManager creates a new firewall manager
 func NewFirewallManager(
-	ipsetPath, ipTablesPath, ip6TablesPath string,
 	enableIPv6 bool,
 	chains []string,
 ) (*FirewallManager, error) {
 	// Create ipset manager
-	ipsetManager, err := NewIPSetManager(ipsetPath, enableIPv6)
+	ipsetManager, err := NewIPSetManager(enableIPv6)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ipset manager: %w", err)
 	}
 
 	// Create iptables manager
-	iptablesManager, err := NewIPTablesManager(ipTablesPath, ip6TablesPath, enableIPv6)
+	iptablesManager, err := NewIPTablesManager(enableIPv6)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create iptables manager: %w", err)
 	}
@@ -42,9 +38,6 @@ func NewFirewallManager(
 		ipsetManager:    ipsetManager,
 		iptablesManager: iptablesManager,
 		chains:          parsedChains,
-		ipsetPath:       ipsetPath,
-		ipTablesPath:    ipTablesPath,
-		ip6TablesPath:   ip6TablesPath,
 		enableIPv6:      enableIPv6,
 	}, nil
 }
@@ -186,15 +179,8 @@ func (m *FirewallManager) RemoveDNSniperRules() error {
 
 // removeRuleIfExists removes a specific iptables rule if it exists (prevents duplication errors)
 func (m *FirewallManager) removeRuleIfExists(command, chain, setName, direction, action string) {
-	var cmd string
-	if command == "iptables" {
-		cmd = m.ipTablesPath
-	} else {
-		cmd = m.ip6TablesPath
-	}
-
 	// Try to remove the rule (ignore errors if rule doesn't exist)
-	removeCmd := exec.Command(cmd, "-D", chain, "-m", "set", "--match-set", setName, direction, "-j", action)
+	removeCmd := exec.Command(command, "-D", chain, "-m", "set", "--match-set", setName, direction, "-j", action)
 	removeCmd.Run() // Ignore errors - rule might not exist
 }
 

@@ -40,7 +40,6 @@ func PrintMenu() string {
 	menuColor.Println("5) Settings")
 	menuColor.Println("6) Clear firewall rules")
 	menuColor.Println("7) Rebuild firewall rules")
-	menuColor.Println("8) Feature compatibility check")
 	menuColor.Println("H) Help / Quick Guide")
 	menuColor.Println("0) Exit")
 	warningColor.Println("U) Uninstall DNSniper")
@@ -76,9 +75,6 @@ func DispatchOption(option string, db database.DatabaseStore, fwManager *firewal
 		return true
 	case "7":
 		RebuildFirewallRules(fwManager)
-		return true
-	case "8":
-		ShowFeatureCompatibility(db, fwManager)
 		return true
 	case "h":
 		ShowHelp()
@@ -681,114 +677,6 @@ func RebuildFirewallRules(fwManager *firewall.FirewallManager) {
 			infoColor.Println("💡 Consider running 'Clear firewall rules' and trying again")
 		}
 	}
-
-	PressEnterToContinue()
-}
-
-// ShowFeatureCompatibility displays a comprehensive feature compatibility check
-func ShowFeatureCompatibility(db database.DatabaseStore, fwManager *firewall.FirewallManager) {
-	ClearScreen()
-	titleColor.Println("\n🔧 DNSniper Feature Compatibility Check")
-	fmt.Println(string(color.New(color.FgHiCyan).Sprint("=======================================================")))
-
-	subtitleColor.Println("\n📋 Enhanced Features Status (Steps 0-7):")
-
-	// Step 0: GORM Database Integration
-	fmt.Print("✅ Step 0 - GORM Database Integration: ")
-	if _, ok := db.(*database.GormStoreWrapper); ok {
-		successColor.Println("ACTIVE")
-		infoColor.Println("   • Automatic ipset synchronization via GORM hooks")
-		infoColor.Println("   • Enhanced type safety and performance")
-	} else {
-		warningColor.Println("Legacy database in use")
-	}
-
-	// Step 1: Firewall Rebuild Fix
-	fmt.Print("✅ Step 1 - Enhanced Firewall Management: ")
-	successColor.Println("ACTIVE")
-	infoColor.Println("   • Fixed firewall rebuild with GORM integration")
-	infoColor.Println("   • Automatic rule synchronization")
-
-	// Step 2: Complete Blocklist Management
-	fmt.Print("✅ Step 2 - Complete Blocklist Management: ")
-	successColor.Println("ACTIVE")
-	infoColor.Println("   • Paginated domain/IP viewing (10 items per page)")
-	infoColor.Println("   • Custom item addition with validation")
-	infoColor.Println("   • FIFO mechanism for IP rotation")
-
-	// Step 3: Complete Whitelist Management
-	fmt.Print("✅ Step 3 - Whitelist Priority System: ")
-	successColor.Println("ACTIVE")
-	infoColor.Println("   • Whitelist ALWAYS overrides blocklist (priority protection)")
-	infoColor.Println("   • Conflict detection and resolution")
-	infoColor.Println("   • Educational priority explanations")
-
-	// Step 4: Enhanced Clear/Rebuild with Progress
-	fmt.Print("✅ Step 4 - Enhanced Clear/Rebuild Operations: ")
-	successColor.Println("ACTIVE")
-	infoColor.Println("   • 6-step clear process with visual progress bars")
-	infoColor.Println("   • 8-step rebuild process with status tracking")
-	infoColor.Println("   • Real-time progress indicators (▓░)")
-
-	// Step 5: Complete Settings Management
-	fmt.Print("✅ Step 5 - Complete Settings Management (7 Features): ")
-	successColor.Println("ACTIVE")
-	infoColor.Println("   • DNS Resolver management with popular presets")
-	infoColor.Println("   • Affected Chains configuration (INPUT/OUTPUT/FORWARD)")
-	infoColor.Println("   • Domain Auto-Update URLs with accessibility testing")
-	infoColor.Println("   • Update Interval with systemd timer integration")
-	infoColor.Println("   • Rule Expiration (12h default, affects auto-domains only)")
-	infoColor.Println("   • Max IPs Per Domain with CDN detection")
-	infoColor.Println("   • Comprehensive logging control")
-
-	// Step 6: OS-Specific Path Management
-	fmt.Print("✅ Step 6 - OS-Specific Path Management: ")
-	successColor.Println("ACTIVE")
-	infoColor.Println("   • Ubuntu/Debian: /etc/iptables/rules.v4, netfilter-persistent")
-	infoColor.Println("   • RHEL/CentOS: /etc/sysconfig/iptables, iptables-services")
-	infoColor.Println("   • SUSE: /etc/sysconfig/, firewalld integration")
-	infoColor.Println("   • Arch Linux: /etc/iptables/iptables.rules")
-
-	// Step 7: Complete Agent Compatibility
-	fmt.Print("✅ Step 7 - Complete Agent Compatibility: ")
-	successColor.Println("ACTIVE")
-	infoColor.Println("   • GORM interface integration")
-	infoColor.Println("   • Enhanced DNS resolution with load balancing")
-	infoColor.Println("   • Whitelist priority protection in processing")
-	infoColor.Println("   • CDN detection and FIFO IP management")
-
-	// Step 8: Main Menu Compatibility (current)
-	fmt.Print("✅ Step 8 - Main Menu Full Compatibility: ")
-	successColor.Println("ACTIVE")
-	infoColor.Println("   • Cross-platform URL testing (no curl dependency)")
-	infoColor.Println("   • Enhanced GORM interface handling")
-	infoColor.Println("   • Improved input validation and error handling")
-	infoColor.Println("   • Complete feature integration")
-
-	subtitleColor.Println("\n🔧 Technical Architecture:")
-	fmt.Println("• Database: GORM ORM with automatic ipset synchronization")
-	fmt.Println("• Firewall: ipset + iptables with priority rule ordering")
-	fmt.Println("• Interface: Database abstraction layer for backward compatibility")
-	fmt.Println("• Configuration: Real-time validation and systemd integration")
-	fmt.Println("• Agent: Multi-threaded processing with enhanced DNS resolution")
-
-	subtitleColor.Println("\n🛡️ Security Features:")
-	fmt.Println("• Whitelist Priority: ACCEPT rules processed before DROP rules")
-	fmt.Println("• Input Validation: IP addresses, CIDR ranges, domain formats")
-	fmt.Println("• Conflict Detection: Prevents accidental blocking of trusted resources")
-	fmt.Println("• FIFO Protection: Automatic IP rotation prevents memory bloat")
-	fmt.Println("• CDN Detection: Flags domains with multiple IPs for review")
-
-	subtitleColor.Println("\n🚀 Performance Optimizations:")
-	fmt.Println("• GORM Hooks: Automatic firewall sync without manual intervention")
-	fmt.Println("• Worker Pools: Concurrent domain processing (10 workers)")
-	fmt.Println("• IPSet Technology: O(1) lookup for millions of IPs")
-	fmt.Println("• DNS Load Balancing: Rotates through configured resolvers")
-	fmt.Println("• Progress Indicators: Real-time feedback for long operations")
-
-	fmt.Printf("\n")
-	successColor.Println("🎉 ALL FEATURES FULLY INTEGRATED AND COMPATIBLE!")
-	infoColor.Println("DNSniper v2.0 is ready for production deployment on Linux systems.")
 
 	PressEnterToContinue()
 }
@@ -2571,9 +2459,8 @@ func viewFullConfiguration(cfg *config.Settings) {
 
 	subtitleColor.Println("\n📁 System Paths:")
 	fmt.Printf("Database: %s\n", cfg.DatabasePath)
-	fmt.Printf("iptables: %s\n", cfg.IPTablesPath)
-	fmt.Printf("ip6tables: %s\n", cfg.IP6TablesPath)
-	fmt.Printf("ipset: %s\n", cfg.IPSetPath)
+	fmt.Printf("Config: %s\n", cfg.ConfigPath)
+	fmt.Printf("Logs: %s\n", cfg.LogPath)
 
 	PressEnterToContinue()
 }

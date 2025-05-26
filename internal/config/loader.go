@@ -161,13 +161,5 @@ func applyEnvironmentOverrides(config *Settings) {
 	if logPath := os.Getenv("DNSNIPER_LOG_PATH"); logPath != "" {
 		config.LogPath = logPath
 	}
-	if ipTablesPath := os.Getenv("DNSNIPER_IPTABLES_PATH"); ipTablesPath != "" {
-		config.IPTablesPath = ipTablesPath
-	}
-	if ip6TablesPath := os.Getenv("DNSNIPER_IP6TABLES_PATH"); ip6TablesPath != "" {
-		config.IP6TablesPath = ip6TablesPath
-	}
-	if ipSetPath := os.Getenv("DNSNIPER_IPSET_PATH"); ipSetPath != "" {
-		config.IPSetPath = ipSetPath
-	}
+
 }

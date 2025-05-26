@@ -25,8 +25,8 @@ func main() {
 
 	// Handle help flag
 	if *showHelp {
-		fmt.Println("DNSniper v2.0 Enhanced Edition")
-		fmt.Println("Linux DNS firewall with advanced features")
+		fmt.Println("DNSniper v2.0")
+		fmt.Println("Linux DNS firewall with advanced protection")
 		fmt.Println("")
 		fmt.Println("Usage: dnsniper [options]")
 		fmt.Println("")
@@ -35,25 +35,23 @@ func main() {
 		fmt.Println("  --version    Show version information")
 		fmt.Println("  --uninstall  Uninstall DNSniper completely")
 		fmt.Println("")
-		fmt.Println("Enhanced Features:")
-		fmt.Println("✅ GORM Database Integration with automatic firewall sync")
-		fmt.Println("✅ Enhanced Firewall Management with rebuild fixes")
-		fmt.Println("✅ Complete Blocklist Management with pagination")
-		fmt.Println("✅ Whitelist Priority System with conflict resolution")
-		fmt.Println("✅ Enhanced Clear/Rebuild with visual progress bars")
-		fmt.Println("✅ Complete Settings Management")
-		fmt.Println("✅ OS-Specific Path Management with auto-detection")
-		fmt.Println("✅ Complete Agent Compatibility")
-		fmt.Println("✅ Main Menu Full Compatibility with enhanced UI")
+		fmt.Println("Features:")
+		fmt.Println("• GORM Database with automatic firewall synchronization")
+		fmt.Println("• Advanced firewall management with ipset technology")
+		fmt.Println("• Blocklist/Whitelist management with pagination")
+		fmt.Println("• Whitelist priority system (always overrides blocklist)")
+		fmt.Println("• Progress indicators for long operations")
+		fmt.Println("• Comprehensive settings management")
+		fmt.Println("• OS-specific path detection")
+		fmt.Println("• Multi-threaded agent with DNS load balancing")
+		fmt.Println("• Interactive menu system")
 		os.Exit(0)
 	}
 
 	// Handle version flag
 	if *showVersion {
-		fmt.Println("DNSniper v2.0 Enhanced Edition")
-		fmt.Println("Feature Compatibility Level: 8")
-		fmt.Println("GORM Integration: Enabled")
-		fmt.Println("Enhanced Features: All Active")
+		fmt.Println("DNSniper v2.0")
+		fmt.Println("DNS Firewall with Advanced Protection")
 		os.Exit(0)
 	}
 
@@ -85,9 +83,6 @@ func main() {
 
 	// Initialize firewall manager first (needed for database callbacks)
 	fwManager, err := firewall.NewFirewallManager(
-		cfg.IPSetPath,
-		cfg.IPTablesPath,
-		cfg.IP6TablesPath,
 		cfg.EnableIPv6,
 		cfg.AffectedChains,
 	)
@@ -100,9 +95,6 @@ func main() {
 
 		// Retry initialization
 		fwManager, err = firewall.NewFirewallManager(
-			cfg.IPSetPath,
-			cfg.IPTablesPath,
-			cfg.IP6TablesPath,
 			cfg.EnableIPv6,
 			cfg.AffectedChains,
 		)
@@ -162,10 +154,10 @@ func cleanupFirewallRules(cfg *config.Settings) {
 	// Cleanup ipsets
 	for _, setName := range ipsetNames {
 		// Try to flush and destroy each set (ignore errors)
-		flushCmd := exec.Command(cfg.IPSetPath, "flush", setName)
+		flushCmd := exec.Command("ipset", "flush", setName)
 		flushCmd.Run()
 
-		destroyCmd := exec.Command(cfg.IPSetPath, "destroy", setName)
+		destroyCmd := exec.Command("ipset", "destroy", setName)
 		destroyCmd.Run()
 	}
 
@@ -174,30 +166,30 @@ func cleanupFirewallRules(cfg *config.Settings) {
 	for _, chain := range chains {
 		for _, setName := range ipsetNames {
 			// Remove IPv4 rules
-			removeCmd := exec.Command(cfg.IPTablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
+			removeCmd := exec.Command("iptables", "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
 			removeCmd.Run()
 
-			removeCmd = exec.Command(cfg.IPTablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
+			removeCmd = exec.Command("iptables", "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
 			removeCmd.Run()
 
-			removeCmd = exec.Command(cfg.IPTablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
+			removeCmd = exec.Command("iptables", "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
 			removeCmd.Run()
 
-			removeCmd = exec.Command(cfg.IPTablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
+			removeCmd = exec.Command("iptables", "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
 			removeCmd.Run()
 
 			// Remove IPv6 rules if enabled
 			if cfg.EnableIPv6 {
-				removeCmd = exec.Command(cfg.IP6TablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
+				removeCmd = exec.Command("ip6tables", "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
 				removeCmd.Run()
 
-				removeCmd = exec.Command(cfg.IP6TablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
+				removeCmd = exec.Command("ip6tables", "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
 				removeCmd.Run()
 
-				removeCmd = exec.Command(cfg.IP6TablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
+				removeCmd = exec.Command("ip6tables", "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
 				removeCmd.Run()
 
-				removeCmd = exec.Command(cfg.IP6TablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
+				removeCmd = exec.Command("ip6tables", "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
 				removeCmd.Run()
 			}
 		}
@@ -323,11 +315,6 @@ func runCommand(name string, args ...string) {
 }
 
 func removeFirewallRules() {
-	// Get default paths for firewall tools
-	iptablesPath := getDefaultIPTablesPath()
-	ip6tablesPath := getDefaultIP6TablesPath()
-	ipsetPath := getDefaultIPSetPath()
-
 	// List of DNSniper ipset names
 	ipsetNames := []string{
 		"whitelistIP-v4", "whitelistRange-v4", "blocklistIP-v4", "blocklistRange-v4",
@@ -339,56 +326,25 @@ func removeFirewallRules() {
 	for _, chain := range chains {
 		for _, setName := range ipsetNames {
 			// IPv4 rules
-			runCommand(iptablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
-			runCommand(iptablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
-			runCommand(iptablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
-			runCommand(iptablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
+			runCommand("iptables", "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
+			runCommand("iptables", "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
+			runCommand("iptables", "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
+			runCommand("iptables", "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
 
 			// IPv6 rules
-			runCommand(ip6tablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
-			runCommand(ip6tablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
-			runCommand(ip6tablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
-			runCommand(ip6tablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
+			runCommand("ip6tables", "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
+			runCommand("ip6tables", "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
+			runCommand("ip6tables", "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
+			runCommand("ip6tables", "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
 		}
 	}
 
 	// Remove ipset sets
 	for _, setName := range ipsetNames {
-		runCommand(ipsetPath, "flush", setName)
-		runCommand(ipsetPath, "destroy", setName)
+		runCommand("ipset", "flush", setName)
+		runCommand("ipset", "destroy", setName)
 		fmt.Printf("   ✅ Removed ipset: %s\n", setName)
 	}
-}
-
-// Helper functions to get default paths
-func getDefaultIPTablesPath() string {
-	paths := []string{"/usr/sbin/iptables", "/sbin/iptables", "/bin/iptables"}
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-	return "iptables" // fallback to PATH
-}
-
-func getDefaultIP6TablesPath() string {
-	paths := []string{"/usr/sbin/ip6tables", "/sbin/ip6tables", "/bin/ip6tables"}
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-	return "ip6tables" // fallback to PATH
-}
-
-func getDefaultIPSetPath() string {
-	paths := []string{"/usr/sbin/ipset", "/sbin/ipset", "/bin/ipset"}
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-	return "ipset" // fallback to PATH
 }
 
 func cleanupPersistenceFiles() {

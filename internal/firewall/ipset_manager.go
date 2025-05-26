@@ -20,14 +20,13 @@ type IPSetManager struct {
 	blacklistIPv6      string
 	blacklistRangeIPv6 string
 
-	ipsetPath  string
 	enableIPv6 bool
 
 	mu sync.Mutex
 }
 
 // NewIPSetManager creates a new ipset manager
-func NewIPSetManager(ipsetPath string, enableIPv6 bool) (*IPSetManager, error) {
+func NewIPSetManager(enableIPv6 bool) (*IPSetManager, error) {
 	manager := &IPSetManager{
 		whitelistIPv4:      "whitelistIP-v4",
 		whitelistRangeIPv4: "whitelistRange-v4",
@@ -39,12 +38,11 @@ func NewIPSetManager(ipsetPath string, enableIPv6 bool) (*IPSetManager, error) {
 		blacklistIPv6:      "blacklistIP-v6",
 		blacklistRangeIPv6: "blacklistRange-v6",
 
-		ipsetPath:  ipsetPath,
 		enableIPv6: enableIPv6,
 	}
 
 	// Test ipset availability
-	cmd := exec.Command(ipsetPath, "--version")
+	cmd := exec.Command("ipset", "--version")
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("ipset not available: %w", err)
 	}
@@ -98,17 +96,17 @@ func (m *IPSetManager) createSets() error {
 // createSet creates a single ipset if it doesn't exist
 func (m *IPSetManager) createSet(name, setType, family string) error {
 	// First, try to destroy existing set to ensure clean state
-	destroyCmd := exec.Command(m.ipsetPath, "destroy", name)
+	destroyCmd := exec.Command("ipset", "destroy", name)
 	destroyCmd.Run() // Ignore errors - set might not exist
 
 	// Create the set with proper error handling
-	cmd := exec.Command(m.ipsetPath, "create", name, setType, "family", family, "hashsize", "4096", "maxelem", "65536")
+	cmd := exec.Command("ipset", "create", name, setType, "family", family, "hashsize", "4096", "maxelem", "65536")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		// If creation fails, try to get more details about the error
 		if strings.Contains(string(output), "already exists") {
 			// Set already exists, try to flush it instead
-			flushCmd := exec.Command(m.ipsetPath, "flush", name)
+			flushCmd := exec.Command("ipset", "flush", name)
 			if flushErr := flushCmd.Run(); flushErr == nil {
 				return nil // Successfully flushed existing set
 			}
@@ -140,7 +138,7 @@ func (m *IPSetManager) AddToWhitelist(ip string) error {
 	}
 
 	// Add to ipset
-	cmd := exec.Command(m.ipsetPath, "add", setName, ip, "-exist")
+	cmd := exec.Command("ipset", "add", setName, ip, "-exist")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to add IP %s to %s: %w (%s)", ip, setName, err, output)
@@ -183,7 +181,7 @@ func (m *IPSetManager) AddToBlocklist(ip string) error {
 	}
 
 	// Add to ipset
-	cmd := exec.Command(m.ipsetPath, "add", setName, ip, "-exist")
+	cmd := exec.Command("ipset", "add", setName, ip, "-exist")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to add IP %s to %s: %w (%s)", ip, setName, err, output)
@@ -214,7 +212,7 @@ func (m *IPSetManager) AddRangeToWhitelist(cidr string) error {
 	}
 
 	// Add to ipset
-	cmd := exec.Command(m.ipsetPath, "add", setName, cidr, "-exist")
+	cmd := exec.Command("ipset", "add", setName, cidr, "-exist")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to add CIDR %s to %s: %w (%s)", cidr, setName, err, output)
@@ -257,7 +255,7 @@ func (m *IPSetManager) AddRangeToBlocklist(cidr string) error {
 	}
 
 	// Add to ipset
-	cmd := exec.Command(m.ipsetPath, "add", setName, cidr, "-exist")
+	cmd := exec.Command("ipset", "add", setName, cidr, "-exist")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to add CIDR %s to %s: %w (%s)", cidr, setName, err, output)
@@ -364,7 +362,7 @@ func (m *IPSetManager) RemoveRangeFromBlocklist(cidr string) error {
 
 // Helper method to remove an entry from a set
 func (m *IPSetManager) removeFromSet(setName, entry string) error {
-	cmd := exec.Command(m.ipsetPath, "del", setName, entry, "-exist")
+	cmd := exec.Command("ipset", "del", setName, entry, "-exist")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to remove %s from %s: %w (%s)", entry, setName, err, output)
@@ -377,7 +375,7 @@ func (m *IPSetManager) FlushSet(setName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cmd := exec.Command(m.ipsetPath, "flush", setName)
+	cmd := exec.Command("ipset", "flush", setName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to flush %s: %w (%s)", setName, err, output)
@@ -412,7 +410,7 @@ func (m *IPSetManager) SaveSets(path string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("%s save > %s", m.ipsetPath, path))
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("%s save > %s", "ipset", path))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to save ipsets: %w (%s)", err, output)
@@ -425,7 +423,7 @@ func (m *IPSetManager) RestoreSets(path string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("%s restore < %s", m.ipsetPath, path))
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("%s restore < %s", "ipset", path))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to restore ipsets: %w (%s)", err, output)
@@ -450,7 +448,7 @@ func (m *IPSetManager) isWhitelisted(ip string) bool {
 		return false
 	}
 
-	cmd := exec.Command(m.ipsetPath, "test", setName, ip)
+	cmd := exec.Command("ipset", "test", setName, ip)
 	if cmd.Run() == nil {
 		return true
 	}
@@ -504,13 +502,13 @@ func (m *IPSetManager) isRangeWhitelisted(cidr string) bool {
 		return false
 	}
 
-	cmd := exec.Command(m.ipsetPath, "test", setName, cidr)
+	cmd := exec.Command("ipset", "test", setName, cidr)
 	return cmd.Run() == nil
 }
 
 // listSet lists all entries in a set
 func (m *IPSetManager) listSet(setName string) ([]string, error) {
-	cmd := exec.Command(m.ipsetPath, "list", setName)
+	cmd := exec.Command("ipset", "list", setName)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -557,10 +555,10 @@ func (m *IPSetManager) CleanupAllSets() error {
 
 	for _, set := range sets {
 		// First flush, then destroy
-		flushCmd := exec.Command(m.ipsetPath, "flush", set)
+		flushCmd := exec.Command("ipset", "flush", set)
 		flushCmd.Run() // Ignore errors
 
-		destroyCmd := exec.Command(m.ipsetPath, "destroy", set)
+		destroyCmd := exec.Command("ipset", "destroy", set)
 		destroyCmd.Run() // Ignore errors
 	}
 

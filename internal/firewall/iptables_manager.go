@@ -10,33 +10,29 @@ import (
 
 // IPTablesManager handles iptables rules
 type IPTablesManager struct {
-	ipTablesPath  string
-	ip6TablesPath string
-	enableIPv6    bool
-	rulesV4Path   string
-	rulesV6Path   string
-	mu            sync.Mutex
+	enableIPv6  bool
+	rulesV4Path string
+	rulesV6Path string
+	mu          sync.Mutex
 }
 
 // NewIPTablesManager creates a new iptables manager
-func NewIPTablesManager(ipTablesPath, ip6TablesPath string, enableIPv6 bool) (*IPTablesManager, error) {
+func NewIPTablesManager(enableIPv6 bool) (*IPTablesManager, error) {
 	manager := &IPTablesManager{
-		ipTablesPath:  ipTablesPath,
-		ip6TablesPath: ip6TablesPath,
-		enableIPv6:    enableIPv6,
-		rulesV4Path:   "/etc/iptables/rules.v4",
-		rulesV6Path:   "/etc/iptables/rules.v6",
+		enableIPv6:  enableIPv6,
+		rulesV4Path: "/etc/iptables/rules.v4",
+		rulesV6Path: "/etc/iptables/rules.v6",
 	}
 
 	// Ensure iptables is available
-	cmd := exec.Command(ipTablesPath, "-V")
+	cmd := exec.Command("iptables", "-V")
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("iptables not available: %w", err)
 	}
 
 	// Ensure ip6tables is available if IPv6 is enabled
 	if enableIPv6 {
-		cmd = exec.Command(ip6TablesPath, "-V")
+		cmd = exec.Command("ip6tables", "-V")
 		if err := cmd.Run(); err != nil {
 			return nil, fmt.Errorf("ip6tables not available: %w", err)
 		}
@@ -56,13 +52,13 @@ func (m *IPTablesManager) GenerateRulesFile(chains []string, ipsetNames []string
 	defer m.mu.Unlock()
 
 	// Choose appropriate paths
-	iptablesPath := m.ipTablesPath
+	iptablesPath := "iptables"
 	rulesPath := m.rulesV4Path
 	if isPv6 {
 		if !m.enableIPv6 {
 			return nil // Skip if IPv6 is disabled
 		}
-		iptablesPath = m.ip6TablesPath
+		iptablesPath = "ip6tables"
 		rulesPath = m.rulesV6Path
 	}
 
@@ -190,13 +186,13 @@ func (m *IPTablesManager) ApplyRules(isPv6 bool) error {
 	defer m.mu.Unlock()
 
 	// Choose appropriate paths
-	iptablesPath := m.ipTablesPath
+	iptablesPath := "iptables"
 	rulesPath := m.rulesV4Path
 	if isPv6 {
 		if !m.enableIPv6 {
 			return nil // Skip if IPv6 is disabled
 		}
-		iptablesPath = m.ip6TablesPath
+		iptablesPath = "ip6tables"
 		rulesPath = m.rulesV6Path
 	}
 

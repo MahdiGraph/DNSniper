@@ -30,26 +30,7 @@ GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_REPO}"
 # Flag to track if binaries were built locally
 BUILT_LOCALLY=false
 
-# Function to extract paths from config.yaml
-get_config_paths() {
-    if [ -f "$CONFIG_FILE" ]; then
-        # Extract paths from config.yaml if available
-        IPTABLES_CONFIG_PATH=$(grep "iptables_path:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"')
-        IP6TABLES_CONFIG_PATH=$(grep "ip6tables_path:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"')
-        IPSET_CONFIG_PATH=$(grep "ipset_path:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"')
-        
-        # Use config paths if they exist and are executable
-        if [ -n "$IPTABLES_CONFIG_PATH" ] && [ -x "$IPTABLES_CONFIG_PATH" ]; then
-            IPTABLES_PATH="$IPTABLES_CONFIG_PATH"
-        fi
-        if [ -n "$IP6TABLES_CONFIG_PATH" ] && [ -x "$IP6TABLES_CONFIG_PATH" ]; then
-            IP6TABLES_PATH="$IP6TABLES_CONFIG_PATH"
-        fi
-        if [ -n "$IPSET_CONFIG_PATH" ] && [ -x "$IPSET_CONFIG_PATH" ]; then
-            IPSET_PATH="$IPSET_CONFIG_PATH"
-        fi
-    fi
-}
+
 
 # Check for root access
 if [ "$(id -u)" -ne 0 ]; then
@@ -62,45 +43,25 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to detect OS and package manager
+# Function to detect OS - Ubuntu/Debian only
 detect_os() {
     if command_exists apt-get; then
         OS="debian"
         PKG_MANAGER="apt-get"
         PKG_INSTALL="apt-get install -y"
         PKG_UPDATE="apt-get update -q"
-    elif command_exists yum; then
-        OS="redhat"
-        PKG_MANAGER="yum"
-        PKG_INSTALL="yum install -y"
-        PKG_UPDATE="yum check-update -q"
-    elif command_exists dnf; then
-        OS="redhat"
-        PKG_MANAGER="dnf"
-        PKG_INSTALL="dnf install -y"
-        PKG_UPDATE="dnf check-update -q"
-    elif command_exists zypper; then
-        OS="suse"
-        PKG_MANAGER="zypper"
-        PKG_INSTALL="zypper install -y"
-        PKG_UPDATE="zypper refresh"
-    elif command_exists pacman; then
-        OS="arch"
-        PKG_MANAGER="pacman"
-        PKG_INSTALL="pacman -S --noconfirm"
-        PKG_UPDATE="pacman -Sy"
+        print_info "Detected Ubuntu/Debian system"
     else
-        OS="unknown"
-        print_error "Unsupported Linux distribution. Package manager not found."
+        print_error "❌ Unsupported Linux distribution!"
+        print_error "DNSniper currently supports Ubuntu/Debian systems only."
+        print_error "Required: apt-get package manager"
         exit 1
     fi
-    
-    print_info "Detected OS: $OS with package manager: $PKG_MANAGER"
 }
 
-# Function to check and install dependencies
+# Function to check and install dependencies for Ubuntu/Debian
 install_dependencies() {
-    print_info "Checking and installing dependencies..."
+    print_info "Checking and installing dependencies for Ubuntu/Debian..."
     
     # Update package lists
     $PKG_UPDATE
@@ -108,115 +69,53 @@ install_dependencies() {
     # List of packages to check and install
     local packages=()
     
-    # Check curl
+    # Check basic tools
     if ! command_exists curl; then
         print_info "Installing curl..."
         packages+=("curl")
     fi
     
-    # Check sqlite3
     if ! command_exists sqlite3; then
         print_info "Installing sqlite3..."
-        if [ "$OS" = "debian" ]; then
-            packages+=("sqlite3")
-        elif [ "$OS" = "redhat" ]; then
-            packages+=("sqlite")
-        elif [ "$OS" = "suse" ]; then
-            packages+=("sqlite3")
-        elif [ "$OS" = "arch" ]; then
-            packages+=("sqlite")
-        fi
+        packages+=("sqlite3")
     fi
     
-    # Check iptables
+    # Check firewall tools
     if ! command_exists iptables; then
         print_info "Installing iptables..."
         packages+=("iptables")
     fi
     
-    # Check ipset
     if ! command_exists ipset; then
         print_info "Installing ipset..."
         packages+=("ipset")
     fi
     
-    # Install OS-specific persistence packages
-    if [ "$OS" = "debian" ]; then
-        # Ubuntu/Debian specific packages
-        print_info "Setting up Ubuntu/Debian persistence packages..."
-        
-        # Install iptables-persistent for rule persistence
-        if ! dpkg -l | grep -q iptables-persistent; then
-            print_info "Installing iptables-persistent..."
-            # Pre-configure to avoid interactive prompts
-            echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
-            echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
-            packages+=("iptables-persistent")
-        fi
-        
-        # Install ipset-persistent for ipset persistence  
-        if ! dpkg -l | grep -q ipset-persistent; then
-            print_info "Installing ipset-persistent..."
-            packages+=("ipset-persistent")
-        fi
-        
-        # Install netfilter-persistent (meta package for both)
-        if ! dpkg -l | grep -q netfilter-persistent; then
-            print_info "Installing netfilter-persistent..."
-            packages+=("netfilter-persistent")
-        fi
-        
-    elif [ "$OS" = "redhat" ]; then
-        # RHEL/CentOS/Fedora specific packages
-        print_info "Setting up RHEL/CentOS/Fedora persistence packages..."
-        
-        # Install iptables-services for rule persistence
-        if ! rpm -q iptables-services >/dev/null 2>&1; then
-            print_info "Installing iptables-services..."
-            packages+=("iptables-services")
-        fi
-        
-        # Install ipset-service if available
-        if command_exists dnf; then
-            # Fedora and newer RHEL/CentOS
-            if ! rpm -q ipset-service >/dev/null 2>&1; then
-                print_info "Installing ipset-service..."
-                packages+=("ipset-service")
-            fi
-        elif command_exists yum; then
-            # Older RHEL/CentOS - ipset persistence might be handled differently
-            # Create ipset systemd service if it doesn't exist
-            if [ ! -f "/etc/systemd/system/ipset.service" ]; then
-                create_ipset_service_rhel
-            fi
-        fi
-        
-    elif [ "$OS" = "suse" ]; then
-        # SUSE specific setup
-        print_info "Setting up SUSE persistence..."
-        # SUSE uses SuSEfirewall2 or firewalld
-        # Create the configuration files
-        touch /etc/sysconfig/iptables
-        touch /etc/sysconfig/ip6tables
-        touch /etc/ipset.conf
-        
-    elif [ "$OS" = "arch" ]; then
-        # Arch Linux specific packages
-        print_info "Setting up Arch Linux persistence packages..."
-        
-        # Arch uses different package names
-        if ! pacman -Q iptables-persistent >/dev/null 2>&1; then
-            print_info "Installing iptables-persistent..."
-            packages+=("iptables-persistent")
-        fi
-        
-        # ipset is usually included with netfilter packages
-        if ! pacman -Q ipset >/dev/null 2>&1; then
-            packages+=("ipset")
-        fi
+    # Install persistence packages for Ubuntu/Debian
+    print_info "Setting up firewall persistence packages..."
+    
+    # Install netfilter-persistent (main package)
+    if ! dpkg -l | grep -q netfilter-persistent; then
+        print_info "Installing netfilter-persistent..."
+        packages+=("netfilter-persistent")
     fi
     
-    # Install all required packages if any
+    # Install iptables-persistent 
+    if ! dpkg -l | grep -q iptables-persistent; then
+        print_info "Installing iptables-persistent..."
+        # Pre-configure to avoid interactive prompts
+        echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+        echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+        packages+=("iptables-persistent")
+    fi
+    
+    # Install ipset-persistent
+    if ! dpkg -l | grep -q ipset-persistent; then
+        print_info "Installing ipset-persistent..."
+        packages+=("ipset-persistent")
+    fi
+    
+    # Install all required packages
     if [ ${#packages[@]} -gt 0 ]; then
         print_info "Installing packages: ${packages[*]}"
         $PKG_INSTALL "${packages[@]}"
@@ -231,101 +130,35 @@ install_dependencies() {
     print_success "Dependencies installed successfully."
 }
 
-# Function to create ipset service for RHEL/CentOS if needed
-create_ipset_service_rhel() {
-    print_info "Creating ipset systemd service for RHEL/CentOS..."
-    
-    cat > "/etc/systemd/system/ipset.service" << 'EOF'
-[Unit]
-Description=IP sets
-Before=iptables.service ip6tables.service
-RequiredBy=iptables.service ip6tables.service
-DefaultDependencies=no
 
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/sbin/ipset restore -f /etc/ipset.conf
-ExecStop=/usr/sbin/ipset save /etc/ipset.conf
-TimeoutSec=0
 
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    systemctl daemon-reload
-    print_success "ipset service created successfully."
-}
-
-# Function to enable persistence services
+# Function to enable persistence services for Ubuntu/Debian
 enable_persistence_services() {
-    print_info "Enabling persistence services..."
+    print_info "Enabling persistence services for Ubuntu/Debian..."
     
-    if [ "$OS" = "debian" ]; then
-        # Ubuntu/Debian: Enable netfilter-persistent for both iptables and ipset
-        print_info "Enabling netfilter-persistent service..."
-        systemctl enable netfilter-persistent 2>/dev/null || true
-        
-        # Enable ipset-persistent if it exists
-        if systemctl list-unit-files | grep -q ipset-persistent; then
-            print_info "Enabling ipset-persistent service..."
-            systemctl enable ipset-persistent 2>/dev/null || true
-        fi
-        
-        print_success "Ubuntu/Debian persistence services enabled."
-        
-    elif [ "$OS" = "redhat" ]; then
-        # RHEL/CentOS/Fedora: Enable iptables and ipset services
-        print_info "Enabling iptables services..."
-        systemctl enable iptables 2>/dev/null || true
-        systemctl enable ip6tables 2>/dev/null || true
-        
-        # Enable ipset service (either package-provided or our custom one)
-        if systemctl list-unit-files | grep -q ipset.service; then
-            print_info "Enabling ipset service..."
-            systemctl enable ipset 2>/dev/null || true
-        fi
-        
-        print_success "RHEL/CentOS/Fedora persistence services enabled."
-        
-    elif [ "$OS" = "suse" ]; then
-        # SUSE: Enable appropriate firewall service
-        if systemctl list-unit-files | grep -q firewalld; then
-            print_info "Enabling firewalld service..."
-            systemctl enable firewalld 2>/dev/null || true
-        elif systemctl list-unit-files | grep -q SuSEfirewall2; then
-            print_info "Enabling SuSEfirewall2 service..."
-            systemctl enable SuSEfirewall2 2>/dev/null || true
-        fi
-        
-        print_success "SUSE persistence services enabled."
-        
-    elif [ "$OS" = "arch" ]; then
-        # Arch Linux: Enable iptables services
-        print_info "Enabling iptables services..."
-        systemctl enable iptables 2>/dev/null || true
-        systemctl enable ip6tables 2>/dev/null || true
-        
-        # Enable ipset service if available
-        if systemctl list-unit-files | grep -q ipset; then
-            print_info "Enabling ipset service..."
-            systemctl enable ipset 2>/dev/null || true
-        fi
-        
-        print_success "Arch Linux persistence services enabled."
+    # Enable netfilter-persistent service (main service)
+    print_info "Enabling netfilter-persistent service..."
+    systemctl enable netfilter-persistent 2>/dev/null || true
+    
+    # Enable ipset-persistent service if available
+    if systemctl list-unit-files | grep -q ipset-persistent; then
+        print_info "Enabling ipset-persistent service..."
+        systemctl enable ipset-persistent 2>/dev/null || true
     fi
+    
+    print_success "✅ Persistence services enabled successfully"
 }
 
-# Function to validate enhanced configuration structure
-validate_enhanced_config() {
-    print_info "Validating enhanced configuration structure..."
+# Function to validate configuration structure
+validate_config() {
+    print_info "Validating configuration structure..."
     
     if [ ! -f "$CONFIG_FILE" ]; then
         print_error "Configuration file not found: $CONFIG_FILE"
         return 1
     fi
     
-    # Check for required enhanced fields
+    # Check for required configuration fields
     local required_fields=(
         "affected_chains"
         "update_interval"
@@ -333,9 +166,7 @@ validate_enhanced_config() {
         "max_ips_per_domain"
         "dns_resolvers"
         "database_path"
-        "config_path"
-        "enhanced_features"
-        "feature_compatibility_level"
+        "version"
     )
     
     local missing_fields=()
@@ -347,8 +178,8 @@ validate_enhanced_config() {
     done
     
     if [ ${#missing_fields[@]} -gt 0 ]; then
-        print_warning "Missing enhanced configuration fields: ${missing_fields[*]}"
-        print_info "Configuration is valid but may not support all enhanced features"
+        print_warning "Missing configuration fields: ${missing_fields[*]}"
+        print_info "Configuration may need to be regenerated"
         return 0
     fi
     
@@ -370,119 +201,41 @@ validate_enhanced_config() {
         fi
     done
     
-    # Check feature compatibility level
-    local compat_level=$(grep "^feature_compatibility_level:" "$CONFIG_FILE" | awk '{print $2}')
-    if [ "$compat_level" = "8" ]; then
-        print_success "✅ Feature compatibility: Level 8 (All enhancements active)"
+    # Check version
+    local version=$(grep "^version:" "$CONFIG_FILE" | awk '{print $2}' | tr -d '"')
+    if [ "$version" = "2.0" ]; then
+        print_success "✅ DNSniper version: $version"
     else
-        print_info "Feature compatibility: Level ${compat_level:-unknown}"
+        print_info "DNSniper version: ${version:-unknown}"
     fi
     
-    print_success "Enhanced configuration validation completed"
+    print_success "Configuration validation completed"
     return 0
 }
 
-# Function to save ipset and iptables rules for persistence
+# Function to save rules for persistence using netfilter-persistent
 save_rules_for_persistence() {
-    print_info "Saving rules for persistence..."
+    print_info "Saving firewall rules for persistence..."
     
-    if [ "$OS" = "debian" ]; then
-        # Ubuntu/Debian: Use standard locations
-        print_info "Saving rules for Ubuntu/Debian..."
-        
-        # Create iptables directory
+    # Ubuntu/Debian: Use netfilter-persistent
+    if command_exists netfilter-persistent; then
+        print_info "Saving iptables rules using netfilter-persistent..."
+        netfilter-persistent save
+        print_success "✅ Iptables rules saved using netfilter-persistent"
+    else
+        print_warning "netfilter-persistent not found, using manual method..."
         mkdir -p "/etc/iptables"
-        
-        # Save iptables rules to standard locations
         iptables-save > "/etc/iptables/rules.v4"
         ip6tables-save > "/etc/iptables/rules.v6"
-        
-        # Save ipset configuration
-        ${IPSET_PATH:-/sbin/ipset} save > "/etc/ipset.conf"
-        
-        # Restart netfilter-persistent to load the rules
-        systemctl restart netfilter-persistent 2>/dev/null || true
-        
-        print_success "Rules saved for Ubuntu/Debian persistence."
-        
-    elif [ "$OS" = "redhat" ]; then
-        # RHEL/CentOS: Use sysconfig locations
-        print_info "Saving rules for RHEL/CentOS..."
-        
-        # Create sysconfig directory
-        mkdir -p "/etc/sysconfig"
-        
-        # Save iptables rules to sysconfig locations
-        iptables-save > "/etc/sysconfig/iptables"
-        ip6tables-save > "/etc/sysconfig/ip6tables"
-        
-        # Save ipset configuration
-        ${IPSET_PATH:-/sbin/ipset} save > "/etc/ipset.conf"
-        
-        # Restart services to load the rules
-        systemctl restart iptables 2>/dev/null || true
-        systemctl restart ip6tables 2>/dev/null || true
-        systemctl restart ipset 2>/dev/null || true
-        
-        print_success "Rules saved for RHEL/CentOS persistence."
-        
-    elif [ "$OS" = "suse" ]; then
-        # SUSE: Use sysconfig locations
-        print_info "Saving rules for SUSE..."
-        
-        # Create sysconfig directory
-        mkdir -p "/etc/sysconfig"
-        
-        # Save iptables rules to sysconfig locations
-        iptables-save > "/etc/sysconfig/iptables"
-        ip6tables-save > "/etc/sysconfig/ip6tables"
-        
-        # Save ipset configuration
-        ${IPSET_PATH:-/sbin/ipset} save > "/etc/ipset.conf"
-        
-        # Restart appropriate firewall service
-        if systemctl list-unit-files | grep -q firewalld; then
-            systemctl restart firewalld 2>/dev/null || true
-        elif systemctl list-unit-files | grep -q SuSEfirewall2; then
-            systemctl restart SuSEfirewall2 2>/dev/null || true
-        fi
-        
-        print_success "Rules saved for SUSE persistence."
-        
-    elif [ "$OS" = "arch" ]; then
-        # Arch Linux: Use iptables directory
-        print_info "Saving rules for Arch Linux..."
-        
-        # Create iptables directory
-        mkdir -p "/etc/iptables"
-        
-        # Save iptables rules
-        iptables-save > "/etc/iptables/iptables.rules"
-        ip6tables-save > "/etc/iptables/ip6tables.rules"
-        
-        # Save ipset configuration
-        ${IPSET_PATH:-/sbin/ipset} save > "/etc/ipset.conf"
-        
-        # Restart services
-        systemctl restart iptables 2>/dev/null || true
-        systemctl restart ip6tables 2>/dev/null || true
-        
-        print_success "Rules saved for Arch Linux persistence."
-        
-    else
-        # Fallback for unknown OS - use generic approach
-        print_warning "Unknown OS, using fallback rule saving..."
-        
-        # Create iptables directory
-        mkdir -p "$IPTABLES_DIR"
-        
-        # Save rules to generic locations
-        ${IPTABLES_PATH:-/sbin/iptables}-save > "${IPTABLES_DIR}/rules.v4"
-        ${IP6TABLES_PATH:-/sbin/ip6tables}-save > "${IPTABLES_DIR}/rules.v6"
-        ${IPSET_PATH:-/sbin/ipset} save > "/etc/ipset.conf"
-        
-        print_warning "Rules saved to generic locations. Manual persistence setup may be required."
+        print_success "✅ Iptables rules saved manually to /etc/iptables/"
     fi
+    
+    # Save ipset configuration
+    print_info "Saving ipset configuration..."
+    ipset save > "/etc/ipset.conf"
+    print_success "✅ IPset rules saved to /etc/ipset.conf"
+    
+    print_success "🔥 Firewall persistence configuration completed"
 }
 
 # Function to build the binaries
@@ -695,72 +448,141 @@ download_binaries() {
     return 0
 }
 
-# Function to uninstall DNSniper
+# Function to uninstall DNSniper (fallback method - matches main binary uninstaller)
 uninstall_dnsniper() {
-    print_info "Uninstalling DNSniper..."
+    print_info "🗑️  DNSniper Complete Uninstaller (Fallback Method)"
+    print_info "=================================================="
     
-    # Stop and disable services
-    print_info "Stopping and disabling services..."
-    systemctl stop dnsniper-agent.service 2>/dev/null
-    systemctl disable dnsniper-agent.service 2>/dev/null
-    systemctl stop dnsniper-agent.timer 2>/dev/null
-    systemctl disable dnsniper-agent.timer 2>/dev/null
+    print_warning ""
+    print_warning "⚠️  WARNING: This will completely remove DNSniper from your system including:"
+    print_warning "   • All services and timers"
+    print_warning "   • All firewall rules and ipset sets"
+    print_warning "   • All configuration files"
+    print_warning "   • All database files"
+    print_warning "   • All log files"
+    print_warning "   • All binaries and directories"
+    print_warning ""
+    print_warning "This action cannot be undone!"
     
-    # Destroy ipset sets
-    print_info "Destroying ipset sets..."
-    ipset destroy whitelistIP-v4 2>/dev/null
-    ipset destroy whitelistRange-v4 2>/dev/null
-    ipset destroy blocklistIP-v4 2>/dev/null
-    ipset destroy blocklistRange-v4 2>/dev/null
-    ipset destroy whitelistIP-v6 2>/dev/null
-    ipset destroy whitelistRange-v6 2>/dev/null
-    ipset destroy blocklistIP-v6 2>/dev/null
-    ipset destroy blocklistRange-v6 2>/dev/null
+    echo -n "Are you absolutely sure you want to continue? (yes/no): "
+    read response
+    response=$(echo "$response" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
     
-    # Remove iptables rules
-    print_info "Removing iptables rules..."
-    for chain in INPUT OUTPUT FORWARD; do
-        iptables -D $chain -m set --match-set whitelistIP-v4 src -j ACCEPT 2>/dev/null
-        iptables -D $chain -m set --match-set whitelistRange-v4 src -j ACCEPT 2>/dev/null
-        iptables -D $chain -m set --match-set blocklistIP-v4 src -j DROP 2>/dev/null
-        iptables -D $chain -m set --match-set blocklistRange-v4 src -j DROP 2>/dev/null
-        iptables -D $chain -m set --match-set whitelistIP-v4 dst -j ACCEPT 2>/dev/null
-        iptables -D $chain -m set --match-set whitelistRange-v4 dst -j ACCEPT 2>/dev/null
-        iptables -D $chain -m set --match-set blocklistIP-v4 dst -j DROP 2>/dev/null
-        iptables -D $chain -m set --match-set blocklistRange-v4 dst -j DROP 2>/dev/null
+    if [ "$response" != "yes" ] && [ "$response" != "y" ]; then
+        print_error "❌ Uninstall cancelled."
+        return
+    fi
+
+    # Ask about firewall rules specifically
+    echo -n "🔥 Do you want to remove all DNSniper firewall rules? (yes/no): "
+    read response2
+    response2=$(echo "$response2" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    remove_rules=""
+    if [ "$response2" = "yes" ] || [ "$response2" = "y" ]; then
+        remove_rules="true"
+    else
+        remove_rules="false"
+    fi
+
+    print_info ""
+    print_info "🔄 Starting uninstall process..."
+
+    # Step 1: Stop and disable services
+    print_info "1️⃣  Stopping and disabling services..."
+    systemctl stop dnsniper-agent.service 2>/dev/null || true
+    systemctl stop dnsniper-agent.timer 2>/dev/null || true
+    systemctl disable dnsniper-agent.service 2>/dev/null || true
+    systemctl disable dnsniper-agent.timer 2>/dev/null || true
+
+    # Step 2: Remove firewall rules if requested
+    if [ "$remove_rules" = "true" ]; then
+        print_info "2️⃣  Removing firewall rules and ipset sets..."
         
-        ip6tables -D $chain -m set --match-set whitelistIP-v6 src -j ACCEPT 2>/dev/null
-        ip6tables -D $chain -m set --match-set whitelistRange-v6 src -j ACCEPT 2>/dev/null
-        ip6tables -D $chain -m set --match-set blocklistIP-v6 src -j DROP 2>/dev/null
-        ip6tables -D $chain -m set --match-set blocklistRange-v6 src -j DROP 2>/dev/null
-        ip6tables -D $chain -m set --match-set whitelistIP-v6 dst -j ACCEPT 2>/dev/null
-        ip6tables -D $chain -m set --match-set whitelistRange-v6 dst -j ACCEPT 2>/dev/null
-        ip6tables -D $chain -m set --match-set blocklistIP-v6 dst -j DROP 2>/dev/null
-        ip6tables -D $chain -m set --match-set blocklistRange-v6 dst -j DROP 2>/dev/null
+        # List of DNSniper ipset names
+        ipset_names="whitelistIP-v4 whitelistRange-v4 blocklistIP-v4 blocklistRange-v4 whitelistIP-v6 whitelistRange-v6 blocklistIP-v6 blocklistRange-v6"
+        
+        # Remove iptables rules first
+        for chain in INPUT OUTPUT FORWARD; do
+            for setName in $ipset_names; do
+                # IPv4 and IPv6 rules
+                iptables -D $chain -m set --match-set $setName src -j ACCEPT 2>/dev/null || true
+                iptables -D $chain -m set --match-set $setName src -j DROP 2>/dev/null || true
+                iptables -D $chain -m set --match-set $setName dst -j ACCEPT 2>/dev/null || true
+                iptables -D $chain -m set --match-set $setName dst -j DROP 2>/dev/null || true
+                
+                ip6tables -D $chain -m set --match-set $setName src -j ACCEPT 2>/dev/null || true
+                ip6tables -D $chain -m set --match-set $setName src -j DROP 2>/dev/null || true
+                ip6tables -D $chain -m set --match-set $setName dst -j ACCEPT 2>/dev/null || true
+                ip6tables -D $chain -m set --match-set $setName dst -j DROP 2>/dev/null || true
+            done
+        done
+        
+        # Remove ipset sets
+        for setName in $ipset_names; do
+            ipset flush $setName 2>/dev/null || true
+            ipset destroy $setName 2>/dev/null || true
+            print_success "   ✅ Removed ipset: $setName"
+        done
+    else
+        print_info "2️⃣  Skipping firewall rules removal (as requested)..."
+    fi
+
+    # Step 3: Remove systemd files
+    print_info "3️⃣  Removing systemd service files..."
+    if [ -f "${SYSTEMD_DIR}/dnsniper-agent.service" ]; then
+        rm -f "${SYSTEMD_DIR}/dnsniper-agent.service"
+        print_success "   ✅ Removed: ${SYSTEMD_DIR}/dnsniper-agent.service"
+    fi
+    if [ -f "${SYSTEMD_DIR}/dnsniper-agent.timer" ]; then
+        rm -f "${SYSTEMD_DIR}/dnsniper-agent.timer"
+        print_success "   ✅ Removed: ${SYSTEMD_DIR}/dnsniper-agent.timer"
+    fi
+    systemctl daemon-reload 2>/dev/null || true
+
+    # Step 4: Remove binaries
+    print_info "4️⃣  Removing binaries..."
+    for binary in "${BIN_DIR}/dnsniper" "${BIN_DIR}/dnsniper-agent" "${BIN_DIR}/dnsniper-installer"; do
+        if [ -f "$binary" ]; then
+            rm -f "$binary"
+            print_success "   ✅ Removed: $binary"
+        fi
+    done
+
+    # Step 5: Remove directories
+    print_info "5️⃣  Removing directories..."
+    if [ -d "$INSTALL_DIR" ]; then
+        rm -rf "$INSTALL_DIR"
+        print_success "   ✅ Removed directory: $INSTALL_DIR"
+    fi
+    if [ -d "$LOG_DIR" ]; then
+        rm -rf "$LOG_DIR"
+        print_success "   ✅ Removed directory: $LOG_DIR"
+    fi
+
+    # Step 6: Clean up persistence files
+    print_info "6️⃣  Cleaning up persistence files..."
+    persistence_files="/etc/iptables/rules.v4 /etc/iptables/rules.v6 /etc/sysconfig/iptables /etc/sysconfig/ip6tables /etc/ipset.conf"
+    for file in $persistence_files; do
+        if [ -f "$file" ]; then
+            rm -f "$file"
+            print_success "   ✅ Removed: $file"
+        fi
     done
     
-    # Save iptables rules
-    mkdir -p $IPTABLES_DIR
-    iptables-save > "${IPTABLES_DIR}/rules.v4" 2>/dev/null
-    ip6tables-save > "${IPTABLES_DIR}/rules.v6" 2>/dev/null
+    # Restart persistence services to apply changes
+    systemctl restart netfilter-persistent 2>/dev/null || true
+    systemctl restart iptables 2>/dev/null || true
+    systemctl restart ip6tables 2>/dev/null || true
+
+    print_success ""
+    print_success "✅ DNSniper has been completely uninstalled!"
+    print_success "🎯 All components removed successfully."
     
-    # Apply persistence based on OS
-    detect_os
-    save_rules_for_persistence
-    
-    # Delete systemd files
-    print_info "Removing systemd files..."
-    rm -f "${SYSTEMD_DIR}/dnsniper-agent.service"
-    rm -f "${SYSTEMD_DIR}/dnsniper-agent.timer"
-    systemctl daemon-reload
-    
-    # Remove binaries and directories
-    print_info "Removing binaries and directories..."
-    rm -f "${BIN_DIR}/dnsniper"
-    rm -f "${BIN_DIR}/dnsniper-agent"
-    rm -f "${BIN_DIR}/dnsniper-installer"
-    rm -rf "$INSTALL_DIR"
-    rm -rf "$LOG_DIR"
+    if [ "$remove_rules" != "true" ]; then
+        print_warning ""
+        print_warning "⚠️  Note: Firewall rules were kept as requested."
+        print_warning "   You can manually remove them if needed."
+    fi
     
     print_success "DNSniper has been uninstalled"
     exit 0
@@ -795,9 +617,42 @@ if [ -f "$CONFIG_FILE" ]; then
     CONFIG_EXISTS="true"
 fi
 
+# Function to check for existing installation
+check_existing_installation() {
+    # Check all locations that uninstaller removes
+    local installation_found=false
+    
+    # Check directories
+    if [ -d "$INSTALL_DIR" ] || [ -d "$LOG_DIR" ]; then
+        installation_found=true
+    fi
+    
+    # Check binaries
+    if [ -f "$BIN_DIR/dnsniper" ] || [ -f "$BIN_DIR/dnsniper-agent" ] || [ -f "$BIN_DIR/dnsniper-installer" ]; then
+        installation_found=true
+    fi
+    
+    # Check systemd services
+    if [ -f "$SYSTEMD_DIR/dnsniper-agent.service" ] || [ -f "$SYSTEMD_DIR/dnsniper-agent.timer" ]; then
+        installation_found=true
+    fi
+    
+    # Check if services are registered (even if files don't exist)
+    if systemctl list-unit-files | grep -q "dnsniper-agent"; then
+        installation_found=true
+    fi
+    
+    # Return result
+    if [ "$installation_found" = true ]; then
+        return 0  # Installation found
+    else
+        return 1  # No installation found
+    fi
+}
+
 # Determine installation type
 INSTALL_TYPE="clean"
-if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SYSTEMD_DIR/dnsniper-agent.service" ]; then
+if check_existing_installation; then
     print_warning "DNSniper installation found. What would you like to do?"
     echo "1) Reinstall with existing settings"
     echo "2) Clean install (remove existing installation and reinstall)"
@@ -858,20 +713,34 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SYSTEMD_DIR/dns
                 print_info "Using enhanced uninstaller for clean removal..."
                 "$BIN_DIR/dnsniper" --uninstall >/dev/null 2>&1 || true
             else
-                # Fallback to manual removal
+                # Fallback to manual removal (matches uninstaller exactly)
                 print_info "Using fallback removal method..."
-                # Stop and disable any existing service
+                
+                # Stop and disable services
+                print_info "Stopping and disabling services..."
                 systemctl stop dnsniper-agent.service 2>/dev/null
                 systemctl disable dnsniper-agent.service 2>/dev/null
                 systemctl stop dnsniper-agent.timer 2>/dev/null
                 systemctl disable dnsniper-agent.timer 2>/dev/null
                 
-                # Remove old files
-                rm -f "$BIN_DIR/dnsniper" "$BIN_DIR/dnsniper-agent"
+                # Remove systemd files
+                print_info "Removing systemd files..."
                 rm -f "${SYSTEMD_DIR}/dnsniper-agent.service"
                 rm -f "${SYSTEMD_DIR}/dnsniper-agent.timer"
+                systemctl daemon-reload 2>/dev/null || true
+                
+                # Remove binaries (matches uninstaller exactly)
+                print_info "Removing binaries..."
+                rm -f "$BIN_DIR/dnsniper"
+                rm -f "$BIN_DIR/dnsniper-agent"
+                rm -f "$BIN_DIR/dnsniper-installer"
+                
+                # Remove directories (matches uninstaller exactly)
+                print_info "Removing directories..."
                 rm -rf "$INSTALL_DIR"
                 rm -rf "$LOG_DIR"
+                
+                print_info "Clean removal completed using fallback method"
             fi
             
             # Recreate directories
@@ -1050,124 +919,28 @@ else
     print_error "❌ dnsniper-agent binary: Not executable"
 fi
 
-# Create config.yaml if it doesn't exist
-if [ "$CONFIG_EXISTS" = "false" ]; then
-    print_info "Creating configuration file..."
-    
-    # Convert AFFECTED_CHAINS to proper YAML array format
-    if [ "$AFFECTED_CHAINS" = "ALL" ]; then
-        AFFECTED_CHAINS_YAML='["INPUT", "OUTPUT", "FORWARD"]'
-    else
-        # Convert comma-separated values to YAML array
-        AFFECTED_CHAINS_YAML="["
-        IFS=',' read -ra CHAINS <<< "$AFFECTED_CHAINS"
-        for i in "${!CHAINS[@]}"; do
-            if [ $i -gt 0 ]; then
-                AFFECTED_CHAINS_YAML="${AFFECTED_CHAINS_YAML}, "
-            fi
-            AFFECTED_CHAINS_YAML="${AFFECTED_CHAINS_YAML}\"${CHAINS[i]}\""
-        done
-        AFFECTED_CHAINS_YAML="${AFFECTED_CHAINS_YAML}]"
-    fi
-    
-    # Detect OS-specific paths for iptables and ipset
-    IPTABLES_PATH="/sbin/iptables"
-    IP6TABLES_PATH="/sbin/ip6tables"
-    IPSET_PATH="/sbin/ipset"
-    
-    # Check common locations and update paths based on OS
-    if [ "$OS" = "debian" ] || [ "$OS" = "arch" ]; then
-        # Ubuntu/Debian/Arch often use /usr/sbin
-        if [ -x "/usr/sbin/iptables" ]; then
-            IPTABLES_PATH="/usr/sbin/iptables"
-        fi
-        if [ -x "/usr/sbin/ip6tables" ]; then
-            IP6TABLES_PATH="/usr/sbin/ip6tables"
-        fi
-        if [ -x "/usr/sbin/ipset" ]; then
-            IPSET_PATH="/usr/sbin/ipset"
-        fi
-    elif [ "$OS" = "redhat" ] || [ "$OS" = "suse" ]; then
-        # RHEL/CentOS/SUSE typically use /usr/sbin
-        if [ -x "/usr/sbin/iptables" ]; then
-            IPTABLES_PATH="/usr/sbin/iptables"
-        fi
-        if [ -x "/usr/sbin/ip6tables" ]; then
-            IP6TABLES_PATH="/usr/sbin/ip6tables"
-        fi
-        if [ -x "/usr/sbin/ipset" ]; then
-            IPSET_PATH="/usr/sbin/ipset"
-        fi
-    fi
-    
-    # Final fallback check for common locations
-    for path in "/usr/sbin/iptables" "/sbin/iptables" "/bin/iptables"; do
-        if [ -x "$path" ]; then
-            IPTABLES_PATH="$path"
-            break
-        fi
-    done
-    for path in "/usr/sbin/ip6tables" "/sbin/ip6tables" "/bin/ip6tables"; do
-        if [ -x "$path" ]; then
-            IP6TABLES_PATH="$path"
-            break
-        fi
-    done
-    for path in "/usr/sbin/ipset" "/sbin/ipset" "/bin/ipset"; do
-        if [ -x "$path" ]; then
-            IPSET_PATH="$path"
-            break
-        fi
-    done
-    
-    cat > "$CONFIG_FILE" << EOF
-# DNSniper v2.0 Enhanced Configuration
-# Generated by installer with full feature compatibility
+# Verify netfilter tools are available
+print_info "Verifying netfilter tools availability..."
 
-# DNS Resolution (Step 5 Enhanced Settings)
-dns_resolvers:
-  - "8.8.8.8"
-  - "1.1.1.1"
-
-# Firewall Configuration (Step 5 Enhanced Settings)
-affected_chains: $AFFECTED_CHAINS_YAML
-enable_ipv6: true
-
-# Domain Auto-Update Configuration (Step 5 Enhanced Settings)
-update_urls:
-  - "https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"
-update_interval: $UPDATE_INTERVAL
-
-# Domain Processing (Step 5 Enhanced Settings)
-rule_expiration: 12h
-max_ips_per_domain: 5
-
-# Logging Configuration (Step 5 Enhanced Settings)
-logging_enabled: false
-log_level: info
-
-# Database Configuration (Step 0 GORM Integration)
-database_path: "/etc/dnsniper/dnsniper.db"
-
-# OS-Specific System Paths (Step 6 OS-Specific Path Management)
-log_path: "/var/log/dnsniper"
-iptables_path: "$IPTABLES_PATH"
-ip6tables_path: "$IP6TABLES_PATH"
-ipset_path: "$IPSET_PATH"
-
-# Configuration File Path (for settings management)
-config_path: "$CONFIG_FILE"
-
-# Enhanced Features Compatibility Flags
-# These ensure backward compatibility while enabling new features
-version: "2.0"
-enhanced_features: true
-gorm_enabled: true
-whitelist_priority: true
-os_specific_paths: true
-feature_compatibility_level: 8
-EOF
+if command_exists iptables; then
+    print_success "✅ iptables: Available"
+else
+    print_error "❌ iptables: Not found"
 fi
+
+if command_exists ip6tables; then
+    print_success "✅ ip6tables: Available"
+else
+    print_error "❌ ip6tables: Not found"
+fi
+
+if command_exists ipset; then
+    print_success "✅ ipset: Available"
+else
+    print_error "❌ ipset: Not found"
+fi
+
+print_info "📝 Configuration will be auto-generated on first run with your chosen settings"
 
 # Create systemd service
 print_info "Creating systemd service files..."
@@ -1203,92 +976,22 @@ EOF
 # Reload systemd
 systemctl daemon-reload
 
-# Get paths from config.yaml if it exists
-get_config_paths
-
-# Create ipset sets using the correct ipset path
+# Create ipset sets
 print_info "Creating ipset sets..."
-print_info "Using ipset path: ${IPSET_PATH:-/sbin/ipset}"
 
-# Set default ipset path if not set
-IPSET_CMD="${IPSET_PATH:-/sbin/ipset}"
+ipset create whitelistIP-v4 hash:ip family inet hashsize 4096 maxelem 65536 -exist
+ipset create whitelistRange-v4 hash:net family inet hashsize 4096 maxelem 65536 -exist
+ipset create blacklistIP-v4 hash:ip family inet hashsize 4096 maxelem 65536 -exist
+ipset create blacklistRange-v4 hash:net family inet hashsize 4096 maxelem 65536 -exist
 
-$IPSET_CMD create whitelistIP-v4 hash:ip family inet hashsize 4096 maxelem 65536 -exist
-$IPSET_CMD create whitelistRange-v4 hash:net family inet hashsize 4096 maxelem 65536 -exist
-$IPSET_CMD create blacklistIP-v4 hash:ip family inet hashsize 4096 maxelem 65536 -exist
-$IPSET_CMD create blacklistRange-v4 hash:net family inet hashsize 4096 maxelem 65536 -exist
+ipset create whitelistIP-v6 hash:ip family inet6 hashsize 4096 maxelem 65536 -exist
+ipset create whitelistRange-v6 hash:net family inet6 hashsize 4096 maxelem 65536 -exist
+ipset create blacklistIP-v6 hash:ip family inet6 hashsize 4096 maxelem 65536 -exist
+ipset create blacklistRange-v6 hash:net family inet6 hashsize 4096 maxelem 65536 -exist
 
-$IPSET_CMD create whitelistIP-v6 hash:ip family inet6 hashsize 4096 maxelem 65536 -exist
-$IPSET_CMD create whitelistRange-v6 hash:net family inet6 hashsize 4096 maxelem 65536 -exist
-$IPSET_CMD create blacklistIP-v6 hash:ip family inet6 hashsize 4096 maxelem 65536 -exist
-$IPSET_CMD create blacklistRange-v6 hash:net family inet6 hashsize 4096 maxelem 65536 -exist
-
-# Generate iptables rules files
-print_info "Generating iptables rules files..."
-
-# Function to generate rules file
-generate_rules_file() {
-    local file="$1"
-    local ipv6="$2"
-    local ip_suffix=""
-    local cmd=""
-    
-    if [ "$ipv6" = "true" ]; then
-        ip_suffix="-v6"
-        cmd="${IP6TABLES_PATH:-/sbin/ip6tables}-save"
-    else
-        ip_suffix="-v4"
-        cmd="${IPTABLES_PATH:-/sbin/iptables}-save"
-    fi
-    
-    # Get current rules
-    $cmd > "$file"
-    
-    # Parse chains to use
-    local chains=""
-    if [ "$AFFECTED_CHAINS" = "ALL" ]; then
-        chains="INPUT OUTPUT FORWARD"
-    else
-        chains=$(echo "$AFFECTED_CHAINS" | tr ',' ' ')
-    fi
-    
-    # Add our rules to each chain
-    for chain in $chains; do
-        # First whitelist rules
-        echo "-A $chain -m set --match-set whitelistIP$ip_suffix src -j ACCEPT" >> "$file"
-        echo "-A $chain -m set --match-set whitelistRange$ip_suffix src -j ACCEPT" >> "$file"
-        
-        # Then blocklist rules
-        echo "-A $chain -m set --match-set blocklistIP$ip_suffix src -j DROP" >> "$file"
-        echo "-A $chain -m set --match-set blocklistRange$ip_suffix src -j DROP" >> "$file"
-        
-        # For OUTPUT and FORWARD, also check destination
-        if [ "$chain" = "OUTPUT" ] || [ "$chain" = "FORWARD" ]; then
-            echo "-A $chain -m set --match-set whitelistIP$ip_suffix dst -j ACCEPT" >> "$file"
-            echo "-A $chain -m set --match-set whitelistRange$ip_suffix dst -j ACCEPT" >> "$file"
-            echo "-A $chain -m set --match-set blocklistIP$ip_suffix dst -j DROP" >> "$file"
-            echo "-A $chain -m set --match-set blocklistRange$ip_suffix dst -j DROP" >> "$file"
-        fi
-    done
-    
-    # Ensure COMMIT is at the end
-    echo "COMMIT" >> "$file"
-}
-
-# Generate rules files
-generate_rules_file "$IPTABLES_DIR/rules.v4" "false"
-generate_rules_file "$IPTABLES_DIR/rules.v6" "true"
-
-# Apply rules using configured paths
-print_info "Applying iptables rules..."
-print_info "Using iptables path: ${IPTABLES_PATH:-/sbin/iptables}"
-print_info "Using ip6tables path: ${IP6TABLES_PATH:-/sbin/ip6tables}"
-
-IPTABLES_CMD="${IPTABLES_PATH:-/sbin/iptables}"
-IP6TABLES_CMD="${IP6TABLES_PATH:-/sbin/ip6tables}"
-
-$IPTABLES_CMD-restore < "$IPTABLES_DIR/rules.v4"
-$IP6TABLES_CMD-restore < "$IPTABLES_DIR/rules.v6"
+# Initial ipset configuration  
+print_info "Setting up initial firewall rules..."
+print_info "Rules will be generated automatically when DNSniper runs"
 
 # Save rules for persistence
 save_rules_for_persistence
@@ -1296,8 +999,8 @@ save_rules_for_persistence
 # Enable persistence services
 enable_persistence_services
 
-# Validate enhanced configuration
-validate_enhanced_config
+# Validate configuration
+validate_config
 
 # Enable and start the timer
 print_info "Enabling and starting DNSniper agent timer..."
@@ -1307,72 +1010,35 @@ systemctl start dnsniper-agent.timer
 # Create a symlink for the installer
 ln -sf "$SCRIPT_DIR/installer.sh" "$BIN_DIR/dnsniper-installer"
 
-print_success "🎉 DNSniper v2.0 Enhanced Edition installed successfully!"
+print_success "🎉 DNSniper v2.0 installed successfully!"
 print_info ""
-print_info "🚀 Enhanced Features Installed:"
-print_info "✅ Step 0: GORM Database Integration with automatic firewall sync"
-print_info "✅ Step 1: Enhanced Firewall Management with rebuild fixes"
-print_info "✅ Step 2: Complete Blocklist Management with pagination"
-print_info "✅ Step 3: Whitelist Priority System with conflict resolution"
-print_info "✅ Step 4: Enhanced Clear/Rebuild with visual progress bars"
-print_info "✅ Step 5: Complete Settings Management (7 comprehensive features)"
-print_info "✅ Step 6: OS-Specific Path Management with auto-detection"
-print_info "✅ Step 7: Complete Agent Compatibility with all new features"
-print_info "✅ Step 8: Main Menu Full Compatibility with enhanced UI"
-print_info "✅ Step 9: Complete Installer Compatibility (this installation)"
+print_info "🚀 Key Features:"
+print_info "✅ Advanced DNS firewall with GORM database integration"
+print_info "✅ Automatic rule persistence using system tools"
+print_info "✅ Interactive management with pagination"
+print_info "✅ Whitelist priority system (overrides blocklist)"
+print_info "✅ Progress indicators for operations"
+print_info "✅ Comprehensive settings management"
+print_info "✅ Multi-threaded agent with DNS load balancing"
 print_info ""
 print_info "🎯 Quick Start:"
-print_info "• Run 'dnsniper' to start the enhanced interactive menu"
-print_info "• Use option 8 for 'Feature compatibility check' to verify all enhancements"
+print_info "• Run 'dnsniper' to start the interactive menu"
 print_info "• The agent will run automatically every $UPDATE_INTERVAL"
-print_info "• First automated run will start in approximately 1 minute"
+print_info "• Configuration will be created on first run"
 print_info ""
 print_info "📊 System Integration:"
 
-# Display OS-specific persistence information
+# Display persistence information
 print_info ""
-print_info "OS-specific persistence configured:"
-if [ "$OS" = "debian" ]; then
-    print_info "- Ubuntu/Debian: Rules saved to /etc/iptables/rules.v4, /etc/iptables/rules.v6"
-    print_info "- IPSet configuration: /etc/ipset.conf"
-    print_info "- Services enabled: netfilter-persistent, ipset-persistent"
-elif [ "$OS" = "redhat" ]; then
-    print_info "- RHEL/CentOS: Rules saved to /etc/sysconfig/iptables, /etc/sysconfig/ip6tables"
-    print_info "- IPSet configuration: /etc/ipset.conf"
-    print_info "- Services enabled: iptables, ip6tables, ipset"
-elif [ "$OS" = "suse" ]; then
-    print_info "- SUSE: Rules saved to /etc/sysconfig/iptables, /etc/sysconfig/ip6tables"
-    print_info "- IPSet configuration: /etc/ipset.conf"
-    print_info "- Firewall service configured for persistence"
-elif [ "$OS" = "arch" ]; then
-    print_info "- Arch Linux: Rules saved to /etc/iptables/iptables.rules, /etc/iptables/ip6tables.rules"
-    print_info "- IPSet configuration: /etc/ipset.conf"
-    print_info "- Services enabled: iptables, ip6tables"
-fi
-print_info "- Configuration file: $CONFIG_FILE"
-print_info "- Binary paths automatically detected and configured"
+print_info "🔧 Persistence Configuration:"
+print_info "• Ubuntu/Debian: Using netfilter-persistent service"
+print_info "• IPv4/IPv6 rules: Saved automatically via netfilter-persistent"
+print_info "• IPSet rules: /etc/ipset.conf"
 print_info ""
-print_info "🔧 Enhanced Technical Architecture:"
-print_info "• Database: GORM ORM with automatic ipset synchronization"
-print_info "• Firewall: ipset + iptables with priority rule ordering (whitelist first)"
-print_info "• Interface: Database abstraction layer for backward compatibility"
-print_info "• Configuration: Real-time validation and systemd integration"
-print_info "• Agent: Multi-threaded processing with enhanced DNS resolution"
-print_info "• Menu: Complete feature integration with progress indicators"
+print_info "🔧 Architecture:"
+print_info "• Database: GORM with automatic firewall sync"
+print_info "• Firewall: ipset + iptables with whitelist priority"
+print_info "• Configuration: Auto-generated with validation"
+print_info "• Commands: Standard system tools (iptables, ipset)"
 print_info ""
-print_info "🛡️  Security Enhancements:"
-print_info "• Whitelist Priority Protection: ACCEPT rules before DROP rules"
-print_info "• Input Validation: IP addresses, CIDR ranges, domain formats"
-print_info "• Conflict Detection: Prevents blocking of whitelisted resources"
-print_info "• FIFO IP Management: Automatic rotation prevents memory bloat"
-print_info "• CDN Detection: Flags domains with multiple IPs for review"
-print_info ""
-print_info "🚀 Performance Optimizations:"
-print_info "• GORM Hooks: Automatic firewall sync without manual intervention"
-print_info "• Worker Pools: Concurrent domain processing (10 workers)"
-print_info "• IPSet Technology: O(1) lookup performance for millions of IPs"
-print_info "• DNS Load Balancing: Rotates through configured resolvers"
-print_info "• Progress Indicators: Real-time feedback for long operations"
-print_info ""
-print_success "🎉 DNSniper v2.0 Enhanced Edition is ready for production use!"
-print_info "All 9 enhancement steps have been successfully integrated and verified."
+print_success "🎉 DNSniper is ready for production use!"
