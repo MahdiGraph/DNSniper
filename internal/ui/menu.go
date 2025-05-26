@@ -836,10 +836,12 @@ func UninstallDNSniper() bool {
 
 	warningColor.Println("\n⚠️  WARNING: You are about to uninstall DNSniper ⚠️")
 	fmt.Println("\nThis will:")
-	fmt.Println("• Stop all DNSniper services")
+	fmt.Println("• Stop all DNSniper services and timers")
 	fmt.Println("• Remove all firewall rules and ipset configurations")
-	fmt.Println("• Delete all executable files")
-	fmt.Println("• Remove all configuration files")
+	fmt.Println("• Delete all executable files and binaries")
+	fmt.Println("• Remove all configuration files and databases")
+	fmt.Println("• Delete all directories (/etc/dnsniper, /var/log/dnsniper)")
+	fmt.Println("• Clean up all persistence files")
 	fmt.Println("\nThis action cannot be undone!")
 
 	errorColor.Print("\nType 'UNINSTALL' to confirm: ")
@@ -852,22 +854,37 @@ func UninstallDNSniper() bool {
 		return true
 	}
 
-	infoColor.Println("\nUninstalling DNSniper...")
+	infoColor.Println("\nStarting uninstall process...")
+	infoColor.Println("Launching enhanced uninstaller with sudo privileges...")
 
-	// Call installer.sh with uninstall parameter
-	cmd := exec.Command("bash", "/usr/local/bin/dnsniper-installer", "uninstall")
+	// Use the enhanced uninstaller built into the main binary
+	cmd := exec.Command("sudo", "dnsniper", "--uninstall")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
 
 	err := cmd.Run()
 	if err != nil {
 		errorColor.Printf("Failed to uninstall DNSniper: %v\n", err)
-		PressEnterToContinue()
-		return true
+		fmt.Println("\nTrying alternative uninstall method...")
+
+		// Fallback: try to run uninstall directly if dnsniper command not found
+		cmd = exec.Command("sudo", "/usr/bin/dnsniper", "--uninstall")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+
+		err = cmd.Run()
+		if err != nil {
+			errorColor.Printf("Alternative uninstall method also failed: %v\n", err)
+			fmt.Println("\nPlease run manually: sudo dnsniper --uninstall")
+			PressEnterToContinue()
+			return true
+		}
 	}
 
-	successColor.Println("\nDNSniper has been uninstalled.")
-	fmt.Println("\nThank you for using DNSniper!")
+	successColor.Println("\nDNSniper has been uninstalled successfully!")
+	fmt.Println("\nThank you for using DNSniper! 🙏")
 
 	return false
 }

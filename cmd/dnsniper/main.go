@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"syscall"
 
 	"github.com/MahdiGraph/DNSniper/internal/config"
 	"github.com/MahdiGraph/DNSniper/internal/database"
@@ -17,6 +20,7 @@ func main() {
 	// Parse command line flags
 	var showHelp = flag.Bool("help", false, "Show help information")
 	var showVersion = flag.Bool("version", false, "Show version information")
+	var uninstall = flag.Bool("uninstall", false, "Uninstall DNSniper completely")
 	flag.Parse()
 
 	// Handle help flag
@@ -27,8 +31,9 @@ func main() {
 		fmt.Println("Usage: dnsniper [options]")
 		fmt.Println("")
 		fmt.Println("Options:")
-		fmt.Println("  --help     Show this help message")
-		fmt.Println("  --version  Show version information")
+		fmt.Println("  --help       Show this help message")
+		fmt.Println("  --version    Show version information")
+		fmt.Println("  --uninstall  Uninstall DNSniper completely")
 		fmt.Println("")
 		fmt.Println("Enhanced Features:")
 		fmt.Println("✅ GORM Database Integration with automatic firewall sync")
@@ -51,6 +56,13 @@ func main() {
 		fmt.Println("Enhanced Features: All Active")
 		os.Exit(0)
 	}
+
+	// Handle uninstall flag - do this before loading config
+	if *uninstall {
+		uninstallDNSniper()
+		os.Exit(0)
+	}
+
 	// Load configuration
 	cfg, err := config.LoadConfig("")
 	if err != nil {
@@ -190,4 +202,205 @@ func cleanupFirewallRules(cfg *config.Settings) {
 			}
 		}
 	}
+}
+
+// uninstallDNSniper completely removes DNSniper from the system
+func uninstallDNSniper() {
+	fmt.Println("🗑️  DNSniper Complete Uninstaller")
+	fmt.Println("================================")
+
+	// Check for root access
+	if syscall.Getuid() != 0 {
+		fmt.Printf("❌ Error: This operation requires root privileges\n")
+		fmt.Printf("Please run with sudo: sudo dnsniper --uninstall\n")
+		os.Exit(1)
+	}
+
+	// Confirm uninstall
+	fmt.Printf("\n⚠️  WARNING: This will completely remove DNSniper from your system including:\n")
+	fmt.Printf("   • All services and timers\n")
+	fmt.Printf("   • All firewall rules and ipset sets\n")
+	fmt.Printf("   • All configuration files\n")
+	fmt.Printf("   • All database files\n")
+	fmt.Printf("   • All log files\n")
+	fmt.Printf("   • All binaries and directories\n")
+	fmt.Printf("\nAre you absolutely sure you want to continue? (yes/no): ")
+
+	reader := bufio.NewReader(os.Stdin)
+	response, _ := reader.ReadString('\n')
+	response = strings.TrimSpace(strings.ToLower(response))
+
+	if response != "yes" && response != "y" {
+		fmt.Printf("❌ Uninstall cancelled.\n")
+		return
+	}
+
+	// Ask about firewall rules specifically
+	fmt.Printf("\n🔥 Do you want to remove all DNSniper firewall rules? (yes/no): ")
+	response, _ = reader.ReadString('\n')
+	response = strings.TrimSpace(strings.ToLower(response))
+	removeRules := (response == "yes" || response == "y")
+
+	fmt.Printf("\n🔄 Starting uninstall process...\n")
+
+	// Step 1: Stop and disable services
+	fmt.Printf("1️⃣  Stopping and disabling services...\n")
+	stopService("dnsniper-agent.service")
+	stopService("dnsniper-agent.timer")
+	disableService("dnsniper-agent.service")
+	disableService("dnsniper-agent.timer")
+
+	// Step 2: Remove firewall rules if requested
+	if removeRules {
+		fmt.Printf("2️⃣  Removing firewall rules and ipset sets...\n")
+		removeFirewallRules()
+	} else {
+		fmt.Printf("2️⃣  Skipping firewall rules removal (as requested)...\n")
+	}
+
+	// Step 3: Remove systemd files
+	fmt.Printf("3️⃣  Removing systemd service files...\n")
+	removeFile("/etc/systemd/system/dnsniper-agent.service")
+	removeFile("/etc/systemd/system/dnsniper-agent.timer")
+	runCommand("systemctl", "daemon-reload")
+
+	// Step 4: Remove binaries
+	fmt.Printf("4️⃣  Removing binaries...\n")
+	removeFile("/usr/bin/dnsniper")
+	removeFile("/usr/bin/dnsniper-agent")
+	removeFile("/usr/bin/dnsniper-installer")
+
+	// Step 5: Remove directories
+	fmt.Printf("5️⃣  Removing directories...\n")
+	removeDirectory("/etc/dnsniper")
+	removeDirectory("/var/log/dnsniper")
+
+	// Step 6: Clean up persistence files
+	fmt.Printf("6️⃣  Cleaning up persistence files...\n")
+	cleanupPersistenceFiles()
+
+	fmt.Printf("\n✅ DNSniper has been completely uninstalled!\n")
+	fmt.Printf("🎯 All components removed successfully.\n")
+
+	if !removeRules {
+		fmt.Printf("\n⚠️  Note: Firewall rules were kept as requested.\n")
+		fmt.Printf("   You can manually remove them if needed.\n")
+	}
+}
+
+// Helper functions for uninstall
+func stopService(serviceName string) {
+	runCommand("systemctl", "stop", serviceName)
+}
+
+func disableService(serviceName string) {
+	runCommand("systemctl", "disable", serviceName)
+}
+
+func removeFile(path string) {
+	if _, err := os.Stat(path); err == nil {
+		if err := os.Remove(path); err != nil {
+			fmt.Printf("   ⚠️  Warning: Could not remove %s: %v\n", path, err)
+		} else {
+			fmt.Printf("   ✅ Removed: %s\n", path)
+		}
+	}
+}
+
+func removeDirectory(path string) {
+	if _, err := os.Stat(path); err == nil {
+		if err := os.RemoveAll(path); err != nil {
+			fmt.Printf("   ⚠️  Warning: Could not remove directory %s: %v\n", path, err)
+		} else {
+			fmt.Printf("   ✅ Removed directory: %s\n", path)
+		}
+	}
+}
+
+func runCommand(name string, args ...string) {
+	cmd := exec.Command(name, args...)
+	cmd.Run() // Ignore errors during cleanup
+}
+
+func removeFirewallRules() {
+	// Get default paths for firewall tools
+	iptablesPath := getDefaultIPTablesPath()
+	ip6tablesPath := getDefaultIP6TablesPath()
+	ipsetPath := getDefaultIPSetPath()
+
+	// List of DNSniper ipset names
+	ipsetNames := []string{
+		"whitelistIP-v4", "whitelistRange-v4", "blocklistIP-v4", "blocklistRange-v4",
+		"whitelistIP-v6", "whitelistRange-v6", "blocklistIP-v6", "blocklistRange-v6",
+	}
+
+	// Remove iptables rules first
+	chains := []string{"INPUT", "OUTPUT", "FORWARD"}
+	for _, chain := range chains {
+		for _, setName := range ipsetNames {
+			// IPv4 rules
+			runCommand(iptablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
+			runCommand(iptablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
+			runCommand(iptablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
+			runCommand(iptablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
+
+			// IPv6 rules
+			runCommand(ip6tablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
+			runCommand(ip6tablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
+			runCommand(ip6tablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
+			runCommand(ip6tablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
+		}
+	}
+
+	// Remove ipset sets
+	for _, setName := range ipsetNames {
+		runCommand(ipsetPath, "flush", setName)
+		runCommand(ipsetPath, "destroy", setName)
+		fmt.Printf("   ✅ Removed ipset: %s\n", setName)
+	}
+}
+
+// Helper functions to get default paths
+func getDefaultIPTablesPath() string {
+	paths := []string{"/usr/sbin/iptables", "/sbin/iptables", "/bin/iptables"}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "iptables" // fallback to PATH
+}
+
+func getDefaultIP6TablesPath() string {
+	paths := []string{"/usr/sbin/ip6tables", "/sbin/ip6tables", "/bin/ip6tables"}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "ip6tables" // fallback to PATH
+}
+
+func getDefaultIPSetPath() string {
+	paths := []string{"/usr/sbin/ipset", "/sbin/ipset", "/bin/ipset"}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	return "ipset" // fallback to PATH
+}
+
+func cleanupPersistenceFiles() {
+	// Remove saved iptables rules
+	removeFile("/etc/iptables/rules.v4")
+	removeFile("/etc/iptables/rules.v6")
+	removeFile("/etc/sysconfig/iptables")
+	removeFile("/etc/sysconfig/ip6tables")
+	removeFile("/etc/ipset.conf")
+
+	// Restart persistence services to apply changes
+	runCommand("systemctl", "restart", "netfilter-persistent")
+	runCommand("systemctl", "restart", "iptables")
+	runCommand("systemctl", "restart", "ip6tables")
 }

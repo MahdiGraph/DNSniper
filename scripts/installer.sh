@@ -771,7 +771,14 @@ detect_os
 
 # Process command line arguments
 if [ "$1" = "uninstall" ]; then
-    uninstall_dnsniper
+    # Use enhanced uninstaller if available
+    if command_exists dnsniper && [ -x "$BIN_DIR/dnsniper" ]; then
+        print_info "Using enhanced uninstaller..."
+        exec "$BIN_DIR/dnsniper" --uninstall
+    else
+        print_warning "Enhanced uninstaller not found, using fallback method..."
+        uninstall_dnsniper
+    fi
 fi
 
 # Install dependencies
@@ -794,8 +801,9 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SYSTEMD_DIR/dns
     print_warning "DNSniper installation found. What would you like to do?"
     echo "1) Reinstall with existing settings"
     echo "2) Clean install (remove existing installation and reinstall)"
-    echo "3) Cancel"
-    read -p "Enter choice [1-3]: " choice
+    echo "3) Uninstall DNSniper completely"
+    echo "4) Cancel"
+    read -p "Enter choice [1-4]: " choice
     case $choice in
         1)
             print_info "Reinstalling with existing settings..."
@@ -845,18 +853,26 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SYSTEMD_DIR/dns
             print_info "Performing clean install..."
             INSTALL_TYPE="clean"
             
-            # Stop and disable any existing service
-            systemctl stop dnsniper-agent.service 2>/dev/null
-            systemctl disable dnsniper-agent.service 2>/dev/null
-            systemctl stop dnsniper-agent.timer 2>/dev/null
-            systemctl disable dnsniper-agent.timer 2>/dev/null
-            
-            # Remove old files
-            rm -f "$BIN_DIR/dnsniper" "$BIN_DIR/dnsniper-agent"
-            rm -f "${SYSTEMD_DIR}/dnsniper-agent.service"
-            rm -f "${SYSTEMD_DIR}/dnsniper-agent.timer"
-            rm -rf "$INSTALL_DIR"
-            rm -rf "$LOG_DIR"
+            # Use enhanced uninstaller for clean removal
+            if command_exists dnsniper && [ -x "$BIN_DIR/dnsniper" ]; then
+                print_info "Using enhanced uninstaller for clean removal..."
+                "$BIN_DIR/dnsniper" --uninstall >/dev/null 2>&1 || true
+            else
+                # Fallback to manual removal
+                print_info "Using fallback removal method..."
+                # Stop and disable any existing service
+                systemctl stop dnsniper-agent.service 2>/dev/null
+                systemctl disable dnsniper-agent.service 2>/dev/null
+                systemctl stop dnsniper-agent.timer 2>/dev/null
+                systemctl disable dnsniper-agent.timer 2>/dev/null
+                
+                # Remove old files
+                rm -f "$BIN_DIR/dnsniper" "$BIN_DIR/dnsniper-agent"
+                rm -f "${SYSTEMD_DIR}/dnsniper-agent.service"
+                rm -f "${SYSTEMD_DIR}/dnsniper-agent.timer"
+                rm -rf "$INSTALL_DIR"
+                rm -rf "$LOG_DIR"
+            fi
             
             # Recreate directories
             mkdir -p "$INSTALL_DIR"
@@ -865,6 +881,16 @@ if [ -d "$INSTALL_DIR" ] || [ -f "$BIN_DIR/dnsniper" ] || [ -f "$SYSTEMD_DIR/dns
             CONFIG_EXISTS="false"
             ;;
         3)
+            print_info "Starting uninstall process..."
+            if command_exists dnsniper && [ -x "$BIN_DIR/dnsniper" ]; then
+                print_info "Using enhanced uninstaller..."
+                exec "$BIN_DIR/dnsniper" --uninstall
+            else
+                print_warning "Enhanced uninstaller not found, using fallback method..."
+                uninstall_dnsniper
+            fi
+            ;;
+        4)
             print_info "Installation cancelled."
             exit 0
             ;;
