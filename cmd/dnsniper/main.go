@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/MahdiGraph/DNSniper/internal/config"
@@ -50,7 +51,7 @@ func main() {
 	}
 	defer db.Close()
 
-	// Initialize firewall manager
+	// Initialize firewall manager with cleanup for fresh start
 	fwManager, err := firewall.NewFirewallManager(
 		cfg.IPSetPath,
 		cfg.IPTablesPath,
@@ -59,9 +60,26 @@ func main() {
 		cfg.BlockChains,
 	)
 	if err != nil {
-		log.Errorf("Failed to initialize firewall manager: %v", err)
-		fmt.Fprintf(os.Stderr, "Failed to initialize firewall manager: %v\n", err)
-		os.Exit(1)
+		// If initialization fails, try cleaning up and retry once
+		log.Warnf("Initial firewall manager setup failed, attempting cleanup and retry: %v", err)
+
+		// Try a basic cleanup before retrying
+		cleanupFirewallRules(cfg)
+
+		// Retry initialization
+		fwManager, err = firewall.NewFirewallManager(
+			cfg.IPSetPath,
+			cfg.IPTablesPath,
+			cfg.IP6TablesPath,
+			cfg.EnableIPv6,
+			cfg.BlockChains,
+		)
+		if err != nil {
+			log.Errorf("Failed to initialize firewall manager after cleanup: %v", err)
+			fmt.Fprintf(os.Stderr, "Failed to initialize firewall manager: %v\n", err)
+			os.Exit(1)
+		}
+		log.Info("Firewall manager initialized successfully after cleanup")
 	}
 
 	// Main UI loop
@@ -72,6 +90,59 @@ func main() {
 
 		if !ui.DispatchOption(option, db, fwManager) {
 			break
+		}
+	}
+}
+
+// cleanupFirewallRules performs basic cleanup of DNSniper firewall rules
+func cleanupFirewallRules(cfg *config.Settings) {
+	// List of DNSniper ipset names to clean up
+	ipsetNames := []string{
+		"whitelistIP-v4", "whitelistRange-v4", "blocklistIP-v4", "blocklistRange-v4",
+		"whitelistIP-v6", "whitelistRange-v6", "blocklistIP-v6", "blocklistRange-v6",
+	}
+
+	// Cleanup ipsets
+	for _, setName := range ipsetNames {
+		// Try to flush and destroy each set (ignore errors)
+		flushCmd := exec.Command(cfg.IPSetPath, "flush", setName)
+		flushCmd.Run()
+
+		destroyCmd := exec.Command(cfg.IPSetPath, "destroy", setName)
+		destroyCmd.Run()
+	}
+
+	// Remove iptables rules that reference DNSniper ipsets
+	chains := []string{"INPUT", "OUTPUT", "FORWARD"}
+	for _, chain := range chains {
+		for _, setName := range ipsetNames {
+			// Remove IPv4 rules
+			removeCmd := exec.Command(cfg.IPTablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
+			removeCmd.Run()
+
+			removeCmd = exec.Command(cfg.IPTablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
+			removeCmd.Run()
+
+			removeCmd = exec.Command(cfg.IPTablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
+			removeCmd.Run()
+
+			removeCmd = exec.Command(cfg.IPTablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
+			removeCmd.Run()
+
+			// Remove IPv6 rules if enabled
+			if cfg.EnableIPv6 {
+				removeCmd = exec.Command(cfg.IP6TablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
+				removeCmd.Run()
+
+				removeCmd = exec.Command(cfg.IP6TablesPath, "-D", chain, "-m", "set", "--match-set", setName, "src", "-j", "DROP")
+				removeCmd.Run()
+
+				removeCmd = exec.Command(cfg.IP6TablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "ACCEPT")
+				removeCmd.Run()
+
+				removeCmd = exec.Command(cfg.IP6TablesPath, "-D", chain, "-m", "set", "--match-set", setName, "dst", "-j", "DROP")
+				removeCmd.Run()
+			}
 		}
 	}
 }

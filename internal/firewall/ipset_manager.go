@@ -63,31 +63,31 @@ func (m *IPSetManager) createSets() error {
 	defer m.mu.Unlock()
 
 	// Create IPv4 sets
-	if err := m.createSet(m.whitelistIPv4, "hash:ip", "ip"); err != nil {
+	if err := m.createSet(m.whitelistIPv4, "hash:ip", "inet"); err != nil {
 		return err
 	}
-	if err := m.createSet(m.whitelistRangeIPv4, "hash:net", "ip"); err != nil {
+	if err := m.createSet(m.whitelistRangeIPv4, "hash:net", "inet"); err != nil {
 		return err
 	}
-	if err := m.createSet(m.blocklistIPv4, "hash:ip", "ip"); err != nil {
+	if err := m.createSet(m.blocklistIPv4, "hash:ip", "inet"); err != nil {
 		return err
 	}
-	if err := m.createSet(m.blocklistRangeIPv4, "hash:net", "ip"); err != nil {
+	if err := m.createSet(m.blocklistRangeIPv4, "hash:net", "inet"); err != nil {
 		return err
 	}
 
 	// Create IPv6 sets if enabled
 	if m.enableIPv6 {
-		if err := m.createSet(m.whitelistIPv6, "hash:ip", "ip6"); err != nil {
+		if err := m.createSet(m.whitelistIPv6, "hash:ip", "inet6"); err != nil {
 			return err
 		}
-		if err := m.createSet(m.whitelistRangeIPv6, "hash:net", "ip6"); err != nil {
+		if err := m.createSet(m.whitelistRangeIPv6, "hash:net", "inet6"); err != nil {
 			return err
 		}
-		if err := m.createSet(m.blocklistIPv6, "hash:ip", "ip6"); err != nil {
+		if err := m.createSet(m.blocklistIPv6, "hash:ip", "inet6"); err != nil {
 			return err
 		}
-		if err := m.createSet(m.blocklistRangeIPv6, "hash:net", "ip6"); err != nil {
+		if err := m.createSet(m.blocklistRangeIPv6, "hash:net", "inet6"); err != nil {
 			return err
 		}
 	}
@@ -97,10 +97,23 @@ func (m *IPSetManager) createSets() error {
 
 // createSet creates a single ipset if it doesn't exist
 func (m *IPSetManager) createSet(name, setType, family string) error {
-	cmd := exec.Command(m.ipsetPath, "create", name, setType, "family", family, "hashsize", "4096", "maxelem", "65536", "-exist")
+	// First, try to destroy existing set to ensure clean state
+	destroyCmd := exec.Command(m.ipsetPath, "destroy", name)
+	destroyCmd.Run() // Ignore errors - set might not exist
+
+	// Create the set with proper error handling
+	cmd := exec.Command(m.ipsetPath, "create", name, setType, "family", family, "hashsize", "4096", "maxelem", "65536")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create ipset %s: %w (%s)", name, err, output)
+		// If creation fails, try to get more details about the error
+		if strings.Contains(string(output), "already exists") {
+			// Set already exists, try to flush it instead
+			flushCmd := exec.Command(m.ipsetPath, "flush", name)
+			if flushErr := flushCmd.Run(); flushErr == nil {
+				return nil // Successfully flushed existing set
+			}
+		}
+		return fmt.Errorf("failed to create ipset %s: %w (output: %s)", name, err, string(output))
 	}
 	return nil
 }
@@ -527,4 +540,34 @@ func (m *IPSetManager) GetSetNames() []string {
 	}
 
 	return sets
+}
+
+// CleanupAllSets removes all DNSniper-related ipsets (useful for clean reinstalls)
+func (m *IPSetManager) CleanupAllSets() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sets := []string{
+		m.whitelistIPv4, m.whitelistRangeIPv4, m.blocklistIPv4, m.blocklistRangeIPv4,
+	}
+
+	if m.enableIPv6 {
+		sets = append(sets, m.whitelistIPv6, m.whitelistRangeIPv6, m.blocklistIPv6, m.blocklistRangeIPv6)
+	}
+
+	for _, set := range sets {
+		// First flush, then destroy
+		flushCmd := exec.Command(m.ipsetPath, "flush", set)
+		flushCmd.Run() // Ignore errors
+
+		destroyCmd := exec.Command(m.ipsetPath, "destroy", set)
+		destroyCmd.Run() // Ignore errors
+	}
+
+	return nil
+}
+
+// EnsureSetsExist checks and recreates sets if they don't exist
+func (m *IPSetManager) EnsureSetsExist() error {
+	return m.createSets()
 }

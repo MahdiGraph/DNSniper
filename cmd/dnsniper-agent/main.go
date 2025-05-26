@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
+	"github.com/MahdiGraph/DNSniper/internal/agent"
 	"github.com/MahdiGraph/DNSniper/internal/config"
 	"github.com/MahdiGraph/DNSniper/internal/database"
+	"github.com/MahdiGraph/DNSniper/internal/dns"
 	"github.com/MahdiGraph/DNSniper/internal/firewall"
-	"github.com/MahdiGraph/DNSniper/internal/ui"
 	"github.com/MahdiGraph/DNSniper/pkg/logger"
 )
 
@@ -50,7 +54,7 @@ func main() {
 	}
 	defer db.Close()
 
-	// Initialize firewall manager
+	// Initialize firewall manager with cleanup for fresh start
 	fwManager, err := firewall.NewFirewallManager(
 		cfg.IPSetPath,
 		cfg.IPTablesPath,
@@ -64,14 +68,37 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Main UI loop
-	for {
-		ui.ClearScreen()
-		ui.PrintBanner()
-		option := ui.PrintMenu()
+	// Initialize DNS resolver
+	resolver := dns.NewStandardResolver()
 
-		if !ui.DispatchOption(option, db, fwManager) {
-			break
+	// Create agent
+	agent := agent.NewAgent(cfg, db, resolver, fwManager, log)
+
+	// Setup context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Setup signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		log.Info("Received shutdown signal, stopping agent...")
+		cancel()
+	}()
+
+	// Run the agent
+	log.Info("Starting DNSniper agent...")
+	if err := agent.Run(ctx); err != nil {
+		if err == context.Canceled {
+			log.Info("Agent stopped gracefully")
+		} else {
+			log.Errorf("Agent error: %v", err)
+			fmt.Fprintf(os.Stderr, "Agent error: %v\n", err)
+			os.Exit(1)
 		}
 	}
+
+	log.Info("DNSniper agent completed successfully")
 }

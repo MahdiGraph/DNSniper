@@ -3,6 +3,7 @@ package firewall
 import (
 	"fmt"
 	"net"
+	"os/exec"
 )
 
 // FirewallManager provides a unified interface for firewall operations
@@ -83,6 +84,16 @@ func parseChains(chains []string) []string {
 
 // Reload regenerates and applies firewall rules
 func (m *FirewallManager) Reload() error {
+	// Ensure ipsets exist (recreate if missing)
+	if err := m.ipsetManager.EnsureSetsExist(); err != nil {
+		return fmt.Errorf("failed to ensure ipsets exist: %w", err)
+	}
+
+	// Remove existing DNSniper rules to prevent duplications
+	if err := m.RemoveDNSniperRules(); err != nil {
+		return fmt.Errorf("failed to remove existing rules: %w", err)
+	}
+
 	// Get ipset names
 	ipsetNames := m.ipsetManager.GetSetNames()
 
@@ -123,12 +134,68 @@ func (m *FirewallManager) ClearAll() error {
 		return fmt.Errorf("failed to flush ipsets: %w", err)
 	}
 
-	// Regenerate empty rules files
-	if err := m.Reload(); err != nil {
-		return fmt.Errorf("failed to reload empty rules: %w", err)
+	// Remove DNSniper rules from iptables
+	if err := m.RemoveDNSniperRules(); err != nil {
+		return fmt.Errorf("failed to remove iptables rules: %w", err)
 	}
 
 	return nil
+}
+
+// CleanupAll performs a complete cleanup (useful for reinstalls)
+func (m *FirewallManager) CleanupAll() error {
+	// Remove all DNSniper ipsets completely
+	if err := m.ipsetManager.CleanupAllSets(); err != nil {
+		return fmt.Errorf("failed to cleanup ipsets: %w", err)
+	}
+
+	// Remove DNSniper rules from iptables
+	if err := m.RemoveDNSniperRules(); err != nil {
+		return fmt.Errorf("failed to remove iptables rules: %w", err)
+	}
+
+	return nil
+}
+
+// RemoveDNSniperRules removes all DNSniper-related iptables rules
+func (m *FirewallManager) RemoveDNSniperRules() error {
+	// Get ipset names to remove rules referencing them
+	ipsetNames := m.ipsetManager.GetSetNames()
+
+	// Remove rules from each chain
+	for _, chain := range m.chains {
+		for _, setName := range ipsetNames {
+			// Remove IPv4 rules
+			m.removeRuleIfExists("iptables", chain, setName, "src", "ACCEPT")
+			m.removeRuleIfExists("iptables", chain, setName, "src", "DROP")
+			m.removeRuleIfExists("iptables", chain, setName, "dst", "ACCEPT")
+			m.removeRuleIfExists("iptables", chain, setName, "dst", "DROP")
+
+			// Remove IPv6 rules if enabled
+			if m.enableIPv6 {
+				m.removeRuleIfExists("ip6tables", chain, setName, "src", "ACCEPT")
+				m.removeRuleIfExists("ip6tables", chain, setName, "src", "DROP")
+				m.removeRuleIfExists("ip6tables", chain, setName, "dst", "ACCEPT")
+				m.removeRuleIfExists("ip6tables", chain, setName, "dst", "DROP")
+			}
+		}
+	}
+
+	return nil
+}
+
+// removeRuleIfExists removes a specific iptables rule if it exists (prevents duplication errors)
+func (m *FirewallManager) removeRuleIfExists(command, chain, setName, direction, action string) {
+	var cmd string
+	if command == "iptables" {
+		cmd = m.ipTablesPath
+	} else {
+		cmd = m.ip6TablesPath
+	}
+
+	// Try to remove the rule (ignore errors if rule doesn't exist)
+	removeCmd := exec.Command(cmd, "-D", chain, "-m", "set", "--match-set", setName, direction, "-j", action)
+	removeCmd.Run() // Ignore errors - rule might not exist
 }
 
 // BlockIP adds an IP to the blocklist
