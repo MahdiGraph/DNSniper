@@ -569,27 +569,52 @@ func (m *IPSetManager) EnsureSetsExist() error {
 		)
 	}
 
-	for _, def := range setDefs {
+	fmt.Printf("DEBUG: Starting EnsureSetsExist, checking %d ipsets...\n", len(setDefs))
+
+	for i, def := range setDefs {
+		fmt.Printf("DEBUG: [%d/%d] Checking ipset: %s\n", i+1, len(setDefs), def.Name)
+
 		// Check if set exists
 		checkCmd := exec.Command("ipset", "list", def.Name)
 		output, err := checkCmd.CombinedOutput()
 		if err != nil {
-			// Set doesn't exist, create it
-			createCmd := exec.Command("ipset", "create", def.Name, def.Type, "family", def.Family)
-			if out, err := createCmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("failed to create ipset %s: %v, output: %s", def.Name, err, string(out))
+			// Set doesn't exist, try to create it
+			fmt.Printf("DEBUG: ipset %s does not exist, creating...\n", def.Name)
+
+			// Double-check by trying to create with -exist flag to avoid race conditions
+			createCmd := exec.Command("ipset", "create", def.Name, def.Type, "family", def.Family, "-exist")
+			if out, createErr := createCmd.CombinedOutput(); createErr != nil {
+				// If create with -exist fails, try without -exist flag
+				fmt.Printf("DEBUG: Create with -exist failed: %v, output: %s, trying without -exist...\n", createErr, string(out))
+				createCmd2 := exec.Command("ipset", "create", def.Name, def.Type, "family", def.Family)
+				if out2, createErr2 := createCmd2.CombinedOutput(); createErr2 != nil {
+					// Only fail if both attempts fail and it's not "already exists" error
+					if !strings.Contains(string(out2), "already exists") {
+						return fmt.Errorf("failed to create ipset %s: %v, output: %s", def.Name, createErr2, string(out2))
+					}
+					fmt.Printf("DEBUG: ipset %s already exists (created by another process), continuing...\n", def.Name)
+				} else {
+					fmt.Printf("DEBUG: ipset %s created successfully\n", def.Name)
+				}
+			} else {
+				fmt.Printf("DEBUG: ipset %s created successfully with -exist flag\n", def.Name)
 			}
 			continue
 		}
 
-		// Set already exists, don't try to recreate it to avoid conflicts
-		// We'll just check and log if the type or family doesn't match
+		// Set already exists, check if we can work with it
+		fmt.Printf("DEBUG: ipset %s already exists, checking compatibility...\n", def.Name)
 		outStr := string(output)
 		if !strings.Contains(outStr, "Type: "+def.Type) || !strings.Contains(outStr, "Family: "+def.Family) {
-			fmt.Printf("Warning: Existing ipset %s has incorrect type or family. Expected Type: %s, Family: %s\n",
+			fmt.Printf("WARNING: Existing ipset %s has incorrect type or family. Expected Type: %s, Family: %s\n",
 				def.Name, def.Type, def.Family)
+			fmt.Printf("WARNING: Continuing with existing ipset. If you experience issues, manually run: ipset destroy %s\n", def.Name)
+		} else {
+			fmt.Printf("DEBUG: ipset %s is compatible (Type: %s, Family: %s)\n", def.Name, def.Type, def.Family)
 		}
 	}
+
+	fmt.Printf("DEBUG: EnsureSetsExist completed successfully\n")
 	return nil
 }
 
