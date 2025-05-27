@@ -317,6 +317,81 @@ check_existing_installation() {
     fi
 }
 
+# Function to remove DNSniper firewall rules and ipsets
+remove_dnsniper_firewall_rules() {
+    print_info "Removing DNSniper iptables rules and ipsets..."
+    
+    # List of DNSniper ipset names
+    local ipset_names=(
+        "dnsniper-whitelist-ip-v4" "dnsniper-whitelist-range-v4" 
+        "dnsniper-blocklist-ip-v4" "dnsniper-blocklist-range-v4"
+        "dnsniper-whitelist-ip-v6" "dnsniper-whitelist-range-v6" 
+        "dnsniper-blocklist-ip-v6" "dnsniper-blocklist-range-v6"
+    )
+    
+    # List of iptables chains to clean
+    local chains=("INPUT" "OUTPUT" "FORWARD")
+    
+    print_info "Removing iptables rules..."
+    # Remove iptables rules first (before destroying ipsets)
+    for chain in "${chains[@]}"; do
+        for setName in "${ipset_names[@]}"; do
+            # Remove IPv4 rules with both src and dst directions
+            iptables -D "$chain" -m set --match-set "$setName" src -j ACCEPT 2>/dev/null || true
+            iptables -D "$chain" -m set --match-set "$setName" src -j DROP 2>/dev/null || true
+            iptables -D "$chain" -m set --match-set "$setName" dst -j ACCEPT 2>/dev/null || true
+            iptables -D "$chain" -m set --match-set "$setName" dst -j DROP 2>/dev/null || true
+            
+            # Remove IPv6 rules with both src and dst directions
+            ip6tables -D "$chain" -m set --match-set "$setName" src -j ACCEPT 2>/dev/null || true
+            ip6tables -D "$chain" -m set --match-set "$setName" src -j DROP 2>/dev/null || true
+            ip6tables -D "$chain" -m set --match-set "$setName" dst -j ACCEPT 2>/dev/null || true
+            ip6tables -D "$chain" -m set --match-set "$setName" dst -j DROP 2>/dev/null || true
+        done
+        
+        # Remove any remaining DNSniper rules by comment (if supported)
+        iptables -S "$chain" 2>/dev/null | grep -E "(DNSniper|dnsniper)" | sed 's/^-A/-D/' | while read -r rule; do
+            iptables $rule 2>/dev/null || true
+        done
+        
+        ip6tables -S "$chain" 2>/dev/null | grep -E "(DNSniper|dnsniper)" | sed 's/^-A/-D/' | while read -r rule; do
+            ip6tables $rule 2>/dev/null || true
+        done
+    done
+    
+    print_info "Removing ipsets..."
+    # Remove ipsets (flush first, then destroy)
+    for setName in "${ipset_names[@]}"; do
+        ipset flush "$setName" 2>/dev/null || true
+        ipset destroy "$setName" 2>/dev/null || true
+    done
+    
+    # Remove any remaining DNSniper ipsets
+    ipset list -n 2>/dev/null | grep -i dnsniper | while read -r setName; do
+        ipset flush "$setName" 2>/dev/null || true
+        ipset destroy "$setName" 2>/dev/null || true
+    done
+    
+    # Update persistence files to reflect changes
+    print_info "Updating persistence files..."
+    if command_exists iptables-save; then
+        # Ensure directories exist
+        mkdir -p /etc/iptables 2>/dev/null || true
+        
+        # Save IPv4 rules
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+        # Save IPv6 rules  
+        ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+    fi
+    
+    # Save ipset state
+    if command_exists ipset; then
+        ipset save > /etc/ipset.conf 2>/dev/null || true
+    fi
+    
+    print_success "DNSniper firewall rules and ipsets removed"
+}
+
 # Function to uninstall DNSniper
 uninstall_dnsniper() {
     print_header "🗑️  Uninstalling DNSniper"
@@ -331,6 +406,10 @@ uninstall_dnsniper() {
     
     # Manual cleanup
     print_info "Performing manual cleanup..."
+    
+    # Remove firewall rules and ipsets first
+    print_info "Removing DNSniper firewall rules and ipsets..."
+    remove_dnsniper_firewall_rules
     
     # Stop and disable services
     systemctl stop dnsniper-agent.timer 2>/dev/null || true

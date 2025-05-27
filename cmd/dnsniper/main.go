@@ -161,9 +161,25 @@ func handleUninstall() {
 	disableTimerCmd := exec.Command("systemctl", "disable", "dnsniper-agent.timer")
 	disableTimerCmd.Run() // Ignore errors
 
-	// Remove firewall rules
-	fmt.Println("Removing firewall rules...")
-	removeFirewallRules()
+	// Remove firewall rules and ipsets using firewall manager if possible
+	fmt.Println("Removing firewall rules and ipsets...")
+
+	// Try to use firewall manager for proper cleanup
+	if fwManager, err := initializeFirewallManager(); err == nil {
+		fmt.Println("Using firewall manager for cleanup...")
+		if err := fwManager.CleanupAll(); err != nil {
+			fmt.Printf("Firewall manager cleanup failed: %v\n", err)
+			fmt.Println("Falling back to manual cleanup...")
+			removeFirewallRules()
+		} else {
+			fmt.Println("Firewall cleanup completed successfully")
+			updatePersistenceFiles()
+		}
+	} else {
+		fmt.Printf("Could not initialize firewall manager: %v\n", err)
+		fmt.Println("Using manual cleanup...")
+		removeFirewallRules()
+	}
 
 	// Remove service files
 	fmt.Println("Removing service files...")
@@ -196,16 +212,19 @@ func handleUninstall() {
 	fmt.Println("Thank you for using DNSniper!")
 }
 
-// removeFirewallRules removes all DNSniper firewall rules
+// removeFirewallRules removes all DNSniper firewall rules and ipsets
 func removeFirewallRules() {
-	// List of ipset names to remove
+	// List of DNSniper ipset names
 	ipsetNames := []string{
 		"whitelistIP-v4", "whitelistRange-v4", "blocklistIP-v4", "blocklistRange-v4",
 		"whitelistIP-v6", "whitelistRange-v6", "blocklistIP-v6", "blocklistRange-v6",
 	}
 
-	// Remove iptables rules first
+	// List of iptables chains to clean
 	chains := []string{"INPUT", "OUTPUT", "FORWARD"}
+
+	fmt.Println("Removing iptables rules...")
+	// Remove iptables rules first (before destroying ipsets)
 	for _, chain := range chains {
 		for _, setName := range ipsetNames {
 			// Remove IPv4 rules
@@ -230,11 +249,62 @@ func removeFirewallRules() {
 		}
 	}
 
-	// Remove ipsets
+	fmt.Println("Removing ipsets...")
+	// Remove ipsets (flush first, then destroy)
 	for _, setName := range ipsetNames {
 		flushCmd := exec.Command("ipset", "flush", setName)
 		flushCmd.Run() // Ignore errors
 		destroyCmd := exec.Command("ipset", "destroy", setName)
 		destroyCmd.Run() // Ignore errors
+	}
+
+	fmt.Println("Manual cleanup completed")
+	updatePersistenceFiles()
+}
+
+// initializeFirewallManager creates a firewall manager for cleanup
+func initializeFirewallManager() (*firewall.FirewallManager, error) {
+	// Use default settings for cleanup
+	return firewall.NewFirewallManager(
+		true,                                   // enableIPv6
+		[]string{"INPUT", "OUTPUT", "FORWARD"}, // chains
+		"/tmp/dnsniper-backup",                 // backupPath
+		"/tmp/dnsniper-cleanup.log",            // logFile
+	)
+}
+
+// updatePersistenceFiles updates the persistence files after cleanup
+func updatePersistenceFiles() {
+	fmt.Println("Updating persistence files...")
+
+	// Update iptables persistence files (if they exist)
+	if _, err := exec.LookPath("iptables-save"); err == nil {
+		// Check if /etc/iptables directory exists
+		if _, err := os.Stat("/etc/iptables"); err == nil {
+			// Save current IPv4 rules (without DNSniper rules)
+			if cmd := exec.Command("iptables-save"); cmd.Run() == nil {
+				if output, err := cmd.Output(); err == nil {
+					os.WriteFile("/etc/iptables/rules.v4", output, 0644)
+				}
+			}
+			// Save current IPv6 rules (without DNSniper rules)
+			if cmd := exec.Command("ip6tables-save"); cmd.Run() == nil {
+				if output, err := cmd.Output(); err == nil {
+					os.WriteFile("/etc/iptables/rules.v6", output, 0644)
+				}
+			}
+		}
+	}
+
+	// Update ipset configuration (if it exists)
+	if _, err := exec.LookPath("ipset"); err == nil {
+		if _, err := os.Stat("/etc/ipset.conf"); err == nil {
+			// Save current ipset state (without DNSniper sets)
+			if cmd := exec.Command("ipset", "save"); cmd.Run() == nil {
+				if output, err := cmd.Output(); err == nil {
+					os.WriteFile("/etc/ipset.conf", output, 0644)
+				}
+			}
+		}
 	}
 }

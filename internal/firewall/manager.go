@@ -532,13 +532,15 @@ func contains(slice []string, str string) bool {
 
 // IPSetManager methods
 func (m *IPSetManager) EnsureSetsExist() error {
-	// Define set names based on IPv4/IPv6 support
+	// Define set names based on IPv4/IPv6 support with dnsniper prefix
 	setNames := []string{
-		"whitelistIP-v4", "whitelistRange-v4", "blocklistIP-v4", "blocklistRange-v4",
+		"dnsniper-whitelist-ip-v4", "dnsniper-whitelist-range-v4",
+		"dnsniper-blocklist-ip-v4", "dnsniper-blocklist-range-v4",
 	}
 	if m.enableIPv6 {
 		setNames = append(setNames,
-			"whitelistIP-v6", "whitelistRange-v6", "blocklistIP-v6", "blocklistRange-v6",
+			"dnsniper-whitelist-ip-v6", "dnsniper-whitelist-range-v6",
+			"dnsniper-blocklist-ip-v6", "dnsniper-blocklist-range-v6",
 		)
 	}
 
@@ -574,11 +576,13 @@ func (m *IPSetManager) EnsureSetsExist() error {
 
 func (m *IPSetManager) GetSetNames() []string {
 	setNames := []string{
-		"whitelistIP-v4", "whitelistRange-v4", "blocklistIP-v4", "blocklistRange-v4",
+		"dnsniper-whitelist-ip-v4", "dnsniper-whitelist-range-v4",
+		"dnsniper-blocklist-ip-v4", "dnsniper-blocklist-range-v4",
 	}
 	if m.enableIPv6 {
 		setNames = append(setNames,
-			"whitelistIP-v6", "whitelistRange-v6", "blocklistIP-v6", "blocklistRange-v6",
+			"dnsniper-whitelist-ip-v6", "dnsniper-whitelist-range-v6",
+			"dnsniper-blocklist-ip-v6", "dnsniper-blocklist-range-v6",
 		)
 	}
 	return setNames
@@ -619,12 +623,12 @@ func (m *IPSetManager) AddToBlocklist(ip string) error {
 	}
 
 	isIPv6 := parsedIP.To4() == nil
-	setName := "blocklistIP-v4"
+	setName := "dnsniper-blocklist-ip-v4"
 	if isIPv6 {
 		if !m.enableIPv6 {
 			return fmt.Errorf("IPv6 is disabled but received IPv6 address: %s", ip)
 		}
-		setName = "blocklistIP-v6"
+		setName = "dnsniper-blocklist-ip-v6"
 	}
 
 	cmd := exec.Command("ipset", "add", setName, ip)
@@ -642,12 +646,12 @@ func (m *IPSetManager) AddToWhitelist(ip string) error {
 	}
 
 	isIPv6 := parsedIP.To4() == nil
-	setName := "whitelistIP-v4"
+	setName := "dnsniper-whitelist-ip-v4"
 	if isIPv6 {
 		if !m.enableIPv6 {
 			return fmt.Errorf("IPv6 is disabled but received IPv6 address: %s", ip)
 		}
-		setName = "whitelistIP-v6"
+		setName = "dnsniper-whitelist-ip-v6"
 	}
 
 	cmd := exec.Command("ipset", "add", setName, ip)
@@ -665,9 +669,9 @@ func (m *IPSetManager) RemoveFromBlocklist(ip string) error {
 	}
 
 	isIPv6 := parsedIP.To4() == nil
-	setName := "blocklistIP-v4"
+	setName := "dnsniper-blocklist-ip-v4"
 	if isIPv6 {
-		setName = "blocklistIP-v6"
+		setName = "dnsniper-blocklist-ip-v6"
 	}
 
 	cmd := exec.Command("ipset", "del", setName, ip)
@@ -685,9 +689,9 @@ func (m *IPSetManager) RemoveFromWhitelist(ip string) error {
 	}
 
 	isIPv6 := parsedIP.To4() == nil
-	setName := "whitelistIP-v4"
+	setName := "dnsniper-whitelist-ip-v4"
 	if isIPv6 {
-		setName = "whitelistIP-v6"
+		setName = "dnsniper-whitelist-ip-v6"
 	}
 
 	cmd := exec.Command("ipset", "del", setName, ip)
@@ -705,12 +709,12 @@ func (m *IPSetManager) AddRangeToBlocklist(cidr string) error {
 	}
 
 	isIPv6 := ip.To4() == nil
-	setName := "blocklistRange-v4"
+	setName := "dnsniper-blocklist-range-v4"
 	if isIPv6 {
 		if !m.enableIPv6 {
 			return fmt.Errorf("IPv6 is disabled but received IPv6 CIDR: %s", cidr)
 		}
-		setName = "blocklistRange-v6"
+		setName = "dnsniper-blocklist-range-v6"
 	}
 
 	cmd := exec.Command("ipset", "add", setName, cidr)
@@ -728,12 +732,12 @@ func (m *IPSetManager) AddRangeToWhitelist(cidr string) error {
 	}
 
 	isIPv6 := ip.To4() == nil
-	setName := "whitelistRange-v4"
+	setName := "dnsniper-whitelist-range-v4"
 	if isIPv6 {
 		if !m.enableIPv6 {
 			return fmt.Errorf("IPv6 is disabled but received IPv6 CIDR: %s", cidr)
 		}
-		setName = "whitelistRange-v6"
+		setName = "dnsniper-whitelist-range-v6"
 	}
 
 	cmd := exec.Command("ipset", "add", setName, cidr)
@@ -751,9 +755,9 @@ func (m *IPSetManager) RemoveRangeFromBlocklist(cidr string) error {
 	}
 
 	isIPv6 := ip.To4() == nil
-	setName := "blocklistRange-v4"
+	setName := "dnsniper-blocklist-range-v4"
 	if isIPv6 {
-		setName = "blocklistRange-v6"
+		setName = "dnsniper-blocklist-range-v6"
 	}
 
 	cmd := exec.Command("ipset", "del", setName, cidr)
@@ -771,9 +775,9 @@ func (m *IPSetManager) RemoveRangeFromWhitelist(cidr string) error {
 	}
 
 	isIPv6 := ip.To4() == nil
-	setName := "whitelistRange-v4"
+	setName := "dnsniper-whitelist-range-v4"
 	if isIPv6 {
-		setName = "whitelistRange-v6"
+		setName = "dnsniper-whitelist-range-v6"
 	}
 
 	cmd := exec.Command("ipset", "del", setName, cidr)
@@ -817,106 +821,199 @@ func (m *IPSetManager) listSet(setName string) ([]string, error) {
 
 // IPTablesManager methods
 func (m *IPTablesManager) GenerateRulesFile(chains []string, ipsetNames []string, isIPv6 bool) error {
-	var rules []string
-	cmd := "iptables"
+	// Determine target file path
+	var targetFile string
 	if isIPv6 {
-		cmd = "ip6tables"
+		targetFile = "/etc/iptables/rules.v6"
+	} else {
+		targetFile = "/etc/iptables/rules.v4"
 	}
 
-	// Add header comment
-	rules = append(rules, "# DNSniper generated rules")
-	rules = append(rules, fmt.Sprintf("# Generated at: %s", time.Now().Format("2006-01-02 15:04:05")))
-	rules = append(rules, "")
+	// Ensure directory exists
+	if err := os.MkdirAll("/etc/iptables", 0755); err != nil {
+		return fmt.Errorf("failed to create iptables directory: %w", err)
+	}
 
-	// Generate rules with proper ordering (whitelist first for priority)
+	// Read existing rules to preserve non-DNSniper rules
+	existingRules := []string{}
+	if content, err := os.ReadFile(targetFile); err == nil {
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			// Skip DNSniper rules and empty lines
+			if !strings.Contains(line, "DNSniper") && !strings.Contains(line, "dnsniper") && strings.TrimSpace(line) != "" {
+				existingRules = append(existingRules, line)
+			}
+		}
+	}
+
+	// Generate new DNSniper rules
+	var newRules []string
+
+	// Add header
+	newRules = append(newRules, "# DNSniper firewall rules")
+	newRules = append(newRules, fmt.Sprintf("# Generated at: %s", time.Now().Format("2006-01-02 15:04:05")))
+	newRules = append(newRules, "# WARNING: Do not edit manually - these rules are auto-generated")
+	newRules = append(newRules, "")
+
+	// Separate whitelist and blocklist sets
 	whitelistSets := []string{}
 	blocklistSets := []string{}
 
 	for _, setName := range ipsetNames {
+		// Filter by IPv4/IPv6 compatibility
+		if isIPv6 && !strings.Contains(setName, "v6") {
+			continue
+		}
+		if !isIPv6 && strings.Contains(setName, "v6") {
+			continue
+		}
+
 		if strings.Contains(setName, "whitelist") {
 			whitelistSets = append(whitelistSets, setName)
-		} else {
+		} else if strings.Contains(setName, "blocklist") {
 			blocklistSets = append(blocklistSets, setName)
 		}
 	}
 
 	// Generate whitelist rules first (higher priority)
-	for _, chain := range chains {
-		rules = append(rules, fmt.Sprintf("# Whitelist rules for %s chain", chain))
-		for _, setName := range whitelistSets {
-			// Check if set exists before creating rules
-			rules = append(rules, fmt.Sprintf("%s -A %s -m set --match-set %s src -j ACCEPT -m comment --comment \"DNSniper whitelist\"", cmd, chain, setName))
-			rules = append(rules, fmt.Sprintf("%s -A %s -m set --match-set %s dst -j ACCEPT -m comment --comment \"DNSniper whitelist\"", cmd, chain, setName))
+	if len(whitelistSets) > 0 {
+		newRules = append(newRules, "# Whitelist rules (priority protection)")
+		for _, chain := range chains {
+			for _, setName := range whitelistSets {
+				// Only add rules for sets that actually exist
+				if m.ipsetExists(setName) {
+					newRules = append(newRules, fmt.Sprintf("-A %s -m set --match-set %s src -j ACCEPT -m comment --comment \"DNSniper whitelist\"", chain, setName))
+					newRules = append(newRules, fmt.Sprintf("-A %s -m set --match-set %s dst -j ACCEPT -m comment --comment \"DNSniper whitelist\"", chain, setName))
+				}
+			}
 		}
-		rules = append(rules, "")
+		newRules = append(newRules, "")
 	}
 
 	// Generate blocklist rules after whitelist
-	for _, chain := range chains {
-		rules = append(rules, fmt.Sprintf("# Blocklist rules for %s chain", chain))
-		for _, setName := range blocklistSets {
-			rules = append(rules, fmt.Sprintf("%s -A %s -m set --match-set %s src -j DROP -m comment --comment \"DNSniper blocklist\"", cmd, chain, setName))
-			rules = append(rules, fmt.Sprintf("%s -A %s -m set --match-set %s dst -j DROP -m comment --comment \"DNSniper blocklist\"", cmd, chain, setName))
+	if len(blocklistSets) > 0 {
+		newRules = append(newRules, "# Blocklist rules")
+		for _, chain := range chains {
+			for _, setName := range blocklistSets {
+				// Only add rules for sets that actually exist
+				if m.ipsetExists(setName) {
+					newRules = append(newRules, fmt.Sprintf("-A %s -m set --match-set %s src -j DROP -m comment --comment \"DNSniper blocklist\"", chain, setName))
+					newRules = append(newRules, fmt.Sprintf("-A %s -m set --match-set %s dst -j DROP -m comment --comment \"DNSniper blocklist\"", chain, setName))
+				}
+			}
 		}
-		rules = append(rules, "")
+		newRules = append(newRules, "")
 	}
 
-	// Write rules to temporary file
-	tmpFile := "/tmp/dnsniper-rules"
-	if isIPv6 {
-		tmpFile += "-v6"
-	}
-	tmpFile += ".rules"
+	// Combine existing rules with new DNSniper rules
+	var finalRules []string
 
-	content := strings.Join(rules, "\n")
-	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write rules file: %w", err)
+	// Add standard iptables-save header if not present
+	hasHeader := false
+	for _, rule := range existingRules {
+		if strings.HasPrefix(rule, "*") {
+			hasHeader = true
+			break
+		}
+	}
+
+	if !hasHeader {
+		finalRules = append(finalRules, "*filter")
+		finalRules = append(finalRules, ":INPUT ACCEPT [0:0]")
+		finalRules = append(finalRules, ":FORWARD ACCEPT [0:0]")
+		finalRules = append(finalRules, ":OUTPUT ACCEPT [0:0]")
+	}
+
+	// Add existing rules
+	finalRules = append(finalRules, existingRules...)
+
+	// Add new DNSniper rules
+	finalRules = append(finalRules, newRules...)
+
+	// Add COMMIT if not present
+	hasCommit := false
+	for _, rule := range finalRules {
+		if strings.TrimSpace(rule) == "COMMIT" {
+			hasCommit = true
+			break
+		}
+	}
+
+	if !hasCommit {
+		finalRules = append(finalRules, "COMMIT")
+	}
+
+	// Write to target file
+	content := strings.Join(finalRules, "\n") + "\n"
+	if err := os.WriteFile(targetFile, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write rules to %s: %w", targetFile, err)
 	}
 
 	return nil
 }
 
+// ipsetExists checks if an ipset exists
+func (m *IPTablesManager) ipsetExists(setName string) bool {
+	cmd := exec.Command("ipset", "list", setName)
+	return cmd.Run() == nil
+}
+
 func (m *IPTablesManager) ApplyRules(isIPv6 bool) error {
-	cmd := "iptables"
+	// Determine command and file paths
+	var cmd, rulesFile string
 	if isIPv6 {
 		cmd = "ip6tables"
+		rulesFile = "/etc/iptables/rules.v6"
+	} else {
+		cmd = "iptables"
+		rulesFile = "/etc/iptables/rules.v4"
 	}
 
-	// First, save current rules
-	backupFile := "/tmp/dnsniper-backup"
-	if isIPv6 {
-		backupFile += "-v6"
+	// Check if rules file exists
+	if _, err := os.Stat(rulesFile); os.IsNotExist(err) {
+		return fmt.Errorf("rules file %s does not exist", rulesFile)
 	}
-	backupFile += ".rules"
 
-	backupCmd := exec.Command(cmd, "-S")
+	// Create backup of current rules
+	backupFile := fmt.Sprintf("/tmp/dnsniper-backup-%s.rules", cmd)
+	backupCmd := exec.Command(cmd + "-save")
 	backupOutput, err := backupCmd.Output()
 	if err != nil {
-		return fmt.Errorf("failed to backup current rules: %w", err)
+		return fmt.Errorf("failed to backup current %s rules: %w", cmd, err)
 	}
 
 	if err := os.WriteFile(backupFile, backupOutput, 0644); err != nil {
 		return fmt.Errorf("failed to write backup file: %w", err)
 	}
 
-	// Apply new rules
-	rulesFile := "/tmp/dnsniper-rules"
-	if isIPv6 {
-		rulesFile += "-v6"
-	}
-	rulesFile += ".rules"
-
-	applyCmd := exec.Command("sh", "-c", fmt.Sprintf("cat %s | %s-restore", rulesFile, cmd))
+	// Apply new rules using iptables-restore
+	applyCmd := exec.Command(cmd+"-restore", rulesFile)
 	if err := applyCmd.Run(); err != nil {
 		// If application fails, try to restore from backup
-		restoreCmd := exec.Command("sh", "-c", fmt.Sprintf("cat %s | %s-restore", backupFile, cmd))
-		restoreCmd.Run() // Ignore restore errors
-		return fmt.Errorf("failed to apply rules: %w", err)
+		restoreCmd := exec.Command(cmd+"-restore", backupFile)
+		if restoreErr := restoreCmd.Run(); restoreErr != nil {
+			return fmt.Errorf("failed to apply rules and failed to restore backup: apply error: %w, restore error: %v", err, restoreErr)
+		}
+		return fmt.Errorf("failed to apply %s rules, backup restored: %w", cmd, err)
 	}
 
-	// Clean up temporary files
+	// Save rules to persistence files if netfilter-persistent is available
+	if command_exists("netfilter-persistent") {
+		saveCmd := exec.Command("netfilter-persistent", "save")
+		if err := saveCmd.Run(); err != nil {
+			// Log warning but don't fail
+			fmt.Printf("Warning: failed to save rules with netfilter-persistent: %v\n", err)
+		}
+	}
+
+	// Clean up backup file after successful application
 	os.Remove(backupFile)
-	os.Remove(rulesFile)
 
 	return nil
+}
+
+// command_exists checks if a command exists in PATH
+func command_exists(cmd string) bool {
+	_, err := exec.LookPath(cmd)
+	return err == nil
 }

@@ -48,6 +48,11 @@ type DatabaseStore interface {
 	GetStatistics() (*Statistics, error)
 	CheckForCDN(domainID interface{}, threshold int) (bool, error)
 	ExpireUnseenDomains(runID interface{}) error
+
+	// Sync operations for firewall integration
+	GetActiveIPs() ([]string, error)
+	GetWhitelistedIPs() ([]string, error)
+	GetWhitelistedRanges() ([]string, error)
 }
 
 // Wrapper for the old Store to implement DatabaseStore interface
@@ -295,6 +300,63 @@ func (s *StoreWrapper) ExpireUnseenDomains(runID interface{}) error {
 	return fmt.Errorf("invalid run ID type")
 }
 
+func (s *StoreWrapper) GetActiveIPs() ([]string, error) {
+	query := "SELECT DISTINCT ip_address FROM ips WHERE is_whitelisted = 0 AND (expires_at IS NULL OR expires_at > datetime('now'))"
+	rows, err := s.Store.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ips []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		ips = append(ips, ip)
+	}
+	return ips, nil
+}
+
+func (s *StoreWrapper) GetWhitelistedIPs() ([]string, error) {
+	query := "SELECT DISTINCT ip_address FROM ips WHERE is_whitelisted = 1 AND (expires_at IS NULL OR expires_at > datetime('now'))"
+	rows, err := s.Store.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ips []string
+	for rows.Next() {
+		var ip string
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		ips = append(ips, ip)
+	}
+	return ips, nil
+}
+
+func (s *StoreWrapper) GetWhitelistedRanges() ([]string, error) {
+	query := "SELECT DISTINCT cidr FROM ip_ranges WHERE is_whitelisted = 1 AND (expires_at IS NULL OR expires_at > datetime('now'))"
+	rows, err := s.Store.db.Query(query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ranges []string
+	for rows.Next() {
+		var cidr string
+		if err := rows.Scan(&cidr); err != nil {
+			return nil, err
+		}
+		ranges = append(ranges, cidr)
+	}
+	return ranges, nil
+}
+
 // Wrapper for the new GormStore to implement DatabaseStore interface
 type GormStoreWrapper struct {
 	*GormStore
@@ -421,4 +483,16 @@ func (s *GormStoreWrapper) ExpireUnseenDomains(runID interface{}) error {
 		return s.GormStore.ExpireUnseenDomains(id)
 	}
 	return fmt.Errorf("invalid run ID type")
+}
+
+func (s *GormStoreWrapper) GetActiveIPs() ([]string, error) {
+	return s.GormStore.GetActiveIPs()
+}
+
+func (s *GormStoreWrapper) GetWhitelistedIPs() ([]string, error) {
+	return s.GormStore.GetWhitelistedIPs()
+}
+
+func (s *GormStoreWrapper) GetWhitelistedRanges() ([]string, error) {
+	return s.GormStore.GetWhitelistedRanges()
 }

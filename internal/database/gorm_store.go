@@ -657,3 +657,42 @@ func (s *GormStore) ExpireUnseenDomains(runID uint) error {
 	// For now, we'll implement a basic version
 	return nil
 }
+
+// GetActiveIPs returns all active (non-whitelisted, non-expired) IPs
+func (s *GormStore) GetActiveIPs() ([]string, error) {
+	var ips []string
+	now := time.Now()
+
+	err := s.db.Model(&IP{}).
+		Select("DISTINCT ip_address").
+		Where("is_whitelisted = ? AND (expires_at IS NULL OR expires_at > ?)", false, now).
+		Pluck("ip_address", &ips).Error
+
+	return ips, err
+}
+
+// GetWhitelistedIPs returns all whitelisted (non-expired) IPs
+func (s *GormStore) GetWhitelistedIPs() ([]string, error) {
+	var ips []string
+	now := time.Now()
+
+	err := s.db.Model(&IP{}).
+		Select("DISTINCT ip_address").
+		Where("is_whitelisted = ? AND (expires_at IS NULL OR expires_at > ?)", true, now).
+		Pluck("ip_address", &ips).Error
+
+	return ips, err
+}
+
+// GetWhitelistedRanges returns all whitelisted (non-expired) IP ranges
+func (s *GormStore) GetWhitelistedRanges() ([]string, error) {
+	var ranges []string
+	now := time.Now()
+
+	err := s.db.Model(&IPRange{}).
+		Select("DISTINCT cidr").
+		Where("is_whitelisted = ? AND (expires_at IS NULL OR expires_at > ?)", true, now).
+		Pluck("cidr", &ranges).Error
+
+	return ranges, err
+}

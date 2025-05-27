@@ -63,6 +63,15 @@ func (a *Agent) Run(ctx context.Context) error {
 		a.logger.Warnf("Failed to clean up expired records: %v", err)
 	}
 
+	// Initialize sync manager for database-ipset synchronization
+	syncManager := firewall.NewSyncManager(a.firewallManager, a.db, a.logger)
+
+	// Perform initial sync to ensure ipsets match database
+	a.logger.Info("Performing initial database-ipset synchronization...")
+	if err := syncManager.SyncDatabaseToIPSets(); err != nil {
+		a.logger.Warnf("Initial sync failed: %v", err)
+	}
+
 	// Log agent start and create run record
 	a.logger.Info("Agent started")
 	runIDInterface, err := a.db.LogAgentStart()
@@ -173,10 +182,21 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 	}
 
-	// Update expiration for domains not seen in this run
-	a.logger.Info("Updating expiration for unseen domains...")
-	if err := a.db.ExpireUnseenDomains(runID); err != nil {
-		a.logger.Warnf("Failed to update expiration for unseen domains: %v", err)
+	// Perform final sync to ensure all changes are reflected in ipsets
+	a.logger.Info("Performing final database-ipset synchronization...")
+	if err := syncManager.SyncDatabaseToIPSets(); err != nil {
+		a.logger.Warnf("Final sync failed: %v", err)
+	}
+
+	// Validate sync to ensure consistency
+	if err := syncManager.ValidateSync(); err != nil {
+		a.logger.Warnf("Sync validation failed: %v", err)
+	}
+
+	// Update firewall rules to reflect changes
+	a.logger.Info("Updating firewall rules...")
+	if err := a.firewallManager.Reload(); err != nil {
+		a.logger.Warnf("Failed to reload firewall rules: %v", err)
 	}
 
 	// Log agent completion

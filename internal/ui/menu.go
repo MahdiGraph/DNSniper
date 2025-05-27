@@ -123,6 +123,10 @@ func DispatchOption(option string, db database.DatabaseStore, fwManager *firewal
 
 // RunAgentNow starts the agent service
 func RunAgentNow() {
+	ClearScreen()
+	titleColor.Println("\n🚀 Run DNSniper Agent")
+	fmt.Println(string(color.New(color.FgHiCyan).Sprint("=================================================")))
+
 	infoColor.Println("\nStarting DNSniper agent...")
 
 	// Check if agent is already running
