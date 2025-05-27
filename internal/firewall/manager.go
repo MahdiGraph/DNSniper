@@ -204,15 +204,21 @@ func (m *FirewallManager) Reload() error {
 		}
 	}
 
-	// Validate applied rules
+	// Validate applied rules with proper IPv4/IPv6 filtering
 	for _, chain := range m.chains {
 		for _, setName := range ipsetNames {
-			if err := m.validator.ValidateIPTablesRule(chain, setName, false); err != nil {
-				// Try to restore from backup
-				m.errorRecovery.RestoreRules(time.Now().Format("20060102-150405"))
-				return fmt.Errorf("iptables validation failed: %w", err)
+			// Validate IPv4 rules only for IPv4 sets
+			isSetIPv6 := strings.Contains(setName, "v6")
+			if !isSetIPv6 {
+				if err := m.validator.ValidateIPTablesRule(chain, setName, false); err != nil {
+					// Try to restore from backup
+					m.errorRecovery.RestoreRules(time.Now().Format("20060102-150405"))
+					return fmt.Errorf("iptables validation failed: %w", err)
+				}
 			}
-			if m.enableIPv6 {
+
+			// Validate IPv6 rules only for IPv6 sets
+			if m.enableIPv6 && isSetIPv6 {
 				if err := m.validator.ValidateIPTablesRule(chain, setName, true); err != nil {
 					// Try to restore from backup
 					m.errorRecovery.RestoreRules(time.Now().Format("20060102-150405"))
