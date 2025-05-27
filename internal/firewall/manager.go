@@ -572,16 +572,13 @@ func (m *IPSetManager) EnsureSetsExist() error {
 			}
 			continue
 		}
-		// Set exists, check type and family
+
+		// Set already exists, don't try to recreate it to avoid conflicts
+		// We'll just check and log if the type or family doesn't match
 		outStr := string(output)
 		if !strings.Contains(outStr, "Type: "+def.Type) || !strings.Contains(outStr, "Family: "+def.Family) {
-			// Destroy and recreate
-			destroyCmd := exec.Command("ipset", "destroy", def.Name)
-			destroyCmd.Run() // Ignore error
-			createCmd := exec.Command("ipset", "create", def.Name, def.Type, "family", def.Family)
-			if out, err := createCmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("failed to recreate ipset %s: %v, output: %s", def.Name, err, string(out))
-			}
+			fmt.Printf("Warning: Existing ipset %s has incorrect type or family. Expected Type: %s, Family: %s\n",
+				def.Name, def.Type, def.Family)
 		}
 	}
 	return nil
