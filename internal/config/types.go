@@ -6,8 +6,16 @@ import (
 
 // Settings represents the application configuration
 type Settings struct {
+	// Version
+	Version string `yaml:"version"`
+
 	// DNS configuration
 	DNSResolvers []string `yaml:"dns_resolvers"`
+
+	// Rate limiting
+	RateLimitEnabled bool          `yaml:"rate_limit_enabled"` // Whether to enable rate limiting
+	RateLimitCount   int           `yaml:"rate_limit_count"`   // Number of requests allowed in the time window
+	RateLimitWindow  time.Duration `yaml:"rate_limit_window"`  // Time window for rate limiting
 
 	// Firewall configuration
 	AffectedChains []string `yaml:"affected_chains"` // INPUT, OUTPUT, FORWARD or combination (affects both whitelist and blacklist)
@@ -31,12 +39,18 @@ type Settings struct {
 	LogPath      string `yaml:"log_path"`
 }
 
-// DefaultSettings returns the default configuration with OS-specific paths
+// DefaultSettings returns the default configuration
 func DefaultSettings() *Settings {
 	return &Settings{
+		Version:        "2.0",
 		DNSResolvers:   []string{"8.8.8.8", "1.1.1.1"},
 		AffectedChains: []string{"INPUT", "OUTPUT", "FORWARD"},
 		EnableIPv6:     true,
+
+		// Rate limiting defaults - 1000 requests per minute
+		RateLimitEnabled: true,
+		RateLimitCount:   1000,
+		RateLimitWindow:  time.Minute,
 
 		UpdateURLs: []string{
 			"https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt",

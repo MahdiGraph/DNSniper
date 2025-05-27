@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,7 +17,6 @@ import (
 	"github.com/MahdiGraph/DNSniper/internal/dns"
 	"github.com/MahdiGraph/DNSniper/internal/firewall"
 	"github.com/MahdiGraph/DNSniper/pkg/logger"
-	"github.com/nightlyone/lockfile"
 )
 
 // Agent represents the DNSniper agent with GORM compatibility
@@ -25,6 +26,11 @@ type Agent struct {
 	resolver        dns.Resolver
 	firewallManager *firewall.FirewallManager
 	logger          *logger.Logger
+
+	// Rate limiting
+	requestCount   int32
+	lastResetTime  time.Time
+	rateLimitMutex sync.Mutex
 
 	// Statistics
 	domainsProcessed int32
@@ -45,6 +51,7 @@ func NewAgent(
 		resolver:        resolver,
 		firewallManager: firewallManager,
 		logger:          logger,
+		lastResetTime:   time.Now(),
 	}
 }
 
@@ -55,18 +62,6 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.db.CleanupExpired(); err != nil {
 		a.logger.Warnf("Failed to clean up expired records: %v", err)
 	}
-
-	// Acquire lock file to ensure only one agent runs at a time
-	lockPath := "/var/run/dnsniper.lock"
-	lock, err := lockfile.New(lockPath)
-	if err != nil {
-		return fmt.Errorf("failed to create lock: %w", err)
-	}
-
-	if err := lock.TryLock(); err != nil {
-		return fmt.Errorf("failed to acquire lock: %w", err)
-	}
-	defer lock.Unlock()
 
 	// Log agent start and create run record
 	a.logger.Info("Agent started")
@@ -107,8 +102,8 @@ func (a *Agent) Run(ctx context.Context) error {
 		default:
 			a.logger.Infof("Processing update URL: %s", updateURL)
 
-			// Download domain list
-			domains, err := a.downloadDomainList(updateURL)
+			// Download domain list with error handling and timeout
+			domains, err := a.downloadDomainList(ctx, updateURL)
 			if err != nil {
 				a.logger.Warnf("Failed to download domain list from %s: %v", updateURL, err)
 				continue
@@ -119,10 +114,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			totalDomains += len(domains)
 
 			// Create worker pool with reasonable worker count
-			workerCount := 10 // Balanced for concurrent processing
-			if a.config.MaxIPsPerDomain > 0 && a.config.MaxIPsPerDomain < 10 {
-				workerCount = a.config.MaxIPsPerDomain
-			}
+			workerCount := a.determineWorkerCount()
 			pool := NewWorkerPool(workerCount)
 			pool.Start(ctx)
 
@@ -134,22 +126,47 @@ func (a *Agent) Run(ctx context.Context) error {
 				}
 				seenDomains[domain] = true
 
+				// Skip invalid domains
+				if !isValidDomain(domain) {
+					a.logger.Debugf("Skipping invalid domain: %s", domain)
+					continue
+				}
+
 				// Submit to worker pool
 				pool.Submit(&ProcessDomainItem{
 					Domain: domain,
-					RunID:  int64(runID), // Convert to int64 for compatibility
+					RunID:  int64(runID),
 					Agent:  a,
 				})
 			}
 
-			// Process results
-			go func() {
-				for err := range pool.Results() {
-					if err != nil {
-						a.logger.Warnf("Error processing domain: %v", err)
+			// Process results with enhanced error handling
+			resultsChan := pool.Results()
+			errorCount := 0
+			processedCount := 0
+
+			for err := range resultsChan {
+				processedCount++
+				if err != nil {
+					errorCount++
+					a.logger.Warnf("Error processing domain: %v", err)
+
+					// Log error to database if possible
+					if runID > 0 {
+						a.db.LogAgentError(uint(runID), fmt.Sprintf("Domain processing error: %v", err))
+					}
+
+					// If too many errors, consider stopping
+					if errorCount > 100 && float64(errorCount)/float64(processedCount) > 0.5 {
+						a.logger.Errorf("Too many errors (%d/%d), stopping processing for this URL", errorCount, processedCount)
+						break
 					}
 				}
-			}()
+			}
+
+			if errorCount > 0 {
+				a.logger.Warnf("Completed processing %s with %d errors out of %d domains", updateURL, errorCount, processedCount)
+			}
 
 			// Stop worker pool
 			pool.Stop()
@@ -174,15 +191,24 @@ func (a *Agent) Run(ctx context.Context) error {
 	return nil
 }
 
-// downloadDomainList downloads a list of domains from the given URL
-func (a *Agent) downloadDomainList(url string) ([]string, error) {
+// downloadDomainList downloads a list of domains from the given URL with context and error handling
+func (a *Agent) downloadDomainList(ctx context.Context, url string) ([]string, error) {
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
+	// Create request with context
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Add User-Agent header to avoid being blocked
+	req.Header.Set("User-Agent", "DNSniper/2.0")
+
 	// Download domain list
-	resp, err := client.Get(url)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to download domain list: %w", err)
 	}
@@ -192,8 +218,10 @@ func (a *Agent) downloadDomainList(url string) ([]string, error) {
 		return nil, fmt.Errorf("failed to download domain list: HTTP %d", resp.StatusCode)
 	}
 
-	// Read response body
-	body, err := ioutil.ReadAll(resp.Body)
+	// Read response body with size limit (10MB) to prevent memory exhaustion
+	const maxResponseSize = 10 * 1024 * 1024 // 10MB
+	limitedReader := io.LimitReader(resp.Body, maxResponseSize)
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read domain list: %w", err)
 	}
@@ -221,14 +249,80 @@ func (a *Agent) downloadDomainList(url string) ([]string, error) {
 	return domains, nil
 }
 
+// determineWorkerCount calculates the optimal number of workers
+func (a *Agent) determineWorkerCount() int {
+	// Start with a reasonable default
+	workerCount := 10
+
+	// Adjust based on configuration if needed
+	if a.config.MaxIPsPerDomain > 0 && a.config.MaxIPsPerDomain < 10 {
+		workerCount = a.config.MaxIPsPerDomain
+	}
+
+	// Ensure at least 2 workers
+	if workerCount < 2 {
+		workerCount = 2
+	}
+
+	return workerCount
+}
+
+// checkRateLimit checks if the current request is within rate limits
+func (a *Agent) checkRateLimit() bool {
+	if !a.config.RateLimitEnabled {
+		return true
+	}
+
+	a.rateLimitMutex.Lock()
+	defer a.rateLimitMutex.Unlock()
+
+	now := time.Now()
+
+	// Reset counter if window has passed
+	if now.Sub(a.lastResetTime) >= a.config.RateLimitWindow {
+		atomic.StoreInt32(&a.requestCount, 0)
+		a.lastResetTime = now
+	}
+
+	// Check if we're within limits
+	currentCount := atomic.LoadInt32(&a.requestCount)
+	if currentCount >= int32(a.config.RateLimitCount) {
+		return false
+	}
+
+	// Increment counter atomically
+	atomic.AddInt32(&a.requestCount, 1)
+	return true
+}
+
 // processDomain processes a single domain with enhanced features
 func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) error {
+	// Check rate limit
+	if !a.checkRateLimit() {
+		waitTime := a.config.RateLimitWindow - time.Since(a.lastResetTime)
+		a.logger.Debugf("Rate limit reached, waiting for %v", waitTime)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(waitTime):
+			// Continue after waiting
+		}
+	}
+
 	// Normalize domain
 	domain = strings.ToLower(strings.TrimSpace(domain))
 
 	// Skip empty domains
 	if domain == "" {
-		return nil
+		return fmt.Errorf("empty domain name")
+	}
+
+	// Check for context cancellation
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled: %w", ctx.Err())
+	default:
+		// Continue processing
 	}
 
 	// Log domain processing
@@ -253,95 +347,74 @@ func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) e
 	}
 
 	// Convert domain ID to appropriate type
-	var domainID interface{}
+	var domainID uint
 	switch id := domainIDInterface.(type) {
 	case uint:
 		domainID = id
 	case int64:
-		domainID = id
+		domainID = uint(id)
 	default:
 		return fmt.Errorf("unexpected domain ID type: %T", domainIDInterface)
 	}
 
-	// Increment domains processed counter
-	atomic.AddInt32(&a.domainsProcessed, 1)
-
-	// Resolve domain using configured DNS resolvers
-	resolver := a.config.DNSResolvers[0]
-	if len(a.config.DNSResolvers) > 1 {
-		// Use a different resolver each time for load balancing
-		resolver = a.config.DNSResolvers[int(time.Now().UnixNano())%len(a.config.DNSResolvers)]
-	}
-
+	// Resolve domain
+	resolver := a.selectDNSResolver()
 	ips, err := a.resolver.ResolveDomain(domain, resolver)
 	if err != nil {
+		// Log error but don't fail the entire process
 		a.logger.Warnf("Failed to resolve domain %s: %v", domain, err)
-		// Continue even if resolution fails
 		return nil
 	}
 
 	// Process resolved IPs
-	if len(ips) == 0 {
-		a.logger.Debugf("No IPs found for domain %s", domain)
-		return nil
-	}
-
-	a.logger.Debugf("Found %d IPs for domain %s", len(ips), domain)
-
-	// Process each IP with enhanced validation and FIFO mechanism
-	blocked := 0
 	for _, ip := range ips {
-		// Validate IP
-		parsedIP := net.ParseIP(ip)
-		if parsedIP == nil {
-			a.logger.Warnf("Invalid IP address: %s", ip)
+		// Skip invalid IPs
+		if ip == "" {
 			continue
 		}
 
-		// Skip private IPs
-		if isPrivateIP(parsedIP) {
-			a.logger.Debugf("Skipping private IP: %s", ip)
+		// Add IP with rotation
+		if err := a.db.AddIPWithRotation(domainID, ip, a.config.MaxIPsPerDomain, a.config.RuleExpiration); err != nil {
+			a.logger.Warnf("Failed to add IP %s for domain %s: %v", ip, domain, err)
 			continue
 		}
 
-		// Check if IP is whitelisted (priority protection)
-		isIPWhitelisted, err := a.db.IsIPWhitelisted(ip)
-		if err != nil {
-			a.logger.Warnf("Failed to check if IP is whitelisted: %v", err)
-			continue
-		}
-
-		if isIPWhitelisted {
-			a.logger.Debugf("IP %s is whitelisted (priority protected), skipping", ip)
-			continue
-		}
-
-		// Add IP to database with FIFO rotation mechanism
-		err = a.db.AddIPWithRotation(domainID, ip, a.config.MaxIPsPerDomain, a.config.RuleExpiration)
-		if err != nil {
-			a.logger.Warnf("Failed to add IP to database: %v", err)
-			continue
-		}
-
-		// The IP is automatically added to ipset via GORM hooks
-		// But we still increment our counter
-		blocked++
+		// Update statistics
 		atomic.AddInt32(&a.ipsBlocked, 1)
-
-		// Log action
-		a.logger.Infof("Blocked IP %s for domain %s", ip, domain)
-		a.db.LogAction(runID, "block", ip, "success", domain)
 	}
 
-	// Check if domain might be a CDN (based on IP count threshold)
-	isCDN, err := a.db.CheckForCDN(domainID, 2) // Flag as CDN if >2 IPs
-	if err != nil {
-		a.logger.Warnf("Failed to check CDN status for domain %s: %v", domain, err)
-	} else if isCDN {
-		a.logger.Infof("Domain %s flagged as potential CDN (has multiple IPs)", domain)
-	}
+	// Update statistics
+	atomic.AddInt32(&a.domainsProcessed, 1)
 
 	return nil
+}
+
+// selectDNSResolver selects a DNS resolver with load balancing
+func (a *Agent) selectDNSResolver() string {
+	if len(a.config.DNSResolvers) == 0 {
+		return "8.8.8.8" // Default to Google DNS if none configured
+	}
+
+	if len(a.config.DNSResolvers) == 1 {
+		return a.config.DNSResolvers[0]
+	}
+
+	// Use a different resolver each time for load balancing
+	// based on the current nanosecond timestamp
+	return a.config.DNSResolvers[int(time.Now().UnixNano())%len(a.config.DNSResolvers)]
+}
+
+// isValidDomain performs basic domain validation
+func isValidDomain(domain string) bool {
+	// Length check
+	if len(domain) == 0 || len(domain) > 255 {
+		return false
+	}
+
+	// Basic format check using regex (RFC 1034, 1035)
+	// This regex is simplified but catches most invalid domains
+	domainRegex := regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
+	return domainRegex.MatchString(domain)
 }
 
 // isPrivateIP checks if an IP is private with comprehensive checks
@@ -383,11 +456,27 @@ func isPrivateIP(ip net.IP) bool {
 		if ip4[0] == 169 && ip4[1] == 254 {
 			return true
 		}
+		// 100.64.0.0/10 (Carrier-grade NAT)
+		if ip4[0] == 100 && (ip4[1] >= 64 && ip4[1] <= 127) {
+			return true
+		}
 	}
 
 	// Check for private IPv6 ranges using the built-in method
 	if ip.IsPrivate() {
 		return true
+	}
+
+	// Check for specific IPv6 ranges
+	if ip.To4() == nil {
+		// fc00::/7 (Unique Local Address)
+		if ip[0] == 0xfc || ip[0] == 0xfd {
+			return true
+		}
+		// fe80::/10 (Link-Local Address)
+		if ip[0] == 0xfe && (ip[1]&0xc0) == 0x80 {
+			return true
+		}
 	}
 
 	return false

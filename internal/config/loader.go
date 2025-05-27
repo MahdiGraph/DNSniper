@@ -13,6 +13,7 @@ import (
 
 const (
 	DefaultConfigPath = "/etc/dnsniper/config.yaml"
+	Version           = "2.0"
 )
 
 // LoadConfig loads the configuration from file and environment variables
@@ -50,10 +51,20 @@ func LoadConfig(configPath string) (*Settings, error) {
 			return nil, fmt.Errorf("failed to parse config file: %w", err)
 		}
 
+		// Initialize tempConfig if nil
+		if tempConfig == nil {
+			tempConfig = make(map[string]interface{})
+		}
+
 		// Handle backward compatibility: block_chains -> affected_chains
 		if blockChains, exists := tempConfig["block_chains"]; exists && tempConfig["affected_chains"] == nil {
 			tempConfig["affected_chains"] = blockChains
 			delete(tempConfig, "block_chains")
+		}
+
+		// Add version if missing
+		if _, exists := tempConfig["version"]; !exists {
+			tempConfig["version"] = Version
 		}
 
 		// Convert back to YAML and unmarshal into the config struct
@@ -70,6 +81,11 @@ func LoadConfig(configPath string) (*Settings, error) {
 	// Override with environment variables
 	applyEnvironmentOverrides(config)
 
+	// Validate configuration
+	if err := validateConfig(config); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	return config, nil
 }
 
@@ -85,6 +101,9 @@ func SaveConfig(config *Settings, configPath string) error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
+	// Set version before saving
+	config.Version = Version
+
 	// Marshal to YAML
 	data, err := yaml.Marshal(config)
 	if err != nil {
@@ -94,6 +113,47 @@ func SaveConfig(config *Settings, configPath string) error {
 	// Write to file
 	if err := os.WriteFile(configPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
+}
+
+// validateConfig performs validation on the configuration
+func validateConfig(config *Settings) error {
+	// Validate DNS resolvers
+	if len(config.DNSResolvers) == 0 {
+		return fmt.Errorf("no DNS resolvers configured")
+	}
+
+	// Validate affected chains
+	if len(config.AffectedChains) == 0 {
+		config.AffectedChains = []string{"INPUT", "OUTPUT", "FORWARD"}
+	}
+
+	// Ensure update interval is reasonable
+	if config.UpdateInterval < time.Minute {
+		config.UpdateInterval = 3 * time.Hour // Default to 3 hours
+	}
+
+	// Ensure rule expiration is reasonable
+	if config.RuleExpiration < time.Hour {
+		config.RuleExpiration = 12 * time.Hour // Default to 12 hours
+	}
+
+	// Ensure max IPs per domain is reasonable
+	if config.MaxIPsPerDomain < 1 {
+		config.MaxIPsPerDomain = 5 // Default to 5
+	}
+
+	// Validate log level
+	validLogLevels := map[string]bool{
+		"debug": true,
+		"info":  true,
+		"warn":  true,
+		"error": true,
+	}
+	if !validLogLevels[config.LogLevel] {
+		config.LogLevel = "info" // Default to info
 	}
 
 	return nil
@@ -161,5 +221,4 @@ func applyEnvironmentOverrides(config *Settings) {
 	if logPath := os.Getenv("DNSNIPER_LOG_PATH"); logPath != "" {
 		config.LogPath = logPath
 	}
-
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -16,6 +17,10 @@ type WorkerPool struct {
 	resultChan  chan error
 	workerCount int
 	wg          sync.WaitGroup
+	ctx         context.Context // Store context to allow clean shutdown
+	cancel      context.CancelFunc
+	mu          sync.Mutex // For thread-safe operations
+	isRunning   bool
 }
 
 // NewWorkerPool creates a new worker pool with the specified number of workers
@@ -24,19 +29,36 @@ func NewWorkerPool(workerCount int) *WorkerPool {
 		workerCount = 1
 	}
 
+	// Create a cancellable context
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &WorkerPool{
 		workChan:    make(chan WorkItem, workerCount*2),
 		resultChan:  make(chan error, workerCount*2),
 		workerCount: workerCount,
+		ctx:         ctx,
+		cancel:      cancel,
+		isRunning:   false,
 	}
 }
 
 // Start starts the worker pool
 func (p *WorkerPool) Start(ctx context.Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.isRunning {
+		return // Already running
+	}
+
+	// Create a derived context from the provided one
+	p.ctx, p.cancel = context.WithCancel(ctx)
+	p.isRunning = true
+
 	// Start workers
 	for i := 0; i < p.workerCount; i++ {
 		p.wg.Add(1)
-		go p.worker(ctx)
+		go p.worker(p.ctx)
 	}
 }
 
@@ -60,18 +82,31 @@ func (p *WorkerPool) worker(ctx context.Context) {
 
 			// Send result
 			select {
+			case <-ctx.Done():
+				// Context cancelled, don't send result
+				return
 			case p.resultChan <- err:
 				// Result sent
-			default:
-				// Result channel full, log and continue
 			}
 		}
 	}
 }
 
-// Submit adds a work item to the pool
-func (p *WorkerPool) Submit(item WorkItem) {
-	p.workChan <- item
+// Submit submits a work item to the pool
+func (p *WorkerPool) Submit(item WorkItem) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.isRunning {
+		return fmt.Errorf("worker pool is not running")
+	}
+
+	select {
+	case p.workChan <- item:
+		return nil
+	default:
+		return fmt.Errorf("worker pool is full")
+	}
 }
 
 // Results returns the channel for receiving results
@@ -79,11 +114,28 @@ func (p *WorkerPool) Results() <-chan error {
 	return p.resultChan
 }
 
-// Stop stops the worker pool
+// Stop stops the worker pool and waits for all workers to finish
 func (p *WorkerPool) Stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.isRunning {
+		return // Already stopped
+	}
+
+	// Cancel context to stop workers
+	p.cancel()
+
+	// Close work channel
 	close(p.workChan)
+
+	// Wait for all workers to finish
 	p.wg.Wait()
+
+	// Close result channel
 	close(p.resultChan)
+
+	p.isRunning = false
 }
 
 // ProcessDomainItem represents a domain to be processed

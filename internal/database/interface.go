@@ -92,8 +92,70 @@ func (s *StoreWrapper) AddIPWithRotation(domainID interface{}, ipAddress string,
 }
 
 func (s *StoreWrapper) GetIPs(isWhitelist bool, page, perPage int, sortBy string) (interface{}, int, error) {
-	// This would need to be implemented in the old store
-	return nil, 0, fmt.Errorf("not implemented in old store")
+	// Get IPs from the legacy store
+	query := "SELECT id, ip_address, is_whitelisted, is_custom, added_at, expires_at, source, domain_id, last_checked FROM ips WHERE is_whitelisted = ?"
+
+	// Add sorting
+	switch sortBy {
+	case "ip_address":
+		query += " ORDER BY ip_address ASC"
+	case "added_at":
+		query += " ORDER BY added_at DESC"
+	default:
+		query += " ORDER BY added_at DESC"
+	}
+
+	// Add pagination
+	offset := (page - 1) * perPage
+	query += fmt.Sprintf(" LIMIT %d OFFSET %d", perPage, offset)
+
+	rows, err := s.Store.db.Query(query, isWhitelist)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	// For legacy store, we need to use the legacy IP structure
+	type LegacyIP struct {
+		ID            int64
+		IPAddress     string
+		IsWhitelisted bool
+		IsCustom      bool
+		AddedAt       time.Time
+		ExpiresAt     *time.Time
+		Source        string
+		DomainID      *int64
+		LastChecked   *time.Time
+	}
+
+	var ips []LegacyIP
+	for rows.Next() {
+		var ip LegacyIP
+		var domainID sql.NullInt64
+		err := rows.Scan(
+			&ip.ID, &ip.IPAddress, &ip.IsWhitelisted, &ip.IsCustom,
+			&ip.AddedAt, &ip.ExpiresAt, &ip.Source, &domainID, &ip.LastChecked,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		// Convert domain ID if present
+		if domainID.Valid {
+			ip.DomainID = &domainID.Int64
+		}
+
+		ips = append(ips, ip)
+	}
+
+	// Get total count
+	var total int
+	err = s.Store.db.QueryRow("SELECT COUNT(*) FROM ips WHERE is_whitelisted = ?", isWhitelist).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return ips, total, nil
 }
 
 func (s *StoreWrapper) RemoveIP(ipID interface{}) error {
@@ -108,8 +170,61 @@ func (s *StoreWrapper) SaveIPRange(cidr string, isWhitelist bool, isCustom bool,
 }
 
 func (s *StoreWrapper) GetIPRanges(isWhitelist bool, page, perPage int, sortBy string) (interface{}, int, error) {
-	// This would need to be implemented in the old store
-	return nil, 0, fmt.Errorf("not implemented in old store")
+	// Get IP ranges from the legacy store
+	query := "SELECT id, cidr, is_whitelisted, is_custom, added_at, expires_at, source FROM ip_ranges WHERE is_whitelisted = ?"
+
+	// Add sorting
+	switch sortBy {
+	case "cidr":
+		query += " ORDER BY cidr ASC"
+	case "added_at":
+		query += " ORDER BY added_at DESC"
+	default:
+		query += " ORDER BY added_at DESC"
+	}
+
+	// Add pagination
+	offset := (page - 1) * perPage
+	query += fmt.Sprintf(" LIMIT %d OFFSET %d", perPage, offset)
+
+	rows, err := s.Store.db.Query(query, isWhitelist)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	// For legacy store, we need to use the legacy IPRange structure
+	type LegacyIPRange struct {
+		ID            int64
+		CIDR          string
+		IsWhitelisted bool
+		IsCustom      bool
+		AddedAt       time.Time
+		ExpiresAt     *time.Time
+		Source        string
+	}
+
+	var ranges []LegacyIPRange
+	for rows.Next() {
+		var ipRange LegacyIPRange
+		err := rows.Scan(
+			&ipRange.ID, &ipRange.CIDR, &ipRange.IsWhitelisted, &ipRange.IsCustom,
+			&ipRange.AddedAt, &ipRange.ExpiresAt, &ipRange.Source,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+		ranges = append(ranges, ipRange)
+	}
+
+	// Get total count
+	var total int
+	err = s.Store.db.QueryRow("SELECT COUNT(*) FROM ip_ranges WHERE is_whitelisted = ?", isWhitelist).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return ranges, total, nil
 }
 
 func (s *StoreWrapper) RemoveIPRange(rangeID interface{}) error {

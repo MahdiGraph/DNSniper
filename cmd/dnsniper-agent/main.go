@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/MahdiGraph/DNSniper/internal/agent"
 	"github.com/MahdiGraph/DNSniper/internal/config"
@@ -14,12 +16,14 @@ import (
 	"github.com/MahdiGraph/DNSniper/internal/dns"
 	"github.com/MahdiGraph/DNSniper/internal/firewall"
 	"github.com/MahdiGraph/DNSniper/pkg/logger"
+	"github.com/nightlyone/lockfile"
 )
 
 func main() {
 	// Parse command line flags
 	var showHelp = flag.Bool("help", false, "Show help information")
 	var showVersion = flag.Bool("version", false, "Show version information")
+	var configPath = flag.String("config", "", "Path to configuration file")
 	flag.Parse()
 
 	// Handle help flag
@@ -32,6 +36,7 @@ func main() {
 		fmt.Println("Options:")
 		fmt.Println("  --help     Show this help message")
 		fmt.Println("  --version  Show version information")
+		fmt.Println("  --config   Path to configuration file (optional)")
 		fmt.Println("")
 		fmt.Println("Agent Features:")
 		fmt.Println("• GORM database integration with automatic callbacks")
@@ -50,11 +55,21 @@ func main() {
 		fmt.Println("Automated DNS Firewall Agent")
 		os.Exit(0)
 	}
+
 	// Load configuration
-	cfg, err := config.LoadConfig("")
+	cfg, err := config.LoadConfig(*configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Ensure log directory exists
+	if cfg.LoggingEnabled {
+		if err := os.MkdirAll(cfg.LogPath, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create log directory: %v\n", err)
+			// Continue with logging disabled
+			cfg.LoggingEnabled = false
+		}
 	}
 
 	// Initialize logger
@@ -70,18 +85,35 @@ func main() {
 	log := logger.New(logConfig)
 	defer log.Close()
 
+	// Log startup with configuration details
+	log.Info("DNSniper Agent v2.0 starting")
+	log.Infof("Configuration loaded from: %s", cfg.ConfigPath)
+	log.Infof("Database path: %s", cfg.DatabasePath)
+	log.Infof("Log path: %s", cfg.LogPath)
+	log.Infof("DNS Resolvers: %v", cfg.DNSResolvers)
+	log.Infof("Update interval: %v", cfg.UpdateInterval)
+	log.Infof("Rule expiration: %v", cfg.RuleExpiration)
+	log.Infof("Max IPs per domain: %d", cfg.MaxIPsPerDomain)
+	log.Infof("IPv6 enabled: %v", cfg.EnableIPv6)
+	log.Infof("Affected chains: %v", cfg.AffectedChains)
+
 	// Initialize firewall manager first (needed for database callbacks)
+	log.Info("Initializing firewall manager...")
 	fwManager, err := firewall.NewFirewallManager(
 		cfg.EnableIPv6,
 		cfg.AffectedChains,
+		filepath.Join(cfg.LogPath, "firewall-backup"),
+		filepath.Join(cfg.LogPath, "firewall.log"),
 	)
 	if err != nil {
 		log.Errorf("Failed to initialize firewall manager: %v", err)
 		fmt.Fprintf(os.Stderr, "Failed to initialize firewall manager: %v\n", err)
 		os.Exit(1)
 	}
+	log.Info("Firewall manager initialized successfully")
 
 	// Initialize database using enhanced factory system with callback integration
+	log.Info("Initializing database...")
 	dbFactory := database.NewDatabaseFactory(fwManager)
 	db, err := dbFactory.CreateDatabaseWithAutoDetection(cfg.DatabasePath)
 	if err != nil {
@@ -90,8 +122,10 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
+	log.Info("Database initialized successfully")
 
 	// Validate callback service integration
+	log.Info("Validating callback service...")
 	if err := database.ValidateCallbackService(); err != nil {
 		log.Warnf("Callback service validation failed: %v", err)
 		// Continue anyway - callbacks are optional for basic functionality
@@ -107,10 +141,56 @@ func main() {
 	}
 
 	// Initialize DNS resolver
+	log.Info("Initializing DNS resolver...")
 	resolver := dns.NewStandardResolver()
 
+	// Check for and acquire lock file to ensure only one agent runs at a time
+	lockPath := filepath.Join(os.TempDir(), "dnsniper.lock")
+	lock, err := lockfile.New(lockPath)
+	if err != nil {
+		log.Errorf("Failed to create lock: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to create lock: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Try to acquire lock with timeout
+	lockTimeout := 5 * time.Second
+	lockCtx, lockCancel := context.WithTimeout(context.Background(), lockTimeout)
+	defer lockCancel()
+
+	// Try to acquire lock until timeout
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	lockAcquired := false
+	for {
+		select {
+		case <-lockCtx.Done():
+			if !lockAcquired {
+				log.Errorf("Failed to acquire lock after %v: another instance may be running", lockTimeout)
+				fmt.Fprintf(os.Stderr, "Failed to acquire lock: another instance may be running\n")
+				os.Exit(1)
+			}
+		case <-ticker.C:
+			err := lock.TryLock()
+			if err == nil {
+				lockAcquired = true
+				lockCancel()
+			}
+		}
+		if lockAcquired {
+			break
+		}
+	}
+	defer func() {
+		if err := lock.Unlock(); err != nil {
+			log.Warnf("Failed to release lock: %v", err)
+		}
+	}()
+
 	// Create agent with GORM interface
-	agent := agent.NewAgent(cfg, db, resolver, fwManager, log)
+	log.Info("Creating agent...")
+	agentInstance := agent.NewAgent(cfg, db, resolver, fwManager, log)
 
 	// Setup context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -121,14 +201,14 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		<-sigChan
-		log.Info("Received shutdown signal, stopping agent...")
+		sig := <-sigChan
+		log.Infof("Received signal %v, stopping agent...", sig)
 		cancel()
 	}()
 
 	// Run the agent
 	log.Info("Starting DNSniper agent...")
-	if err := agent.Run(ctx); err != nil {
+	if err := agentInstance.Run(ctx); err != nil {
 		if err == context.Canceled {
 			log.Info("Agent stopped gracefully")
 		} else {

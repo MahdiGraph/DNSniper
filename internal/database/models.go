@@ -1,7 +1,9 @@
 package database
 
 import (
+	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -97,19 +99,23 @@ type Statistics struct {
 // IPSetCallbackService handles synchronization with ipset rules
 type IPSetCallbackService struct {
 	firewallManager FirewallManagerInterface
+	mu              sync.Mutex // For thread-safe operations
 }
 
 // FirewallManagerInterface defines the interface for firewall operations
 type FirewallManagerInterface interface {
-	BlockIP(ip string) error
-	WhitelistIP(ip string) error
+	BlockIP(ip string, user string) error
+	WhitelistIP(ip string, user string) error
 	UnblockIP(ip string) error
 	UnwhitelistIP(ip string) error
-	BlockIPRange(cidr string) error
-	WhitelistIPRange(cidr string) error
+	BlockIPRange(cidr string, user string) error
+	WhitelistIPRange(cidr string, user string) error
 	UnblockIPRange(cidr string) error
 	UnwhitelistIPRange(cidr string) error
 }
+
+// sync.Mutex for thread safety
+var mutex sync.Mutex
 
 // GORM Hooks for automatic ipset synchronization
 
@@ -122,93 +128,175 @@ func (d *Domain) AfterCreate(tx *gorm.DB) error {
 
 // AfterUpdate hook for Domain
 func (d *Domain) AfterUpdate(tx *gorm.DB) error {
+	// Prevent infinite loops by checking if we're already in a callback
+	if tx.Statement.Context.Value("dnsniper_callback_active") != nil {
+		return nil
+	}
+
 	// If whitelist status changed, update all associated IPs
 	if tx.Statement.Changed("IsWhitelisted") {
-		var ips []IP
-		if err := tx.Where("domain_id = ?", d.ID).Find(&ips).Error; err != nil {
-			return err
-		}
+		// Set context to prevent infinite loops
+		ctx := context.WithValue(tx.Statement.Context, "dnsniper_callback_active", true)
 
-		// Update all associated IPs to match domain whitelist status
-		for _, ip := range ips {
-			oldWhitelistStatus := ip.IsWhitelisted
-			ip.IsWhitelisted = d.IsWhitelisted
-
-			// Save the IP, which will trigger its own AfterUpdate hook
-			if err := tx.Save(&ip).Error; err != nil {
+		// Use a new transaction with the protected context
+		return tx.WithContext(ctx).Transaction(func(protectedTx *gorm.DB) error {
+			var ips []IP
+			if err := protectedTx.Where("domain_id = ?", d.ID).Find(&ips).Error; err != nil {
 				return err
 			}
 
-			// Log the whitelist priority change
-			if oldWhitelistStatus != d.IsWhitelisted {
-				if d.IsWhitelisted {
-					// IP moved to whitelist (priority protection)
-					logCallbackAction("domain_ip_whitelist", ip.IPAddress, "success",
-						fmt.Sprintf("IP whitelisted due to domain %s whitelist status change", d.Domain))
-				} else {
-					// IP moved from whitelist to blocklist
-					logCallbackAction("domain_ip_unwhitelist", ip.IPAddress, "success",
-						fmt.Sprintf("IP moved to blocklist due to domain %s whitelist status change", d.Domain))
+			// Update all associated IPs to match domain whitelist status
+			for _, ip := range ips {
+				oldWhitelistStatus := ip.IsWhitelisted
+
+				// Only update if status actually needs to change
+				if oldWhitelistStatus != d.IsWhitelisted {
+					// Use direct SQL update to avoid triggering hooks
+					if err := protectedTx.Model(&IP{}).Where("id = ?", ip.ID).UpdateColumn("is_whitelisted", d.IsWhitelisted).Error; err != nil {
+						return err
+					}
+
+					// Log the whitelist priority change
+					if d.IsWhitelisted {
+						// IP moved to whitelist (priority protection)
+						logCallbackAction("domain_ip_whitelist", ip.IPAddress, "success",
+							fmt.Sprintf("IP whitelisted due to domain %s whitelist status change", d.Domain))
+					} else {
+						// IP moved from whitelist to blocklist
+						logCallbackAction("domain_ip_unwhitelist", ip.IPAddress, "success",
+							fmt.Sprintf("IP moved to blocklist due to domain %s whitelist status change", d.Domain))
+					}
 				}
 			}
-		}
+			return nil
+		})
 	}
 	return nil
 }
 
 // AfterCreate hook for IP
 func (i *IP) AfterCreate(tx *gorm.DB) error {
-	return i.syncIPSetRule("add")
+	// Prevent infinite loops by checking if we're already in a callback
+	if tx.Statement.Context.Value("dnsniper_callback_active") != nil {
+		return nil
+	}
+
+	// Use goroutine to prevent blocking the transaction
+	go func() {
+		if err := i.syncIPSetRule("add"); err != nil {
+			logCallbackAction("ip_create_error", i.IPAddress, "failed", fmt.Sprintf("Failed to sync IP on create: %v", err))
+		}
+	}()
+
+	return nil
 }
 
 // AfterUpdate hook for IP
 func (i *IP) AfterUpdate(tx *gorm.DB) error {
-	// If whitelist status changed, remove from old set and add to new set
+	// Prevent infinite loops by checking if we're already in a callback
+	if tx.Statement.Context.Value("dnsniper_callback_active") != nil {
+		return nil
+	}
+
+	// If whitelist status changed, sync with ipset
 	if tx.Statement.Changed("IsWhitelisted") {
-		// Remove from both sets first, then add to correct set
-		if err := i.syncIPSetRule("remove_both"); err != nil {
-			return err
-		}
-		return i.syncIPSetRule("add")
+		// Use goroutine to prevent blocking the transaction
+		go func() {
+			if err := i.syncIPSetRule("update"); err != nil {
+				logCallbackAction("ip_update_error", i.IPAddress, "failed", fmt.Sprintf("Failed to sync IP on update: %v", err))
+			}
+		}()
 	}
 	return nil
 }
 
 // AfterDelete hook for IP
 func (i *IP) AfterDelete(tx *gorm.DB) error {
-	return i.syncIPSetRule("remove")
+	// Prevent infinite loops by checking if we're already in a callback
+	if tx.Statement.Context.Value("dnsniper_callback_active") != nil {
+		return nil
+	}
+
+	// Use goroutine to prevent blocking the transaction
+	go func() {
+		if err := i.syncIPSetRule("remove_both"); err != nil {
+			logCallbackAction("ip_delete_error", i.IPAddress, "failed", fmt.Sprintf("Failed to sync IP on delete: %v", err))
+		}
+	}()
+
+	return nil
 }
 
 // AfterCreate hook for IPRange
 func (r *IPRange) AfterCreate(tx *gorm.DB) error {
-	return r.syncIPSetRule("add")
+	// Prevent infinite loops by checking if we're already in a callback
+	if tx.Statement.Context.Value("dnsniper_callback_active") != nil {
+		return nil
+	}
+
+	// Use goroutine to prevent blocking the transaction
+	go func() {
+		if err := r.syncIPSetRule("add"); err != nil {
+			logCallbackAction("range_create_error", r.CIDR, "failed", fmt.Sprintf("Failed to sync IP range on create: %v", err))
+		}
+	}()
+
+	return nil
 }
 
 // AfterUpdate hook for IPRange
 func (r *IPRange) AfterUpdate(tx *gorm.DB) error {
+	// Prevent infinite loops by checking if we're already in a callback
+	if tx.Statement.Context.Value("dnsniper_callback_active") != nil {
+		return nil
+	}
+
 	if tx.Statement.Changed("IsWhitelisted") {
-		if err := r.syncIPSetRule("remove_both"); err != nil {
-			return err
-		}
-		return r.syncIPSetRule("add")
+		// Use goroutine to prevent blocking the transaction
+		go func() {
+			if err := r.syncIPSetRule("remove_both"); err != nil {
+				logCallbackAction("range_update_error", r.CIDR, "failed", fmt.Sprintf("Failed to remove IP range on update: %v", err))
+				return
+			}
+			if err := r.syncIPSetRule("add"); err != nil {
+				logCallbackAction("range_update_error", r.CIDR, "failed", fmt.Sprintf("Failed to add IP range on update: %v", err))
+			}
+		}()
 	}
 	return nil
 }
 
 // AfterDelete hook for IPRange
 func (r *IPRange) AfterDelete(tx *gorm.DB) error {
-	return r.syncIPSetRule("remove")
+	// Prevent infinite loops by checking if we're already in a callback
+	if tx.Statement.Context.Value("dnsniper_callback_active") != nil {
+		return nil
+	}
+
+	// Use goroutine to prevent blocking the transaction
+	go func() {
+		if err := r.syncIPSetRule("remove"); err != nil {
+			logCallbackAction("range_delete_error", r.CIDR, "failed", fmt.Sprintf("Failed to sync IP range on delete: %v", err))
+		}
+	}()
+
+	return nil
 }
 
 // Helper methods for ipset synchronization with enhanced whitelist priority
 func (i *IP) syncIPSetRule(action string) error {
 	service := GetIPSetCallbackService()
 	if service == nil || service.firewallManager == nil {
-		return nil // Service not initialized yet
+		logCallbackAction("ip_sync_error", i.IPAddress, "failed", "Callback service not available")
+		return nil // Don't fail the operation if callback service is not available
 	}
 
 	// Create whitelist priority manager for enhanced priority handling
 	priorityManager := NewWhitelistPriorityManager(service)
+
+	// Use service mutex for thread safety
+	service.mu.Lock()
+	defer service.mu.Unlock()
 
 	switch action {
 	case "add":
@@ -221,16 +309,30 @@ func (i *IP) syncIPSetRule(action string) error {
 			fmt.Sprintf("IP added to %s", map[bool]string{true: "whitelist", false: "blocklist"}[i.IsWhitelisted]))
 		return nil
 
+	case "update":
+		// For updates, remove from both sets first, then add to correct set
+		service.firewallManager.UnwhitelistIP(i.IPAddress)
+		service.firewallManager.UnblockIP(i.IPAddress)
+
+		// Now add to the correct set
+		if err := priorityManager.EnforceWhitelistPriority(i.IPAddress, i.IsWhitelisted); err != nil {
+			logCallbackAction("ip_update_error", i.IPAddress, "failed", fmt.Sprintf("Failed to update IP: %v", err))
+			return err
+		}
+		logCallbackAction("ip_update", i.IPAddress, "success",
+			fmt.Sprintf("IP updated to %s", map[bool]string{true: "whitelist", false: "blocklist"}[i.IsWhitelisted]))
+		return nil
+
 	case "remove":
 		if i.IsWhitelisted {
 			if err := service.firewallManager.UnwhitelistIP(i.IPAddress); err != nil {
-				logCallbackAction("ip_unwhitelist_error", i.IPAddress, "failed", fmt.Sprintf("Failed to remove from whitelist: %v", err))
+				logCallbackAction("ip_unwhitelist_error", i.IPAddress, "failed", fmt.Sprintf("Failed to remove IP from whitelist: %v", err))
 				return err
 			}
 			logCallbackAction("ip_unwhitelist", i.IPAddress, "success", "IP removed from whitelist")
 		} else {
 			if err := service.firewallManager.UnblockIP(i.IPAddress); err != nil {
-				logCallbackAction("ip_unblock_error", i.IPAddress, "failed", fmt.Sprintf("Failed to remove from blocklist: %v", err))
+				logCallbackAction("ip_unblock_error", i.IPAddress, "failed", fmt.Sprintf("Failed to remove IP from blocklist: %v", err))
 				return err
 			}
 			logCallbackAction("ip_unblock", i.IPAddress, "success", "IP removed from blocklist")
@@ -255,6 +357,9 @@ func (r *IPRange) syncIPSetRule(action string) error {
 
 	// Create whitelist priority manager for enhanced priority handling
 	priorityManager := NewWhitelistPriorityManager(service)
+
+	mutex.Lock()
+	defer mutex.Unlock()
 
 	switch action {
 	case "add":
@@ -298,11 +403,15 @@ var globalCallbackService *IPSetCallbackService
 
 // SetIPSetCallbackService sets the global callback service
 func SetIPSetCallbackService(service *IPSetCallbackService) {
+	mutex.Lock()
+	defer mutex.Unlock()
 	globalCallbackService = service
 }
 
 // GetIPSetCallbackService gets the global callback service
 func GetIPSetCallbackService() *IPSetCallbackService {
+	mutex.Lock()
+	defer mutex.Unlock()
 	return globalCallbackService
 }
 
@@ -344,11 +453,11 @@ func (w *WhitelistPriorityManager) EnforceWhitelistPriority(ip string, isWhiteli
 	if isWhitelisted {
 		// Remove from blocklist first, then add to whitelist
 		w.service.firewallManager.UnblockIP(ip)
-		return w.service.firewallManager.WhitelistIP(ip)
+		return w.service.firewallManager.WhitelistIP(ip, "system")
 	} else {
 		// Remove from whitelist, then add to blocklist
 		w.service.firewallManager.UnwhitelistIP(ip)
-		return w.service.firewallManager.BlockIP(ip)
+		return w.service.firewallManager.BlockIP(ip, "system")
 	}
 }
 
@@ -361,10 +470,10 @@ func (w *WhitelistPriorityManager) EnforceWhitelistPriorityRange(cidr string, is
 	if isWhitelisted {
 		// Remove from blocklist first, then add to whitelist
 		w.service.firewallManager.UnblockIPRange(cidr)
-		return w.service.firewallManager.WhitelistIPRange(cidr)
+		return w.service.firewallManager.WhitelistIPRange(cidr, "system")
 	} else {
 		// Remove from whitelist, then add to blocklist
 		w.service.firewallManager.UnwhitelistIPRange(cidr)
-		return w.service.firewallManager.BlockIPRange(cidr)
+		return w.service.firewallManager.BlockIPRange(cidr, "system")
 	}
 }

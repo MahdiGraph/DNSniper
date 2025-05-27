@@ -177,63 +177,38 @@ func ShowStatus(db database.DatabaseStore, fwManager *firewall.FirewallManager) 
 	}
 
 	// Get next scheduled run time
-	if timerStatus == "active" {
-		cmd = exec.Command("systemctl", "list-timers", "dnsniper-agent.timer", "--no-pager", "--no-legend")
-		output, err := cmd.Output()
-		if err == nil {
-			lines := strings.Split(string(output), "\n")
-			if len(lines) > 0 && lines[0] != "" {
-				fields := strings.Fields(lines[0])
-				if len(fields) >= 2 {
-					nextRun := fields[1] + " " + fields[2]
-					infoColor.Printf("Next scheduled run: %s\n", nextRun)
-				}
+	cmd = exec.Command("systemctl", "list-timers", "--no-pager", "dnsniper-agent.timer")
+	timerOutput, _ = cmd.Output()
+	timerLines := strings.Split(string(timerOutput), "\n")
+	for _, line := range timerLines {
+		if strings.Contains(line, "dnsniper-agent.timer") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				fmt.Printf("Next run: ")
+				infoColor.Println(fields[0] + " " + fields[1])
 			}
+			break
 		}
 	}
 
-	// Display database statistics
-	subtitleColor.Println("\nProtection Statistics:")
-
-	// Get statistics
+	// Display statistics
+	subtitleColor.Println("\nStatistics:")
 	stats, err := db.GetStatistics()
 	if err != nil {
-		errorColor.Printf("Failed to get statistics: %v\n", err)
+		warningColor.Println("Failed to get statistics")
 	} else {
-		fmt.Printf("Blocked domains: %d\n", stats.BlockedDomainsCount)
-		fmt.Printf("Blocked IPs: %d\n", stats.BlockedIPCount)
-		fmt.Printf("Whitelisted domains: %d\n", stats.WhitelistedDomains)
-		fmt.Printf("Whitelisted IPs: %d\n", stats.WhitelistedIPCount)
-	}
-
-	// Display firewall statistics
-	subtitleColor.Println("\nFirewall Statistics:")
-
-	// Get firewall stats
-	fwStats, err := fwManager.GetRulesStats()
-	if err != nil {
-		errorColor.Printf("Failed to get firewall statistics: %v\n", err)
-	} else {
-		for set, count := range fwStats {
-			fmt.Printf("%s: %d entries\n", set, count)
-		}
-	}
-
-	// Display recent activity if available
-	if stats != nil && stats.IPsBlocked24h > 0 {
-		subtitleColor.Println("\nRecent Activity:")
-		fmt.Printf("Domains processed in last 24h: %d\n", stats.DomainsProcessed24h)
-		fmt.Printf("IPs blocked in last 24h: %d\n", stats.IPsBlocked24h)
-
-		if len(stats.RecentBlockedDomains) > 0 {
-			subtitleColor.Println("\nRecently Blocked Domains:")
-			for i, domain := range stats.RecentBlockedDomains {
-				if i >= 5 {
-					break
-				}
-				fmt.Printf("- %s\n", domain)
-			}
-		}
+		fmt.Printf("Domains processed (24h): ")
+		infoColor.Printf("%d\n", stats.DomainsProcessed24h)
+		fmt.Printf("IPs blocked (24h): ")
+		infoColor.Printf("%d\n", stats.IPsBlocked24h)
+		fmt.Printf("Total blocked domains: ")
+		infoColor.Printf("%d\n", stats.BlockedDomainsCount)
+		fmt.Printf("Total whitelisted domains: ")
+		infoColor.Printf("%d\n", stats.WhitelistedDomains)
+		fmt.Printf("Total blocked IPs: ")
+		infoColor.Printf("%d\n", stats.BlockedIPCount)
+		fmt.Printf("Total whitelisted IPs: ")
+		infoColor.Printf("%d\n", stats.WhitelistedIPCount)
 	}
 
 	PressEnterToContinue()
@@ -303,66 +278,151 @@ func ManageWhitelist(db database.DatabaseStore, fwManager *firewall.FirewallMana
 	}
 }
 
-// ManageSettings displays the comprehensive settings management menu
+// ManageSettings displays the settings management menu
 func ManageSettings(db database.DatabaseStore, fwManager *firewall.FirewallManager) {
 	for {
 		ClearScreen()
-		titleColor.Println("\n⚙️  DNSniper Settings Management")
-		fmt.Println(string(color.New(color.FgHiCyan).Sprint("=======================================================")))
+		titleColor.Println("\nSettings Management:")
+		subtitleColor.Println("\nChoose a setting to modify:")
+		menuColor.Println("1. DNS Resolvers")
+		menuColor.Println("2. Affected Firewall Chains")
+		menuColor.Println("3. Update URLs")
+		menuColor.Println("4. Update Interval")
+		menuColor.Println("5. Rule Expiration")
+		menuColor.Println("6. Max IPs per Domain")
+		menuColor.Println("7. Rate Limiting")
+		menuColor.Println("8. Logging")
+		menuColor.Println("9. View Full Configuration")
+		menuColor.Println("0. Back to Main Menu")
 
-		// Load current config
-		config, err := loadCurrentConfig()
+		promptColor.Print("\nSelect an option: ")
+		var option string
+		fmt.Scanln(&option)
+
+		// Load current configuration
+		cfg, err := loadCurrentConfig()
 		if err != nil {
 			errorColor.Printf("Failed to load configuration: %v\n", err)
 			PressEnterToContinue()
-			return
+			continue
 		}
-
-		// Display current settings summary
-		subtitleColor.Println("\n📊 Current Configuration:")
-		fmt.Printf("DNS Resolver: %s\n", strings.Join(config.DNSResolvers, ", "))
-		fmt.Printf("Affected Chains: %s\n", strings.Join(config.AffectedChains, ", "))
-		fmt.Printf("Update Interval: %s\n", config.UpdateInterval.String())
-		fmt.Printf("Rule Expiration: %s\n", config.RuleExpiration.String())
-		fmt.Printf("Max IPs Per Domain: %d\n", config.MaxIPsPerDomain)
-		fmt.Printf("Logging: %s\n", map[bool]string{true: "Enabled", false: "Disabled"}[config.LoggingEnabled])
-		fmt.Printf("Update URLs: %d configured\n", len(config.UpdateURLs))
-
-		subtitleColor.Println("\n🔧 Settings Options:")
-		menuColor.Println("1. Update DNS Resolver")
-		menuColor.Println("2. Update Affected Chains")
-		menuColor.Println("3. Manage Domain Auto-Update URLs")
-		menuColor.Println("4. Change Update Interval")
-		menuColor.Println("5. Change Rule Expiration Time")
-		menuColor.Println("6. Change Max IPs Per Domain")
-		menuColor.Println("7. Enable/Disable Logging")
-		menuColor.Println("8. View Full Configuration")
-		menuColor.Println("0. Back to main menu")
-
-		promptColor.Print("\nSelect option: ")
-		var option string
-		fmt.Scanln(&option)
-		option = strings.TrimSpace(option)
 
 		switch option {
 		case "1":
-			updateDNSResolver(config)
+			updateDNSResolver(cfg)
 		case "2":
-			updateAffectedChains(config, fwManager)
+			updateAffectedChains(cfg, fwManager)
 		case "3":
-			manageUpdateURLs(config)
+			manageUpdateURLs(cfg)
 		case "4":
-			updateUpdateInterval(config)
+			updateUpdateInterval(cfg)
 		case "5":
-			updateRuleExpiration(config)
+			updateRuleExpiration(cfg)
 		case "6":
-			updateMaxIPsPerDomain(config)
+			updateMaxIPsPerDomain(cfg)
 		case "7":
-			toggleLogging(config)
+			manageRateLimiting(cfg)
 		case "8":
-			viewFullConfiguration(config)
+			toggleLogging(cfg)
+		case "9":
+			viewFullConfiguration(cfg)
 		case "0":
 			return
+		default:
+			errorColor.Println("Invalid option. Please try again.")
+			PressEnterToContinue()
+		}
+	}
+}
+
+// manageRateLimiting manages rate limiting settings
+func manageRateLimiting(cfg *config.Settings) {
+	for {
+		ClearScreen()
+		titleColor.Println("\nRate Limiting Settings:")
+		fmt.Println(string(color.New(color.FgHiCyan).Sprint("=================================================")))
+
+		// Display current settings
+		fmt.Printf("\nCurrent Rate Limiting Settings:\n")
+		fmt.Printf("Rate Limiting Enabled: ")
+		if cfg.RateLimitEnabled {
+			successColor.Println("Yes")
+		} else {
+			warningColor.Println("No")
+		}
+		fmt.Printf("Request Limit: %d requests\n", cfg.RateLimitCount)
+		fmt.Printf("Time Window: %v\n", cfg.RateLimitWindow)
+
+		// Display options
+		subtitleColor.Println("\nOptions:")
+		menuColor.Println("1. Toggle Rate Limiting")
+		menuColor.Println("2. Set Request Limit")
+		menuColor.Println("3. Set Time Window")
+		menuColor.Println("0. Back to Settings Menu")
+
+		promptColor.Print("\nSelect an option: ")
+		var option string
+		fmt.Scanln(&option)
+
+		switch option {
+		case "1":
+			// Toggle rate limiting
+			cfg.RateLimitEnabled = !cfg.RateLimitEnabled
+			if cfg.RateLimitEnabled {
+				successColor.Println("\nRate limiting enabled.")
+			} else {
+				warningColor.Println("\nRate limiting disabled.")
+			}
+			PressEnterToContinue()
+
+		case "2":
+			// Set request limit
+			promptColor.Print("\nEnter new request limit (default: 1000): ")
+			var input string
+			fmt.Scanln(&input)
+			if input == "" {
+				cfg.RateLimitCount = 1000
+			} else {
+				limit, err := strconv.Atoi(input)
+				if err != nil || limit <= 0 {
+					errorColor.Println("Invalid input. Using default value of 1000.")
+					cfg.RateLimitCount = 1000
+				} else {
+					cfg.RateLimitCount = limit
+				}
+			}
+			successColor.Printf("Request limit set to %d.\n", cfg.RateLimitCount)
+			PressEnterToContinue()
+
+		case "3":
+			// Set time window
+			promptColor.Print("\nEnter time window in minutes (default: 1): ")
+			var input string
+			fmt.Scanln(&input)
+			if input == "" {
+				cfg.RateLimitWindow = time.Minute
+			} else {
+				minutes, err := strconv.Atoi(input)
+				if err != nil || minutes <= 0 {
+					errorColor.Println("Invalid input. Using default value of 1 minute.")
+					cfg.RateLimitWindow = time.Minute
+				} else {
+					cfg.RateLimitWindow = time.Duration(minutes) * time.Minute
+				}
+			}
+			successColor.Printf("Time window set to %v.\n", cfg.RateLimitWindow)
+			PressEnterToContinue()
+
+		case "0":
+			// Save changes and return
+			if err := saveConfig(cfg); err != nil {
+				errorColor.Printf("Failed to save configuration: %v\n", err)
+			} else {
+				successColor.Println("\nSettings saved successfully.")
+			}
+			PressEnterToContinue()
+			return
+
 		default:
 			errorColor.Println("Invalid option. Please try again.")
 			PressEnterToContinue()
@@ -816,12 +876,22 @@ func ManageDomainList(db database.DatabaseStore, fwManager *firewall.FirewallMan
 			return
 		}
 
-		// Type assert the domains - handle both old and new types
+		// Type assert the domains - handle both old and new types with better error handling
 		var domains []database.Domain
-		if domainSlice, ok := domainsInterface.([]database.Domain); ok {
-			domains = domainSlice
-		} else {
-			errorColor.Println("Error: Unable to parse domain data")
+		switch v := domainsInterface.(type) {
+		case []database.Domain:
+			domains = v
+		case []*database.Domain:
+			// Convert pointer slice to value slice
+			for _, d := range v {
+				if d != nil {
+					domains = append(domains, *d)
+				}
+			}
+		default:
+			errorColor.Printf("Error: Unable to parse domain data (type: %T)\n", domainsInterface)
+			warningColor.Println("This might be a database compatibility issue")
+			infoColor.Println("Try switching database type in configuration")
 			PressEnterToContinue()
 			return
 		}
@@ -975,15 +1045,21 @@ func addCustomDomain(db database.DatabaseStore, isWhitelist bool) {
 	fmt.Scanln(&domain)
 	domain = strings.ToLower(strings.TrimSpace(domain))
 
+	// Enhanced validation
 	if domain == "" {
 		errorColor.Println("Domain cannot be empty")
 		PressEnterToContinue()
 		return
 	}
 
-	// Basic domain validation
+	// Remove protocol if present
+	domain = strings.TrimPrefix(domain, "http://")
+	domain = strings.TrimPrefix(domain, "https://")
+	domain = strings.TrimPrefix(domain, "www.")
+
+	// Basic domain validation with better error message
 	if !isValidDomain(domain) {
-		errorColor.Println("Invalid domain format")
+		errorColor.Println("Invalid domain format. Please enter a valid domain name (e.g., example.com)")
 		PressEnterToContinue()
 		return
 	}
@@ -1141,7 +1217,7 @@ func addCustomIPRange(db database.DatabaseStore, fwManager *firewall.FirewallMan
 	PressEnterToContinue()
 }
 
-// isValidDomain performs basic domain validation
+// isValidDomain performs comprehensive domain validation
 func isValidDomain(domain string) bool {
 	if len(domain) == 0 || len(domain) > 253 {
 		return false
@@ -1156,28 +1232,71 @@ func isValidDomain(domain string) bool {
 		return false
 	}
 
+	// Check for invalid characters
+	if strings.ContainsAny(domain, " \t\n\r\f\v!@#$%^&*()+=[]{}|\\:;\"'<>,?/") {
+		return false
+	}
+
 	// Basic regex-like validation
 	parts := strings.Split(domain, ".")
 	if len(parts) < 2 {
 		return false
 	}
 
-	for _, part := range parts {
+	// Check TLD is valid (at least 2 characters, only letters)
+	tld := parts[len(parts)-1]
+	if len(tld) < 2 {
+		return false
+	}
+	for _, char := range tld {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')) {
+			return false
+		}
+	}
+
+	for i, part := range parts {
 		if len(part) == 0 || len(part) > 63 {
 			return false
 		}
 
 		// Check each part contains only valid characters
-		for _, char := range part {
+		for j, char := range part {
 			if !((char >= 'a' && char <= 'z') ||
+				(char >= 'A' && char <= 'Z') ||
 				(char >= '0' && char <= '9') ||
 				char == '-') {
 				return false
 			}
+
+			// Cannot start or end with hyphen
+			if char == '-' && (j == 0 || j == len(part)-1) {
+				return false
+			}
 		}
 
-		// Cannot start or end with hyphen
-		if strings.HasPrefix(part, "-") || strings.HasSuffix(part, "-") {
+		// First part cannot be numeric only (except for IP addresses which we reject)
+		if i == 0 {
+			isNumeric := true
+			for _, char := range part {
+				if !((char >= '0' && char <= '9') || char == '-') {
+					isNumeric = false
+					break
+				}
+			}
+			if isNumeric {
+				return false
+			}
+		}
+	}
+
+	// Check for common invalid patterns
+	invalidPatterns := []string{
+		"localhost", "127.0.0.1", "0.0.0.0", "255.255.255.255",
+		"::1", "::", "fe80::", "ff00::",
+	}
+
+	for _, pattern := range invalidPatterns {
+		if strings.EqualFold(domain, pattern) {
 			return false
 		}
 	}
@@ -1211,12 +1330,22 @@ func ManageIPList(db database.DatabaseStore, fwManager *firewall.FirewallManager
 				return
 			}
 
-			// Type assert the IPs
+			// Type assert the IPs with better error handling
 			var ips []database.IP
-			if ipSlice, ok := ipsInterface.([]database.IP); ok {
-				ips = ipSlice
-			} else {
-				errorColor.Println("Error: Unable to parse IP data")
+			switch v := ipsInterface.(type) {
+			case []database.IP:
+				ips = v
+			case []*database.IP:
+				// Convert pointer slice to value slice
+				for _, ip := range v {
+					if ip != nil {
+						ips = append(ips, *ip)
+					}
+				}
+			default:
+				errorColor.Printf("Error: Unable to parse IP data (type: %T)\n", ipsInterface)
+				warningColor.Println("This might be a database compatibility issue")
+				infoColor.Println("Try switching database type in configuration")
 				PressEnterToContinue()
 				return
 			}

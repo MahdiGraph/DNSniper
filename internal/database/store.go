@@ -67,8 +67,14 @@ func (s *Store) CleanupExpired() error {
 		}
 	}()
 
+	// Count records before cleanup for logging
+	var beforeDomains, beforeIPs, beforeRanges int
+	tx.QueryRow("SELECT COUNT(*) FROM domains WHERE expires_at IS NOT NULL AND expires_at < datetime('now') AND is_custom = 0").Scan(&beforeDomains)
+	tx.QueryRow("SELECT COUNT(*) FROM ips WHERE expires_at IS NOT NULL AND expires_at < datetime('now') AND is_custom = 0").Scan(&beforeIPs)
+	tx.QueryRow("SELECT COUNT(*) FROM ip_ranges WHERE expires_at IS NOT NULL AND expires_at < datetime('now') AND is_custom = 0").Scan(&beforeRanges)
+
 	// Delete expired domains
-	_, err = tx.Exec(`
+	result, err := tx.Exec(`
         DELETE FROM domains 
         WHERE expires_at IS NOT NULL 
         AND expires_at < datetime('now') 
@@ -77,9 +83,10 @@ func (s *Store) CleanupExpired() error {
 	if err != nil {
 		return fmt.Errorf("failed to delete expired domains: %w", err)
 	}
+	domainsDeleted, _ := result.RowsAffected()
 
 	// Delete expired IPs
-	_, err = tx.Exec(`
+	result, err = tx.Exec(`
         DELETE FROM ips 
         WHERE expires_at IS NOT NULL 
         AND expires_at < datetime('now') 
@@ -88,9 +95,10 @@ func (s *Store) CleanupExpired() error {
 	if err != nil {
 		return fmt.Errorf("failed to delete expired IPs: %w", err)
 	}
+	ipsDeleted, _ := result.RowsAffected()
 
 	// Delete expired IP ranges
-	_, err = tx.Exec(`
+	result, err = tx.Exec(`
         DELETE FROM ip_ranges 
         WHERE expires_at IS NOT NULL 
         AND expires_at < datetime('now') 
@@ -99,14 +107,58 @@ func (s *Store) CleanupExpired() error {
 	if err != nil {
 		return fmt.Errorf("failed to delete expired IP ranges: %w", err)
 	}
+	rangesDeleted, _ := result.RowsAffected()
 
-	// Optimize database occasionally
-	_, err = tx.Exec("PRAGMA optimize")
+	// Clean up orphaned IPs (IPs without domains)
+	result, err = tx.Exec(`
+        DELETE FROM ips 
+        WHERE domain_id IS NOT NULL 
+        AND domain_id NOT IN (SELECT id FROM domains)
+    `)
 	if err != nil {
-		return fmt.Errorf("failed to optimize database: %w", err)
+		return fmt.Errorf("failed to delete orphaned IPs: %w", err)
+	}
+	orphanedDeleted, _ := result.RowsAffected()
+
+	// Clean up old agent logs (keep only last 30 days)
+	result, err = tx.Exec(`
+        DELETE FROM agent_logs 
+        WHERE timestamp < datetime('now', '-30 days')
+    `)
+	if err != nil {
+		return fmt.Errorf("failed to delete old agent logs: %w", err)
+	}
+	logsDeleted, _ := result.RowsAffected()
+
+	// Optimize database occasionally (every 100 cleanups or if significant deletions)
+	totalDeleted := domainsDeleted + ipsDeleted + rangesDeleted + orphanedDeleted
+	if totalDeleted > 100 {
+		_, err = tx.Exec("PRAGMA optimize")
+		if err != nil {
+			return fmt.Errorf("failed to optimize database: %w", err)
+		}
+
+		// Also run VACUUM if we deleted a lot
+		if totalDeleted > 1000 {
+			_, err = tx.Exec("VACUUM")
+			if err != nil {
+				return fmt.Errorf("failed to vacuum database: %w", err)
+			}
+		}
 	}
 
-	return tx.Commit()
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to commit cleanup transaction: %w", err)
+	}
+
+	// Log cleanup results if significant
+	if totalDeleted > 0 {
+		fmt.Printf("Cleanup completed: %d domains, %d IPs, %d ranges, %d orphaned IPs, %d old logs deleted\n",
+			domainsDeleted, ipsDeleted, rangesDeleted, orphanedDeleted, logsDeleted)
+	}
+
+	return nil
 }
 
 // Domain methods
@@ -183,7 +235,10 @@ func (s *Store) GetDomain(domainName string) (*Domain, error) {
 		&domain.ExpiresAt, &domain.Source, &domain.LastChecked,
 	)
 	if err != nil {
-		return nil, err
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get domain: %w", err)
 	}
 	return domain, nil
 }
@@ -196,37 +251,44 @@ func (s *Store) IsDomainWhitelisted(domain string) (bool, error) {
 		"SELECT is_whitelisted FROM domains WHERE domain = ?",
 		domain,
 	).Scan(&isWhitelisted)
-	if err == sql.ErrNoRows {
-		return false, nil
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check if domain is whitelisted: %w", err)
 	}
-	return isWhitelisted, err
+	return isWhitelisted, nil
 }
 
 // RemoveDomain removes a domain from the database
 func (s *Store) RemoveDomain(domainID int64) error {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
 		if err != nil {
-			tx.Rollback()
+			if rbErr := tx.Rollback(); rbErr != nil {
+				err = fmt.Errorf("failed to rollback transaction: %v (original error: %w)", rbErr, err)
+			}
 		}
 	}()
 
 	// Remove associated IPs
-	_, err = tx.Exec("DELETE FROM ips WHERE domain_id = ?", domainID)
-	if err != nil {
-		return err
+	if _, err = tx.Exec("DELETE FROM ips WHERE domain_id = ?", domainID); err != nil {
+		return fmt.Errorf("failed to remove associated IPs: %w", err)
 	}
 
 	// Remove domain
-	_, err = tx.Exec("DELETE FROM domains WHERE id = ?", domainID)
-	if err != nil {
-		return err
+	if _, err = tx.Exec("DELETE FROM domains WHERE id = ?", domainID); err != nil {
+		return fmt.Errorf("failed to remove domain: %w", err)
 	}
 
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
 
 // GetDomains gets domains with pagination
@@ -523,7 +585,7 @@ func (s *Store) AddIPWithRotation(domainID int64, ipAddress string, maxIPsPerDom
 		// IP exists, just update domain and expiration
 		if isCustomIP {
 			// Don't modify custom IPs
-			return nil
+			return tx.Commit()
 		}
 
 		var expiresAt interface{} = nil
@@ -538,67 +600,69 @@ func (s *Store) AddIPWithRotation(domainID int64, ipAddress string, maxIPsPerDom
 		if err != nil {
 			return err
 		}
+		return tx.Commit()
 	} else if err != sql.ErrNoRows {
 		return err
-	} else {
-		// Count existing IPs for this domain
-		var ipCount int
-		err = tx.QueryRow(
-			"SELECT COUNT(*) FROM ips WHERE domain_id = ? AND is_custom = 0",
-			domainID,
-		).Scan(&ipCount)
+	}
+
+	// IP doesn't exist, add new IP with rotation logic
+	// Count existing IPs for this domain
+	var ipCount int
+	err = tx.QueryRow(
+		"SELECT COUNT(*) FROM ips WHERE domain_id = ? AND is_custom = 0",
+		domainID,
+	).Scan(&ipCount)
+	if err != nil {
+		return err
+	}
+
+	// If max IPs reached, remove oldest IPs
+	if ipCount >= maxIPsPerDomain {
+		// Find oldest IPs to remove
+		rows, err := tx.Query(`
+            SELECT id FROM ips 
+            WHERE domain_id = ? AND is_custom = 0 
+            ORDER BY added_at ASC 
+            LIMIT ?
+        `, domainID, ipCount-(maxIPsPerDomain-1))
 		if err != nil {
 			return err
 		}
+		defer rows.Close()
 
-		// If max IPs reached, remove oldest IPs
-		if ipCount >= maxIPsPerDomain {
-			// Find oldest IPs to remove
-			rows, err := tx.Query(`
-                SELECT id FROM ips 
-                WHERE domain_id = ? AND is_custom = 0 
-                ORDER BY added_at ASC 
-                LIMIT ?
-            `, domainID, ipCount-(maxIPsPerDomain-1))
+		var idsToRemove []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				return err
+			}
+			idsToRemove = append(idsToRemove, id)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		// Remove oldest IPs
+		for _, id := range idsToRemove {
+			_, err := tx.Exec("DELETE FROM ips WHERE id = ?", id)
 			if err != nil {
 				return err
 			}
-			defer rows.Close()
-
-			var idsToRemove []int64
-			for rows.Next() {
-				var id int64
-				if err := rows.Scan(&id); err != nil {
-					return err
-				}
-				idsToRemove = append(idsToRemove, id)
-			}
-			if err := rows.Err(); err != nil {
-				return err
-			}
-
-			// Remove oldest IPs
-			for _, id := range idsToRemove {
-				_, err := tx.Exec("DELETE FROM ips WHERE id = ?", id)
-				if err != nil {
-					return err
-				}
-			}
 		}
+	}
 
-		// Add new IP
-		var expiresAt interface{} = nil
-		if !isCustomDomain && expiration > 0 {
-			expiresAt = time.Now().Add(expiration)
-		}
+	// Add new IP
+	var expiresAt interface{} = nil
+	if !isCustomDomain && expiration > 0 {
+		expiresAt = time.Now().Add(expiration)
+	}
 
-		_, err = tx.Exec(`
-            INSERT INTO ips (ip_address, is_whitelisted, is_custom, domain_id, expires_at) 
-            VALUES (?, 0, ?, ?, ?)
-        `, ipAddress, isCustomDomain, domainID, expiresAt)
-		if err != nil {
-			return err
-		}
+	_, err = tx.Exec(`
+        INSERT INTO ips (ip_address, is_whitelisted, is_custom, domain_id, expires_at) 
+        VALUES (?, 0, ?, ?, ?)
+    `, ipAddress, isCustomDomain, domainID, expiresAt)
+	if err != nil {
+		return err
 	}
 
 	return tx.Commit()
