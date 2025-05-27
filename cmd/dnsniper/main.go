@@ -240,6 +240,10 @@ func handleUninstall() {
 	os.RemoveAll("/var/log/dnsniper")
 	os.RemoveAll("/var/lib/dnsniper")
 
+	// Note: We intentionally do NOT remove the ipset service or /etc/ipset.conf
+	// as these may be used by other applications or the system itself
+	fmt.Println("Note: ipset service and /etc/ipset.conf are preserved for system compatibility")
+
 	fmt.Println("✅ DNSniper uninstallation completed successfully!")
 	fmt.Println("Thank you for using DNSniper!")
 }

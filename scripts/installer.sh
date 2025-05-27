@@ -358,6 +358,10 @@ uninstall_dnsniper() {
         rm -rf "$CONFIG_DIR"
         rm -rf "$LOG_DIR"
         rm -rf "$DATA_DIR"
+        
+        # Note: We intentionally do NOT remove the ipset service or /etc/ipset.conf
+        # as these may be used by other applications or the system itself
+        print_info "Note: ipset service and /etc/ipset.conf are preserved for system compatibility"
     fi
     
     print_success "DNSniper uninstalled successfully"
@@ -715,11 +719,53 @@ enable_persistence_services() {
     
     # Check for ipset persistence
     if [ -f /etc/systemd/system/ipset.service ]; then
-        print_info "Enabling ipset service"
-        systemctl enable ipset
-        systemctl start ipset
-        print_success "ipset service enabled"
-    else
+        print_info "Found existing ipset service"
+        
+        # Check if the service is already enabled and working
+        if systemctl is-enabled ipset >/dev/null 2>&1; then
+            print_info "ipset service is already enabled"
+            
+            # Try to start it if not running
+            if ! systemctl is-active ipset >/dev/null 2>&1; then
+                print_info "Starting existing ipset service"
+                systemctl start ipset 2>/dev/null || {
+                    print_warning "Failed to start existing ipset service, will recreate"
+                    # Remove the problematic service and recreate
+                    systemctl stop ipset 2>/dev/null || true
+                    systemctl disable ipset 2>/dev/null || true
+                    rm -f /etc/systemd/system/ipset.service
+                    systemctl daemon-reload
+                    # Fall through to create new service
+                }
+            fi
+            
+            # If service is working, we're done
+            if systemctl is-active ipset >/dev/null 2>&1; then
+                print_success "ipset service is running"
+            else
+                # Service exists but not working, recreate it
+                print_info "Recreating ipset service configuration"
+                systemctl stop ipset 2>/dev/null || true
+                systemctl disable ipset 2>/dev/null || true
+                rm -f /etc/systemd/system/ipset.service
+                systemctl daemon-reload
+                # Fall through to create new service
+            fi
+        else
+            print_info "Enabling existing ipset service"
+            systemctl enable ipset
+            systemctl start ipset 2>/dev/null || {
+                print_warning "Existing ipset service failed to start, recreating"
+                systemctl disable ipset 2>/dev/null || true
+                rm -f /etc/systemd/system/ipset.service
+                systemctl daemon-reload
+                # Fall through to create new service
+            }
+        fi
+    fi
+    
+    # Create ipset service if it doesn't exist or was removed due to issues
+    if [ ! -f /etc/systemd/system/ipset.service ]; then
         print_info "Creating ipset persistence configuration"
         
         # Create empty ipset configuration file if it doesn't exist
@@ -728,7 +774,7 @@ enable_persistence_services() {
             touch /etc/ipset.conf
         fi
         
-        # Create basic ipset persistence
+        # Create basic ipset persistence service
         cat > /etc/systemd/system/ipset.service << 'EOF'
 [Unit]
 Description=IP Sets
@@ -744,7 +790,13 @@ TimeoutSec=0
 [Install]
 WantedBy=multi-user.target
 EOF
+        
+        # Reload systemd and enable the service
+        systemctl daemon-reload
         systemctl enable ipset
+        systemctl start ipset 2>/dev/null || {
+            print_warning "ipset service created but failed to start (this is normal on first run)"
+        }
         print_success "ipset persistence configured"
     fi
 }
