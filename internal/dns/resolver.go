@@ -25,11 +25,11 @@ type StandardResolver struct {
 // NewStandardResolver creates a new standard resolver with default settings
 func NewStandardResolver() *StandardResolver {
 	return &StandardResolver{
-		Timeout:    5 * time.Second,
-		RetryCount: 2,
-		RetryDelay: 500 * time.Millisecond,
-		MaxResults: 50,
-		QueryTypes: []string{"A", "AAAA"}, // Default to both IPv4 and IPv6
+		Timeout:    3 * time.Second,        // Reduced timeout to prevent hanging
+		RetryCount: 1,                      // Reduced retries to speed up processing
+		RetryDelay: 200 * time.Millisecond, // Faster retry delay
+		MaxResults: 20,                     // Reduced max results for faster processing
+		QueryTypes: []string{"A", "AAAA"},  // Default to both IPv4 and IPv6
 	}
 }
 

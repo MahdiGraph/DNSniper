@@ -935,15 +935,13 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 	}
 
 	// Generate whitelist rules first (higher priority)
+	// Always generate rules for ipsets that should exist, regardless of current existence
 	if len(whitelistSets) > 0 {
 		rules = append(rules, "# Whitelist rules (priority protection)")
 		for _, chain := range chains {
 			for _, setName := range whitelistSets {
-				// Only add rules for sets that actually exist
-				if m.ipsetExists(setName) {
-					rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s src -j ACCEPT", chain, setName))
-					rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s dst -j ACCEPT", chain, setName))
-				}
+				rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s src -j ACCEPT", chain, setName))
+				rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s dst -j ACCEPT", chain, setName))
 			}
 		}
 	}
@@ -953,11 +951,8 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 		rules = append(rules, "# Blocklist rules")
 		for _, chain := range chains {
 			for _, setName := range blocklistSets {
-				// Only add rules for sets that actually exist
-				if m.ipsetExists(setName) {
-					rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s src -j DROP", chain, setName))
-					rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s dst -j DROP", chain, setName))
-				}
+				rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s src -j DROP", chain, setName))
+				rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s dst -j DROP", chain, setName))
 			}
 		}
 	}

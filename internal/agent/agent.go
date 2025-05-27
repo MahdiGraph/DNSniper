@@ -381,15 +381,47 @@ func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) e
 	resolver := a.selectDNSResolver()
 	ips, err := a.resolver.ResolveDomain(domain, resolver)
 	if err != nil {
-		// Log error but don't fail the entire process
-		a.logger.Warnf("Failed to resolve domain %s: %v", domain, err)
+		// Log error but don't fail the entire process - just skip this domain
+		a.logger.Debugf("Failed to resolve domain %s: %v", domain, err)
+		return nil
+	}
+
+	// Check if domain resolved to any IPs
+	if len(ips) == 0 {
+		a.logger.Debugf("Domain %s resolved to no IPs, skipping", domain)
 		return nil
 	}
 
 	// Process resolved IPs
+	validIPsAdded := 0
 	for _, ip := range ips {
 		// Skip invalid IPs
 		if ip == "" {
+			continue
+		}
+
+		// Parse IP to validate and check if it's critical
+		parsedIP := net.ParseIP(ip)
+		if parsedIP == nil {
+			a.logger.Debugf("Invalid IP %s for domain %s, skipping", ip, domain)
+			continue
+		}
+
+		// Check if IP is critical/dangerous to block
+		if a.isCriticalIP(parsedIP) {
+			a.logger.Warnf("Skipping critical IP %s for domain %s (potential security risk)", ip, domain)
+			continue
+		}
+
+		// Check if IP is whitelisted (priority protection)
+		isIPWhitelisted, err := a.db.IsIPWhitelisted(ip)
+		if err != nil {
+			a.logger.Warnf("Failed to check if IP %s is whitelisted: %v", ip, err)
+			continue
+		}
+
+		if isIPWhitelisted {
+			a.logger.Debugf("IP %s is whitelisted (priority protected), skipping", ip)
 			continue
 		}
 
@@ -399,8 +431,13 @@ func (a *Agent) processDomain(ctx context.Context, domain string, runID int64) e
 			continue
 		}
 
+		validIPsAdded++
 		// Update statistics
 		atomic.AddInt32(&a.ipsBlocked, 1)
+	}
+
+	if validIPsAdded == 0 {
+		a.logger.Debugf("No valid IPs added for domain %s", domain)
 	}
 
 	// Update statistics
@@ -435,6 +472,91 @@ func isValidDomain(domain string) bool {
 	// This regex is simplified but catches most invalid domains
 	domainRegex := regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
 	return domainRegex.MatchString(domain)
+}
+
+// isCriticalIP checks if an IP is critical/dangerous to block (system protection)
+func (a *Agent) isCriticalIP(ip net.IP) bool {
+	// Check for null/invalid IP
+	if ip == nil {
+		return true
+	}
+
+	// Check for 0.0.0.0 (any address)
+	if ip.Equal(net.IPv4zero) {
+		return true
+	}
+
+	// Check for IPv6 unspecified address (::)
+	if ip.Equal(net.IPv6zero) {
+		return true
+	}
+
+	// Check for loopback addresses (127.0.0.1, ::1)
+	if ip.IsLoopback() {
+		return true
+	}
+
+	// Check for multicast addresses
+	if ip.IsMulticast() {
+		return true
+	}
+
+	// Check for link-local addresses
+	if ip.IsLinkLocalUnicast() {
+		return true
+	}
+
+	// Check for broadcast address (255.255.255.255)
+	if ip.Equal(net.IPv4bcast) {
+		return true
+	}
+
+	// Check for private IP ranges (could be local infrastructure)
+	if isPrivateIP(ip) {
+		return true
+	}
+
+	// Check for specific dangerous IPv4 ranges
+	if ip4 := ip.To4(); ip4 != nil {
+		// 0.0.0.0/8 (this network)
+		if ip4[0] == 0 {
+			return true
+		}
+		// 224.0.0.0/4 (multicast)
+		if ip4[0] >= 224 && ip4[0] <= 239 {
+			return true
+		}
+		// 240.0.0.0/4 (reserved)
+		if ip4[0] >= 240 {
+			return true
+		}
+		// 198.18.0.0/15 (benchmark testing)
+		if ip4[0] == 198 && (ip4[1] == 18 || ip4[1] == 19) {
+			return true
+		}
+		// 203.0.113.0/24 (documentation)
+		if ip4[0] == 203 && ip4[1] == 0 && ip4[2] == 113 {
+			return true
+		}
+	}
+
+	// Check for IPv6 special addresses
+	if ip.To4() == nil {
+		// Check for documentation ranges (2001:db8::/32)
+		if len(ip) >= 4 && ip[0] == 0x20 && ip[1] == 0x01 && ip[2] == 0x0d && ip[3] == 0xb8 {
+			return true
+		}
+		// Check for 6to4 (2002::/16)
+		if len(ip) >= 2 && ip[0] == 0x20 && ip[1] == 0x02 {
+			return true
+		}
+	}
+
+	// TODO: Add check for server's own IP addresses and gateway
+	// This would require getting system network configuration
+	// For now, we rely on the whitelist to protect critical IPs
+
+	return false
 }
 
 // isPrivateIP checks if an IP is private with comprehensive checks
