@@ -543,45 +543,49 @@ func contains(slice []string, str string) bool {
 
 // IPSetManager methods
 func (m *IPSetManager) EnsureSetsExist() error {
-	// Define set names based on IPv4/IPv6 support with dnsniper prefix
-	setNames := []string{
-		"dnsniper-whitelist-ip-v4", "dnsniper-whitelist-range-v4",
-		"dnsniper-blocklist-ip-v4", "dnsniper-blocklist-range-v4",
+	setDefs := []struct {
+		Name   string
+		Type   string
+		Family string
+	}{
+		{"dnsniper-whitelist-ip-v4", "hash:ip", "inet"},
+		{"dnsniper-whitelist-range-v4", "hash:net", "inet"},
+		{"dnsniper-blocklist-ip-v4", "hash:ip", "inet"},
+		{"dnsniper-blocklist-range-v4", "hash:net", "inet"},
 	}
 	if m.enableIPv6 {
-		setNames = append(setNames,
-			"dnsniper-whitelist-ip-v6", "dnsniper-whitelist-range-v6",
-			"dnsniper-blocklist-ip-v6", "dnsniper-blocklist-range-v6",
+		setDefs = append(setDefs,
+			struct{ Name, Type, Family string }{"dnsniper-whitelist-ip-v6", "hash:ip", "inet6"},
+			struct{ Name, Type, Family string }{"dnsniper-whitelist-range-v6", "hash:net", "inet6"},
+			struct{ Name, Type, Family string }{"dnsniper-blocklist-ip-v6", "hash:ip", "inet6"},
+			struct{ Name, Type, Family string }{"dnsniper-blocklist-range-v6", "hash:net", "inet6"},
 		)
 	}
 
-	// Create each set if it doesn't exist
-	for _, setName := range setNames {
+	for _, def := range setDefs {
 		// Check if set exists
-		checkCmd := exec.Command("ipset", "list", setName)
-		if err := checkCmd.Run(); err != nil {
+		checkCmd := exec.Command("ipset", "list", def.Name)
+		output, err := checkCmd.CombinedOutput()
+		if err != nil {
 			// Set doesn't exist, create it
-			var createCmd *exec.Cmd
-			if strings.Contains(setName, "-ip-") {
-				// IP sets use hash:ip
-				createCmd = exec.Command("ipset", "create", setName, "hash:ip", "family", "inet")
-				if strings.Contains(setName, "v6") {
-					createCmd = exec.Command("ipset", "create", setName, "hash:ip", "family", "inet6")
-				}
-			} else {
-				// Range sets use hash:net
-				createCmd = exec.Command("ipset", "create", setName, "hash:net", "family", "inet")
-				if strings.Contains(setName, "v6") {
-					createCmd = exec.Command("ipset", "create", setName, "hash:net", "family", "inet6")
-				}
+			createCmd := exec.Command("ipset", "create", def.Name, def.Type, "family", def.Family)
+			if out, err := createCmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("failed to create ipset %s: %v, output: %s", def.Name, err, string(out))
 			}
-
-			if err := createCmd.Run(); err != nil {
-				return fmt.Errorf("failed to create ipset %s: %w", setName, err)
+			continue
+		}
+		// Set exists, check type and family
+		outStr := string(output)
+		if !strings.Contains(outStr, "Type: "+def.Type) || !strings.Contains(outStr, "Family: "+def.Family) {
+			// Destroy and recreate
+			destroyCmd := exec.Command("ipset", "destroy", def.Name)
+			destroyCmd.Run() // Ignore error
+			createCmd := exec.Command("ipset", "create", def.Name, def.Type, "family", def.Family)
+			if out, err := createCmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("failed to recreate ipset %s: %v, output: %s", def.Name, err, string(out))
 			}
 		}
 	}
-
 	return nil
 }
 
@@ -627,12 +631,10 @@ func (m *IPSetManager) CleanupAllSets() error {
 }
 
 func (m *IPSetManager) AddToBlocklist(ip string) error {
-	// Determine if it's IPv4 or IPv6 using proper validation
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil {
 		return fmt.Errorf("invalid IP address: %s", ip)
 	}
-
 	isIPv6 := parsedIP.To4() == nil
 	setName := "dnsniper-blocklist-ip-v4"
 	if isIPv6 {
@@ -641,21 +643,22 @@ func (m *IPSetManager) AddToBlocklist(ip string) error {
 		}
 		setName = "dnsniper-blocklist-ip-v6"
 	}
-
 	cmd := exec.Command("ipset", "add", setName, ip)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add IP %s to blocklist: %w", ip, err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to add IP %s to %s: %v, output: %s", ip, setName, err, string(out))
+	}
+	verifyCmd := exec.Command("ipset", "test", setName, ip)
+	if err := verifyCmd.Run(); err != nil {
+		return fmt.Errorf("ipset test failed for %s %s: %v", setName, ip, err)
 	}
 	return nil
 }
 
 func (m *IPSetManager) AddToWhitelist(ip string) error {
-	// Determine if it's IPv4 or IPv6 using proper validation
 	parsedIP := net.ParseIP(ip)
 	if parsedIP == nil {
 		return fmt.Errorf("invalid IP address: %s", ip)
 	}
-
 	isIPv6 := parsedIP.To4() == nil
 	setName := "dnsniper-whitelist-ip-v4"
 	if isIPv6 {
@@ -664,10 +667,13 @@ func (m *IPSetManager) AddToWhitelist(ip string) error {
 		}
 		setName = "dnsniper-whitelist-ip-v6"
 	}
-
 	cmd := exec.Command("ipset", "add", setName, ip)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add IP %s to whitelist: %w", ip, err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to add IP %s to %s: %v, output: %s", ip, setName, err, string(out))
+	}
+	verifyCmd := exec.Command("ipset", "test", setName, ip)
+	if err := verifyCmd.Run(); err != nil {
+		return fmt.Errorf("ipset test failed for %s %s: %v", setName, ip, err)
 	}
 	return nil
 }
@@ -713,12 +719,10 @@ func (m *IPSetManager) RemoveFromWhitelist(ip string) error {
 }
 
 func (m *IPSetManager) AddRangeToBlocklist(cidr string) error {
-	// Validate and determine if it's IPv4 or IPv6
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return fmt.Errorf("invalid CIDR: %s", cidr)
 	}
-
 	isIPv6 := ip.To4() == nil
 	setName := "dnsniper-blocklist-range-v4"
 	if isIPv6 {
@@ -727,21 +731,22 @@ func (m *IPSetManager) AddRangeToBlocklist(cidr string) error {
 		}
 		setName = "dnsniper-blocklist-range-v6"
 	}
-
 	cmd := exec.Command("ipset", "add", setName, cidr)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add range %s to blocklist: %w", cidr, err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to add range %s to %s: %v, output: %s", cidr, setName, err, string(out))
+	}
+	verifyCmd := exec.Command("ipset", "test", setName, cidr)
+	if err := verifyCmd.Run(); err != nil {
+		return fmt.Errorf("ipset test failed for %s %s: %v", setName, cidr, err)
 	}
 	return nil
 }
 
 func (m *IPSetManager) AddRangeToWhitelist(cidr string) error {
-	// Validate and determine if it's IPv4 or IPv6
 	ip, _, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return fmt.Errorf("invalid CIDR: %s", cidr)
 	}
-
 	isIPv6 := ip.To4() == nil
 	setName := "dnsniper-whitelist-range-v4"
 	if isIPv6 {
@@ -750,10 +755,13 @@ func (m *IPSetManager) AddRangeToWhitelist(cidr string) error {
 		}
 		setName = "dnsniper-whitelist-range-v6"
 	}
-
 	cmd := exec.Command("ipset", "add", setName, cidr)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add range %s to whitelist: %w", cidr, err)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to add range %s to %s: %v, output: %s", cidr, setName, err, string(out))
+	}
+	verifyCmd := exec.Command("ipset", "test", setName, cidr)
+	if err := verifyCmd.Run(); err != nil {
+		return fmt.Errorf("ipset test failed for %s %s: %v", setName, cidr, err)
 	}
 	return nil
 }
@@ -856,7 +864,7 @@ func (m *IPTablesManager) GenerateRulesFile(chains []string, ipsetNames []string
 	saveCmd := exec.Command(cmd)
 	currentRules, err := saveCmd.Output()
 
-	// برای IPv6 اگر خروجی خالی بود یا error داد، یک ساختار کامل بساز
+	// برای IPv6 اگر خروجی خالی بود یک ساختار کامل بساز
 	if err != nil || len(currentRules) == 0 {
 		if isIPv6 {
 			// ساختار کامل برای IPv6 با تمام table ها
@@ -1005,7 +1013,6 @@ COMMIT
 	return nil
 }
 
-// generateDNSniperRules generates DNSniper-specific iptables rules
 func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []string, isIPv6 bool) []string {
 	var rules []string
 
@@ -1018,38 +1025,44 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 		rules = append(rules, "# IPv4 rules")
 	}
 
+	// اضافه کردن debug logging دقیق‌تر
+	rules = append(rules, fmt.Sprintf("# Debug: Processing %d total ipset names for %s", len(ipsetNames),
+		map[bool]string{true: "IPv6", false: "IPv4"}[isIPv6]))
+
 	// Separate whitelist and blocklist sets with proper IPv4/IPv6 filtering
 	whitelistSets := []string{}
 	blocklistSets := []string{}
 
-	// Debug logging
-	if isIPv6 {
-		rules = append(rules, fmt.Sprintf("# Debug: Processing %d total ipset names", len(ipsetNames)))
-	}
+	// بررسی دقیق‌تر ipset ها
+	var availableIPSets []string
+	var missingIPSets []string
 
 	for _, setName := range ipsetNames {
 		// Check if set exists first
 		if !m.ipsetExists(setName) {
-			rules = append(rules, fmt.Sprintf("# Warning: ipset %s does not exist", setName))
+			missingIPSets = append(missingIPSets, setName)
 			continue
 		}
+
+		availableIPSets = append(availableIPSets, setName)
 
 		// Debug logging for IPv6
 		isSetIPv6 := strings.Contains(setName, "v6")
 
-		if isIPv6 {
-			rules = append(rules, fmt.Sprintf("# Debug: Checking set %s (isSetIPv6=%v)", setName, isSetIPv6))
-		}
+		rules = append(rules, fmt.Sprintf("# Debug: Set %s exists (isIPv6=%v, needed=%v)",
+			setName, isSetIPv6, isIPv6))
 
 		// Filter by IPv4/IPv6 compatibility
 		if isIPv6 {
 			// For IPv6 rules, only include v6 sets
 			if !isSetIPv6 {
+				rules = append(rules, fmt.Sprintf("# Skipping %s (IPv4 set, need IPv6)", setName))
 				continue
 			}
 		} else {
 			// For IPv4 rules, only include v4 sets (exclude v6)
 			if isSetIPv6 {
+				rules = append(rules, fmt.Sprintf("# Skipping %s (IPv6 set, need IPv4)", setName))
 				continue
 			}
 		}
@@ -1062,15 +1075,22 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 		}
 	}
 
+	// گزارش ipset های missing
+	if len(missingIPSets) > 0 {
+		rules = append(rules, fmt.Sprintf("# WARNING: Missing ipsets: %s", strings.Join(missingIPSets, ", ")))
+	}
+
 	// Add debug comments about which sets are being processed
-	if len(whitelistSets) > 0 || len(blocklistSets) > 0 {
-		rules = append(rules, fmt.Sprintf("# Processing %d whitelist sets and %d blocklist sets", len(whitelistSets), len(blocklistSets)))
-		for _, setName := range whitelistSets {
-			rules = append(rules, fmt.Sprintf("# Whitelist set: %s", setName))
-		}
-		for _, setName := range blocklistSets {
-			rules = append(rules, fmt.Sprintf("# Blocklist set: %s", setName))
-		}
+	rules = append(rules, fmt.Sprintf("# Available %s ipsets: %d",
+		map[bool]string{true: "IPv6", false: "IPv4"}[isIPv6], len(availableIPSets)))
+	rules = append(rules, fmt.Sprintf("# Processing %d whitelist sets and %d blocklist sets",
+		len(whitelistSets), len(blocklistSets)))
+
+	for _, setName := range whitelistSets {
+		rules = append(rules, fmt.Sprintf("# Whitelist set: %s", setName))
+	}
+	for _, setName := range blocklistSets {
+		rules = append(rules, fmt.Sprintf("# Blocklist set: %s", setName))
 	}
 
 	// Generate whitelist rules first (higher priority)
@@ -1097,13 +1117,17 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 		}
 	}
 
-	// Add final comment
+	// Add warning if no rules generated
 	if len(whitelistSets) == 0 && len(blocklistSets) == 0 {
 		if isIPv6 {
 			rules = append(rules, "# WARNING: No IPv6 ipsets found for DNSniper rules!")
-			rules = append(rules, "# This might indicate that IPv6 ipsets are not created or named incorrectly")
+			rules = append(rules, "# This might indicate that:")
+			rules = append(rules, "#   1. IPv6 ipsets are not created")
+			rules = append(rules, "#   2. IPv6 is disabled in configuration")
+			rules = append(rules, "#   3. ipset creation failed")
+			rules = append(rules, "# Check with: ipset list | grep v6")
 		} else {
-			rules = append(rules, "# No matching ipsets found for this IP version")
+			rules = append(rules, "# WARNING: No IPv4 ipsets found for DNSniper rules!")
 		}
 	}
 
