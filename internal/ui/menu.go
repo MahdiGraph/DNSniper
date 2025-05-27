@@ -147,6 +147,7 @@ func RunAgentNow() {
 
 // ShowStatus displays the current status of DNSniper
 func ShowStatus(db database.DatabaseStore, fwManager *firewall.FirewallManager) {
+	ClearScreen()
 	titleColor.Println("\nDNSniper Status:")
 	fmt.Println(string(color.New(color.FgHiCyan).Sprint("=================================================")))
 
@@ -462,6 +463,7 @@ func manageRateLimiting(cfg *config.Settings) {
 
 // ClearFirewallRules clears all firewall rules with detailed progress
 func ClearFirewallRules(fwManager *firewall.FirewallManager) {
+	ClearScreen()
 	clearFirewallRulesWithProgress(fwManager, false)
 }
 
@@ -608,6 +610,8 @@ func clearFirewallRulesWithProgress(fwManager *firewall.FirewallManager, isPartO
 
 // RebuildFirewallRules rebuilds all firewall rules with detailed progress
 func RebuildFirewallRules(fwManager *firewall.FirewallManager) {
+	ClearScreen()
+
 	// Check if agent is running
 	cmd := exec.Command("systemctl", "is-active", "dnsniper-agent.service")
 	output, _ := cmd.Output()
@@ -1004,7 +1008,7 @@ func ManageDomainList(db database.DatabaseStore, fwManager *firewall.FirewallMan
 			infoColor.Println("Sorted alphabetically")
 		case "r", "remove":
 			if len(domains) > 0 {
-				removeDomain(db, domains, currentPage, pageSize, isWhitelist)
+				removeDomain(db, fwManager, domains, currentPage, pageSize, isWhitelist)
 			} else {
 				warningColor.Println("No domains to remove")
 				PressEnterToContinue()
@@ -1045,7 +1049,7 @@ func AddItemToBlacklist(db database.DatabaseStore, fwManager *firewall.FirewallM
 
 		switch option {
 		case "1":
-			addCustomDomain(db, false) // false = blacklist
+			addCustomDomain(db, fwManager, false) // false = blacklist
 		case "2":
 			addCustomIP(db, fwManager, false) // false = blacklist
 		case "3":
@@ -1060,7 +1064,7 @@ func AddItemToBlacklist(db database.DatabaseStore, fwManager *firewall.FirewallM
 }
 
 // addCustomDomain adds a custom domain to blocklist or whitelist
-func addCustomDomain(db database.DatabaseStore, isWhitelist bool) {
+func addCustomDomain(db database.DatabaseStore, fwManager *firewall.FirewallManager, isWhitelist bool) {
 	listType := "blocklist"
 	if isWhitelist {
 		listType = "whitelist"
@@ -1153,6 +1157,17 @@ func addCustomDomain(db database.DatabaseStore, isWhitelist bool) {
 	} else {
 		successColor.Printf("Domain '%s' added successfully to %s\n", domain, listType)
 		infoColor.Println("Custom entries never expire automatically")
+
+		// Reload firewall rules to apply changes immediately
+		fmt.Printf("\n")
+		infoColor.Println("🔄 Updating firewall rules...")
+		if err := fwManager.Reload(); err != nil {
+			errorColor.Printf("Failed to update firewall rules: %v\n", err)
+			warningColor.Println("Domain added to database but firewall rules not updated")
+			infoColor.Println("You can manually rebuild rules from the main menu")
+		} else {
+			successColor.Println("✅ Firewall rules updated successfully")
+		}
 	}
 	PressEnterToContinue()
 }
@@ -1203,6 +1218,17 @@ func addCustomIP(db database.DatabaseStore, fwManager *firewall.FirewallManager,
 	} else {
 		successColor.Printf("IP '%s' added successfully to %s\n", ipAddress, listType)
 		infoColor.Println("Custom entries never expire automatically")
+
+		// Reload firewall rules to apply changes immediately
+		fmt.Printf("\n")
+		infoColor.Println("🔄 Updating firewall rules...")
+		if err := fwManager.Reload(); err != nil {
+			errorColor.Printf("Failed to update firewall rules: %v\n", err)
+			warningColor.Println("IP added to database but firewall rules not updated")
+			infoColor.Println("You can manually rebuild rules from the main menu")
+		} else {
+			successColor.Println("✅ Firewall rules updated successfully")
+		}
 	}
 	PressEnterToContinue()
 }
@@ -1243,6 +1269,17 @@ func addCustomIPRange(db database.DatabaseStore, fwManager *firewall.FirewallMan
 	} else {
 		successColor.Printf("IP range '%s' added successfully to %s\n", cidr, listType)
 		infoColor.Println("Custom entries never expire automatically")
+
+		// Reload firewall rules to apply changes immediately
+		fmt.Printf("\n")
+		infoColor.Println("🔄 Updating firewall rules...")
+		if err := fwManager.Reload(); err != nil {
+			errorColor.Printf("Failed to update firewall rules: %v\n", err)
+			warningColor.Println("IP range added to database but firewall rules not updated")
+			infoColor.Println("You can manually rebuild rules from the main menu")
+		} else {
+			successColor.Println("✅ Firewall rules updated successfully")
+		}
 	}
 	PressEnterToContinue()
 }
@@ -1563,7 +1600,7 @@ func ManageIPList(db database.DatabaseStore, fwManager *firewall.FirewallManager
 				ipsInterface, _, err := db.GetIPs(isWhitelist, currentPage, pageSize, currentSort)
 				if err == nil {
 					if ips, ok := ipsInterface.([]database.IP); ok && len(ips) > 0 {
-						removeIP(db, ips, currentPage, pageSize, isWhitelist)
+						removeIP(db, fwManager, ips, currentPage, pageSize, isWhitelist)
 					} else {
 						warningColor.Println("No IPs to remove")
 						PressEnterToContinue()
@@ -1573,7 +1610,7 @@ func ManageIPList(db database.DatabaseStore, fwManager *firewall.FirewallManager
 				rangesInterface, _, err := db.GetIPRanges(isWhitelist, currentPage, pageSize, currentSort)
 				if err == nil {
 					if ranges, ok := rangesInterface.([]database.IPRange); ok && len(ranges) > 0 {
-						removeIPRange(db, ranges, currentPage, pageSize, isWhitelist)
+						removeIPRange(db, fwManager, ranges, currentPage, pageSize, isWhitelist)
 					} else {
 						warningColor.Println("No IP ranges to remove")
 						PressEnterToContinue()
@@ -1617,7 +1654,7 @@ func AddItemToWhitelist(db database.DatabaseStore, fwManager *firewall.FirewallM
 
 		switch option {
 		case "1":
-			addCustomDomain(db, true) // true = whitelist
+			addCustomDomain(db, fwManager, true) // true = whitelist
 		case "2":
 			addCustomIP(db, fwManager, true) // true = whitelist
 		case "3":
@@ -1736,7 +1773,7 @@ func min(a, b int) int {
 }
 
 // removeDomain handles domain removal
-func removeDomain(db database.DatabaseStore, domains []database.Domain, currentPage, pageSize int, isWhitelist bool) {
+func removeDomain(db database.DatabaseStore, fwManager *firewall.FirewallManager, domains []database.Domain, currentPage, pageSize int, isWhitelist bool) {
 	if len(domains) == 0 {
 		warningColor.Println("No domains available to remove")
 		PressEnterToContinue()
@@ -1777,6 +1814,17 @@ func removeDomain(db database.DatabaseStore, domains []database.Domain, currentP
 		errorColor.Printf("Failed to remove domain: %v\n", err2)
 	} else {
 		successColor.Printf("Domain '%s' removed successfully from %s\n", selectedDomain.Domain, listType)
+
+		// Reload firewall rules to apply changes immediately
+		fmt.Printf("\n")
+		infoColor.Println("🔄 Updating firewall rules...")
+		if err := fwManager.Reload(); err != nil {
+			errorColor.Printf("Failed to update firewall rules: %v\n", err)
+			warningColor.Println("Domain removed from database but firewall rules not updated")
+			infoColor.Println("You can manually rebuild rules from the main menu")
+		} else {
+			successColor.Println("✅ Firewall rules updated successfully")
+		}
 	}
 	PressEnterToContinue()
 }
@@ -1834,7 +1882,7 @@ func showDomainDetails(db database.DatabaseStore, domains []database.Domain, cur
 }
 
 // removeIP handles IP removal
-func removeIP(db database.DatabaseStore, ips []database.IP, currentPage, pageSize int, isWhitelist bool) {
+func removeIP(db database.DatabaseStore, fwManager *firewall.FirewallManager, ips []database.IP, currentPage, pageSize int, isWhitelist bool) {
 	if len(ips) == 0 {
 		warningColor.Println("No IPs available to remove")
 		PressEnterToContinue()
@@ -1875,12 +1923,23 @@ func removeIP(db database.DatabaseStore, ips []database.IP, currentPage, pageSiz
 		errorColor.Printf("Failed to remove IP: %v\n", err2)
 	} else {
 		successColor.Printf("IP '%s' removed successfully from %s\n", selectedIP.IPAddress, listType)
+
+		// Reload firewall rules to apply changes immediately
+		fmt.Printf("\n")
+		infoColor.Println("🔄 Updating firewall rules...")
+		if err := fwManager.Reload(); err != nil {
+			errorColor.Printf("Failed to update firewall rules: %v\n", err)
+			warningColor.Println("IP removed from database but firewall rules not updated")
+			infoColor.Println("You can manually rebuild rules from the main menu")
+		} else {
+			successColor.Println("✅ Firewall rules updated successfully")
+		}
 	}
 	PressEnterToContinue()
 }
 
 // removeIPRange handles IP range removal
-func removeIPRange(db database.DatabaseStore, ranges []database.IPRange, currentPage, pageSize int, isWhitelist bool) {
+func removeIPRange(db database.DatabaseStore, fwManager *firewall.FirewallManager, ranges []database.IPRange, currentPage, pageSize int, isWhitelist bool) {
 	if len(ranges) == 0 {
 		warningColor.Println("No IP ranges available to remove")
 		PressEnterToContinue()
@@ -1921,6 +1980,17 @@ func removeIPRange(db database.DatabaseStore, ranges []database.IPRange, current
 		errorColor.Printf("Failed to remove IP range: %v\n", err2)
 	} else {
 		successColor.Printf("IP range '%s' removed successfully from %s\n", selectedRange.CIDR, listType)
+
+		// Reload firewall rules to apply changes immediately
+		fmt.Printf("\n")
+		infoColor.Println("🔄 Updating firewall rules...")
+		if err := fwManager.Reload(); err != nil {
+			errorColor.Printf("Failed to update firewall rules: %v\n", err)
+			warningColor.Println("IP range removed from database but firewall rules not updated")
+			infoColor.Println("You can manually rebuild rules from the main menu")
+		} else {
+			successColor.Println("✅ Firewall rules updated successfully")
+		}
 	}
 	PressEnterToContinue()
 }
