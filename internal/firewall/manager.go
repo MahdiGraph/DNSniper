@@ -1046,22 +1046,21 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 
 		availableIPSets = append(availableIPSets, setName)
 
-		// Debug logging for IPv6
+		// Debug logging
 		isSetIPv6 := strings.Contains(setName, "v6")
-
 		rules = append(rules, fmt.Sprintf("# Debug: Set %s exists (isIPv6=%v, needed=%v)",
 			setName, isSetIPv6, isIPv6))
 
 		// Filter by IPv4/IPv6 compatibility
 		if isIPv6 {
 			// For IPv6 rules, only include v6 sets
-			if !isSetIPv6 {
+			if !strings.HasSuffix(setName, "-v6") {
 				rules = append(rules, fmt.Sprintf("# Skipping %s (IPv4 set, need IPv6)", setName))
 				continue
 			}
 		} else {
 			// For IPv4 rules, only include v4 sets (exclude v6)
-			if isSetIPv6 {
+			if strings.HasSuffix(setName, "-v6") {
 				rules = append(rules, fmt.Sprintf("# Skipping %s (IPv6 set, need IPv4)", setName))
 				continue
 			}
@@ -1072,6 +1071,24 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 			whitelistSets = append(whitelistSets, setName)
 		} else if strings.Contains(setName, "blocklist") {
 			blocklistSets = append(blocklistSets, setName)
+		}
+	}
+
+	// Debug logs for troubleshooting IPv6 rules
+	if isIPv6 {
+		// More detailed logging for IPv6 to troubleshoot missing rules
+		for _, setName := range ipsetNames {
+			rules = append(rules, fmt.Sprintf("# IPv6 Rule Debug: Checking ipset %s", setName))
+			if m.ipsetExists(setName) {
+				rules = append(rules, fmt.Sprintf("#   - %s exists", setName))
+				if strings.HasSuffix(setName, "-v6") {
+					rules = append(rules, fmt.Sprintf("#   - %s is an IPv6 set (name ends with -v6)", setName))
+				} else {
+					rules = append(rules, fmt.Sprintf("#   - %s is NOT an IPv6 set (name doesn't end with -v6)", setName))
+				}
+			} else {
+				rules = append(rules, fmt.Sprintf("#   - %s does NOT exist", setName))
+			}
 		}
 	}
 
