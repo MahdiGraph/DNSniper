@@ -12,6 +12,7 @@ import (
 	"github.com/MahdiGraph/DNSniper/internal/database"
 	"github.com/MahdiGraph/DNSniper/internal/dns"
 	"github.com/MahdiGraph/DNSniper/internal/firewall"
+	"github.com/MahdiGraph/DNSniper/internal/ui"
 	"github.com/MahdiGraph/DNSniper/pkg/logger"
 )
 
@@ -110,42 +111,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Ensure log directory exists
-	if cfg.LoggingEnabled {
-		if err := os.MkdirAll(cfg.LogPath, 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create log directory: %v\n", err)
-			// Continue with logging disabled
-			cfg.LoggingEnabled = false
-		}
-	}
-
-	// Initialize logger
-	logConfig := logger.Config{
-		LogDir:     cfg.LogPath,
-		EnableFile: cfg.LoggingEnabled,
-		Level:      cfg.LogLevel,
-		MaxSize:    10,
-		MaxBackups: 5,
-		MaxAge:     30,
-		Compress:   true,
-	}
-	log := logger.New(logConfig)
-	defer log.Close()
-
-	// Log startup with configuration details
-	log.Info("DNSniper v2.0 starting")
-	log.Infof("Configuration loaded from: %s", cfg.ConfigPath)
-	log.Infof("Database path: %s", cfg.DatabasePath)
-	log.Infof("Log path: %s", cfg.LogPath)
-	log.Infof("DNS Resolvers: %v", cfg.DNSResolvers)
-	log.Infof("Update interval: %v", cfg.UpdateInterval)
-	log.Infof("Rule expiration: %v", cfg.RuleExpiration)
-	log.Infof("Max IPs per domain: %d", cfg.MaxIPsPerDomain)
-	log.Infof("IPv6 enabled: %v", cfg.EnableIPv6)
-	log.Infof("Affected chains: %v", cfg.AffectedChains)
-
-	// Initialize firewall manager first (needed for database callbacks)
-	log.Info("Initializing firewall manager...")
+	// Initialize firewall manager (needed for UI operations)
 	fwManager, err := firewall.NewFirewallManager(
 		cfg.EnableIPv6,
 		cfg.AffectedChains,
@@ -153,40 +119,22 @@ func main() {
 		filepath.Join(cfg.LogPath, "firewall.log"),
 	)
 	if err != nil {
-		log.Errorf("Failed to initialize firewall manager: %v", err)
 		fmt.Fprintf(os.Stderr, "Failed to initialize firewall manager: %v\n", err)
 		os.Exit(1)
 	}
-	log.Info("Firewall manager initialized successfully")
 
-	// Initialize database using enhanced factory system with callback integration
-	log.Info("Initializing database...")
+	// Initialize database
 	dbFactory := database.NewDatabaseFactory(fwManager)
 	db, err := dbFactory.CreateDatabaseWithAutoDetection(cfg.DatabasePath)
 	if err != nil {
-		log.Errorf("Failed to initialize database: %v", err)
 		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
 		os.Exit(1)
 	}
 	defer db.Close()
 
-	// Initialize DNS resolver
-	log.Info("Initializing DNS resolver...")
-	resolver := dns.NewStandardResolver()
-
-	// Create batch processor
-	processor := NewBatchProcessor(cfg, db, resolver, fwManager, log)
-
-	// Create context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Run the batch processor
-	if err := processor.Run(ctx); err != nil {
-		log.Errorf("Batch processor failed: %v", err)
-		fmt.Fprintf(os.Stderr, "Batch processor failed: %v\n", err)
-		os.Exit(1)
-	}
+	// Start UI menu
+	menu := ui.NewMenu(cfg, db, fwManager)
+	menu.Run()
 }
 
 // handleUninstall handles the uninstallation process

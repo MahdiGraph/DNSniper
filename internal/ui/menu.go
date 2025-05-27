@@ -30,6 +30,36 @@ var (
 	subtitleColor  = color.New(color.FgHiYellow, color.Bold)
 )
 
+// Menu represents the main UI menu
+type Menu struct {
+	config    *config.Settings
+	db        database.DatabaseStore
+	fwManager *firewall.FirewallManager
+}
+
+// NewMenu creates a new menu instance
+func NewMenu(config *config.Settings, db database.DatabaseStore, fwManager *firewall.FirewallManager) *Menu {
+	return &Menu{
+		config:    config,
+		db:        db,
+		fwManager: fwManager,
+	}
+}
+
+// Run starts the main menu loop
+func (m *Menu) Run() {
+	ClearScreen()
+	titleColor.Println("🛡️  DNSniper v2.0 - Automated DNS Firewall")
+	fmt.Println(string(color.New(color.FgHiCyan).Sprint("=================================================")))
+
+	for {
+		option := PrintMenu()
+		if !DispatchOption(option, m.db, m.fwManager) {
+			break
+		}
+	}
+}
+
 // PrintMenu displays the main menu and returns the selected option
 func PrintMenu() string {
 	fmt.Println()
