@@ -1151,6 +1151,12 @@ func (m *IPTablesManager) ApplyRules(isIPv6 bool) error {
 		rulesFile = "/etc/iptables/rules.v4"
 	}
 
+	// If the required binary is not present (common on systems without IPv6), skip applying but keep the file.
+	if _, err := exec.LookPath(cmd); err != nil {
+		fmt.Printf("Warning: %s binary not found, skipping apply for %s (rules file will still be saved)\n", cmd, rulesFile)
+		return nil
+	}
+
 	// Check if rules file exists
 	if _, err := os.Stat(rulesFile); os.IsNotExist(err) {
 		return fmt.Errorf("rules file %s does not exist", rulesFile)
