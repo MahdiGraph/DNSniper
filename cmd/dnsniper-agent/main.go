@@ -11,11 +11,8 @@ import (
 	"time"
 
 	"github.com/MahdiGraph/DNSniper/internal/agent"
-	"github.com/MahdiGraph/DNSniper/internal/config"
-	"github.com/MahdiGraph/DNSniper/internal/database"
 	"github.com/MahdiGraph/DNSniper/internal/dns"
-	"github.com/MahdiGraph/DNSniper/internal/firewall"
-	"github.com/MahdiGraph/DNSniper/pkg/logger"
+	"github.com/MahdiGraph/DNSniper/internal/system"
 	"github.com/nightlyone/lockfile"
 )
 
@@ -24,11 +21,12 @@ func main() {
 	var showHelp = flag.Bool("help", false, "Show help information")
 	var showVersion = flag.Bool("version", false, "Show version information")
 	var configPath = flag.String("config", "", "Path to configuration file")
+	var verbose = flag.Bool("verbose", false, "Enable verbose logging (prints all logs to stdout)")
 	flag.Parse()
 
 	// Handle help flag
 	if *showHelp {
-		fmt.Println("DNSniper Agent v2.0")
+		fmt.Println("DNSniper Agent v2.1")
 		fmt.Println("Automated DNS firewall agent")
 		fmt.Println("")
 		fmt.Println("Usage: dnsniper-agent [options]")
@@ -37,8 +35,10 @@ func main() {
 		fmt.Println("  --help     Show this help message")
 		fmt.Println("  --version  Show version information")
 		fmt.Println("  --config   Path to configuration file (optional)")
+		fmt.Println("  --verbose  Enable verbose logging (prints all logs to stdout)")
 		fmt.Println("")
 		fmt.Println("Agent Features:")
+		fmt.Println("• Complete system initialization (config, ipsets, rules)")
 		fmt.Println("• GORM database integration with automatic callbacks")
 		fmt.Println("• DNS resolution with load balancing")
 		fmt.Println("• Whitelist priority protection system")
@@ -46,47 +46,49 @@ func main() {
 		fmt.Println("• FIFO IP management per domain")
 		fmt.Println("• Real-time firewall rule synchronization")
 		fmt.Println("• Comprehensive error handling and logging")
+		fmt.Println("")
+		fmt.Println("Verbose Mode:")
+		fmt.Println("  Use --verbose flag to see all logs in real-time")
+		fmt.Println("  Useful for debugging and system testing")
 		os.Exit(0)
 	}
 
 	// Handle version flag
 	if *showVersion {
-		fmt.Println("DNSniper Agent v2.0")
+		fmt.Println("DNSniper Agent v2.1")
 		fmt.Println("Automated DNS Firewall Agent")
 		os.Exit(0)
 	}
 
-	// Load configuration
-	cfg, err := config.LoadConfig(*configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+	// Initialize system with verbose logging if requested
+	initializer := system.NewSystemInitializer(*verbose)
+
+	if *verbose {
+		fmt.Println("DNSniper Agent v2.1 - Verbose Mode Enabled")
+		fmt.Println("========================================")
+	}
+
+	// Perform complete system initialization
+	if err := initializer.Initialize(*configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "System initialization failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Ensure log directory exists
-	if cfg.LoggingEnabled {
-		if err := os.MkdirAll(cfg.LogPath, 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create log directory: %v\n", err)
-			// Continue with logging disabled
-			cfg.LoggingEnabled = false
-		}
-	}
+	// Get initialized components
+	cfg := initializer.GetConfig()
+	log := initializer.GetLogger()
+	fwManager := initializer.GetFirewallManager()
+	db := initializer.GetDatabase()
 
-	// Initialize logger
-	logConfig := logger.Config{
-		LogDir:     cfg.LogPath,
-		EnableFile: cfg.LoggingEnabled,
-		Level:      cfg.LogLevel,
-		MaxSize:    10,
-		MaxBackups: 5,
-		MaxAge:     30,
-		Compress:   true,
-	}
-	log := logger.New(logConfig)
-	defer log.Close()
+	// Ensure cleanup on exit
+	defer func() {
+		if err := initializer.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Cleanup error: %v\n", err)
+		}
+	}()
 
 	// Log startup with configuration details
-	log.Info("DNSniper Agent v2.0 starting")
+	log.Info("DNSniper Agent v2.1 starting")
 	log.Infof("Configuration loaded from: %s", cfg.ConfigPath)
 	log.Infof("Database path: %s", cfg.DatabasePath)
 	log.Infof("Log path: %s", cfg.LogPath)
@@ -96,49 +98,7 @@ func main() {
 	log.Infof("Max IPs per domain: %d", cfg.MaxIPsPerDomain)
 	log.Infof("IPv6 enabled: %v", cfg.EnableIPv6)
 	log.Infof("Affected chains: %v", cfg.AffectedChains)
-
-	// Initialize firewall manager first (needed for database callbacks)
-	log.Info("Initializing firewall manager...")
-	fwManager, err := firewall.NewFirewallManager(
-		cfg.EnableIPv6,
-		cfg.AffectedChains,
-		filepath.Join(cfg.LogPath, "firewall-backup"),
-		filepath.Join(cfg.LogPath, "firewall.log"),
-	)
-	if err != nil {
-		log.Errorf("Failed to initialize firewall manager: %v", err)
-		fmt.Fprintf(os.Stderr, "Failed to initialize firewall manager: %v\n", err)
-		os.Exit(1)
-	}
-	log.Info("Firewall manager initialized successfully")
-
-	// Initialize database using enhanced factory system with callback integration
-	log.Info("Initializing database...")
-	dbFactory := database.NewDatabaseFactory(fwManager)
-	db, err := dbFactory.CreateDatabaseWithAutoDetection(cfg.DatabasePath)
-	if err != nil {
-		log.Errorf("Failed to initialize database: %v", err)
-		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
-		os.Exit(1)
-	}
-	defer db.Close()
-	log.Info("Database initialized successfully")
-
-	// Validate callback service integration
-	log.Info("Validating callback service...")
-	if err := database.ValidateCallbackService(); err != nil {
-		log.Warnf("Callback service validation failed: %v", err)
-		// Continue anyway - callbacks are optional for basic functionality
-	} else {
-		log.Info("GORM callback service initialized successfully")
-
-		// Test callback functionality (non-intrusive)
-		if err := database.TestCallbackFunctionality(db); err != nil {
-			log.Warnf("Callback functionality test failed: %v", err)
-		} else {
-			log.Info("Callback functionality verified")
-		}
-	}
+	log.Infof("Verbose logging: %v", *verbose)
 
 	// Initialize DNS resolver
 	log.Info("Initializing DNS resolver...")
@@ -203,14 +163,24 @@ func main() {
 	go func() {
 		sig := <-sigChan
 		log.Infof("Received signal %v, stopping agent...", sig)
+		if *verbose {
+			fmt.Printf("[INFO] Received signal %v, stopping agent...\n", sig)
+		}
 		cancel()
 	}()
 
 	// Run the agent
 	log.Info("Starting DNSniper agent...")
+	if *verbose {
+		fmt.Println("[INFO] Starting DNSniper agent...")
+	}
+
 	if err := agentInstance.Run(ctx); err != nil {
 		if err == context.Canceled {
 			log.Info("Agent stopped gracefully")
+			if *verbose {
+				fmt.Println("[INFO] Agent stopped gracefully")
+			}
 		} else {
 			log.Errorf("Agent error: %v", err)
 			fmt.Fprintf(os.Stderr, "Agent error: %v\n", err)
@@ -219,4 +189,7 @@ func main() {
 	}
 
 	log.Info("DNSniper agent completed successfully")
+	if *verbose {
+		fmt.Println("[INFO] DNSniper agent completed successfully")
+	}
 }

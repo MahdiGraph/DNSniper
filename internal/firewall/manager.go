@@ -150,7 +150,7 @@ func (m *FirewallManager) Reload() error {
 		return fmt.Errorf("failed to backup rules: %w", err)
 	}
 
-	// Ensure ipsets exist (recreate if missing)
+	// Ensure ipsets exist (create only if they don't exist)
 	if err := m.ipsetManager.EnsureSetsExist(); err != nil {
 		return fmt.Errorf("failed to ensure ipsets exist: %w", err)
 	}
@@ -223,6 +223,11 @@ func (m *FirewallManager) Reload() error {
 	}
 
 	return nil
+}
+
+// EnsureSetsExist ensures that all required ipsets exist
+func (m *FirewallManager) EnsureSetsExist() error {
+	return m.ipsetManager.EnsureSetsExist()
 }
 
 // ClearAll clears all firewall rules

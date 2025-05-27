@@ -128,11 +128,11 @@ fi
 
 # Test 9: Test agent execution
 print_test "9. Testing agent execution"
-print_test "Running dnsniper-agent (this may take a moment)..."
-if timeout 60 /etc/dnsniper/dnsniper-agent >/dev/null 2>&1; then
+print_test "Running dnsniper-agent with verbose logging (this may take a moment)..."
+if timeout 60 /etc/dnsniper/dnsniper-agent --verbose; then
     print_pass "Agent executed successfully"
 else
-    print_warn "Agent execution timed out or failed (check logs)"
+    print_warn "Agent execution timed out or failed (check output above)"
 fi
 
 # Test 10: Check sync functionality

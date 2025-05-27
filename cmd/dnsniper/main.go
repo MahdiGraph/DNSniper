@@ -6,59 +6,45 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 
-	"github.com/MahdiGraph/DNSniper/internal/config"
-	"github.com/MahdiGraph/DNSniper/internal/database"
-	"github.com/MahdiGraph/DNSniper/internal/dns"
 	"github.com/MahdiGraph/DNSniper/internal/firewall"
+	"github.com/MahdiGraph/DNSniper/internal/system"
 	"github.com/MahdiGraph/DNSniper/internal/ui"
-	"github.com/MahdiGraph/DNSniper/pkg/logger"
 )
 
 // BatchProcessor handles batch processing of DNS requests
 type BatchProcessor struct {
-	config          *config.Settings
-	db              database.DatabaseStore
-	resolver        dns.Resolver
-	firewallManager *firewall.FirewallManager
-	logger          *logger.Logger
+	initializer *system.SystemInitializer
 }
 
 // NewBatchProcessor creates a new batch processor
-func NewBatchProcessor(
-	config *config.Settings,
-	db database.DatabaseStore,
-	resolver dns.Resolver,
-	firewallManager *firewall.FirewallManager,
-	logger *logger.Logger,
-) *BatchProcessor {
+func NewBatchProcessor(initializer *system.SystemInitializer) *BatchProcessor {
 	return &BatchProcessor{
-		config:          config,
-		db:              db,
-		resolver:        resolver,
-		firewallManager: firewallManager,
-		logger:          logger,
+		initializer: initializer,
 	}
 }
 
 // Run executes the batch processor
 func (b *BatchProcessor) Run(ctx context.Context) error {
-	b.logger.Info("Starting DNSniper batch processor")
+	db := b.initializer.GetDatabase()
+	fwManager := b.initializer.GetFirewallManager()
+	log := b.initializer.GetLogger()
+
+	log.Info("Starting DNSniper batch processor")
 
 	// Clean up expired records first
-	if err := b.db.CleanupExpired(); err != nil {
-		b.logger.Errorf("Failed to cleanup expired records: %v", err)
+	if err := db.CleanupExpired(); err != nil {
+		log.Errorf("Failed to cleanup expired records: %v", err)
 		return fmt.Errorf("cleanup failed: %w", err)
 	}
 
 	// Reload firewall rules to ensure they're up to date
-	if err := b.firewallManager.Reload(); err != nil {
-		b.logger.Errorf("Failed to reload firewall rules: %v", err)
+	if err := fwManager.Reload(); err != nil {
+		log.Errorf("Failed to reload firewall rules: %v", err)
 		return fmt.Errorf("firewall reload failed: %w", err)
 	}
 
-	b.logger.Info("DNSniper batch processor completed successfully")
+	log.Info("DNSniper batch processor completed successfully")
 	return nil
 }
 
@@ -72,7 +58,7 @@ func main() {
 
 	// Handle help flag
 	if *showHelp {
-		fmt.Println("DNSniper v2.0 - Automated DNS Firewall")
+		fmt.Println("DNSniper v2.1 - Automated DNS Firewall")
 		fmt.Println("\nUsage:")
 		fmt.Println("  dnsniper [options]")
 		fmt.Println("\nOptions:")
@@ -81,6 +67,7 @@ func main() {
 		fmt.Println("  --version          Show version information")
 		fmt.Println("  --uninstall        Uninstall DNSniper")
 		fmt.Println("\nFeatures:")
+		fmt.Println("• Complete system initialization (config, ipsets, rules)")
 		fmt.Println("• GORM database integration with automatic callbacks")
 		fmt.Println("• DNS resolution with load balancing")
 		fmt.Println("• Whitelist priority protection system")
@@ -93,7 +80,7 @@ func main() {
 
 	// Handle version flag
 	if *showVersion {
-		fmt.Println("DNSniper v2.0")
+		fmt.Println("DNSniper v2.1")
 		fmt.Println("Automated DNS Firewall")
 		os.Exit(0)
 	}
@@ -104,33 +91,26 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Load configuration
-	cfg, err := config.LoadConfig(*configPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+	// Initialize system (without verbose logging for UI)
+	initializer := system.NewSystemInitializer(false)
+
+	// Perform complete system initialization
+	if err := initializer.Initialize(*configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "System initialization failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Initialize firewall manager (needed for UI operations)
-	fwManager, err := firewall.NewFirewallManager(
-		cfg.EnableIPv6,
-		cfg.AffectedChains,
-		filepath.Join(cfg.LogPath, "firewall-backup"),
-		filepath.Join(cfg.LogPath, "firewall.log"),
-	)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize firewall manager: %v\n", err)
-		os.Exit(1)
-	}
+	// Get initialized components
+	cfg := initializer.GetConfig()
+	db := initializer.GetDatabase()
+	fwManager := initializer.GetFirewallManager()
 
-	// Initialize database
-	dbFactory := database.NewDatabaseFactory(fwManager)
-	db, err := dbFactory.CreateDatabaseWithAutoDetection(cfg.DatabasePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
-		os.Exit(1)
-	}
-	defer db.Close()
+	// Ensure cleanup on exit
+	defer func() {
+		if err := initializer.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Cleanup error: %v\n", err)
+		}
+	}()
 
 	// Start UI menu
 	menu := ui.NewMenu(cfg, db, fwManager)
@@ -214,17 +194,18 @@ func handleUninstall() {
 
 // removeFirewallRules removes all DNSniper firewall rules and ipsets
 func removeFirewallRules() {
+	fmt.Println("Performing manual firewall cleanup...")
+
 	// List of DNSniper ipset names
 	ipsetNames := []string{
-		"whitelistIP-v4", "whitelistRange-v4", "blocklistIP-v4", "blocklistRange-v4",
-		"whitelistIP-v6", "whitelistRange-v6", "blocklistIP-v6", "blocklistRange-v6",
+		"dnsniper-whitelist-ip-v4", "dnsniper-whitelist-range-v4",
+		"dnsniper-blocklist-ip-v4", "dnsniper-blocklist-range-v4",
+		"dnsniper-whitelist-ip-v6", "dnsniper-whitelist-range-v6",
+		"dnsniper-blocklist-ip-v6", "dnsniper-blocklist-range-v6",
 	}
 
-	// List of iptables chains to clean
+	// Remove iptables rules first
 	chains := []string{"INPUT", "OUTPUT", "FORWARD"}
-
-	fmt.Println("Removing iptables rules...")
-	// Remove iptables rules first (before destroying ipsets)
 	for _, chain := range chains {
 		for _, setName := range ipsetNames {
 			// Remove IPv4 rules
@@ -249,8 +230,7 @@ func removeFirewallRules() {
 		}
 	}
 
-	fmt.Println("Removing ipsets...")
-	// Remove ipsets (flush first, then destroy)
+	// Remove ipsets
 	for _, setName := range ipsetNames {
 		flushCmd := exec.Command("ipset", "flush", setName)
 		flushCmd.Run() // Ignore errors
@@ -277,34 +257,26 @@ func initializeFirewallManager() (*firewall.FirewallManager, error) {
 func updatePersistenceFiles() {
 	fmt.Println("Updating persistence files...")
 
-	// Update iptables persistence files (if they exist)
-	if _, err := exec.LookPath("iptables-save"); err == nil {
-		// Check if /etc/iptables directory exists
-		if _, err := os.Stat("/etc/iptables"); err == nil {
-			// Save current IPv4 rules (without DNSniper rules)
-			if cmd := exec.Command("iptables-save"); cmd.Run() == nil {
-				if output, err := cmd.Output(); err == nil {
-					os.WriteFile("/etc/iptables/rules.v4", output, 0644)
-				}
-			}
-			// Save current IPv6 rules (without DNSniper rules)
-			if cmd := exec.Command("ip6tables-save"); cmd.Run() == nil {
-				if output, err := cmd.Output(); err == nil {
-					os.WriteFile("/etc/iptables/rules.v6", output, 0644)
-				}
-			}
-		}
+	// Save current iptables rules
+	saveCmd := exec.Command("iptables-save")
+	output, err := saveCmd.Output()
+	if err == nil {
+		os.WriteFile("/etc/iptables/rules.v4", output, 0644)
 	}
 
-	// Update ipset configuration (if it exists)
-	if _, err := exec.LookPath("ipset"); err == nil {
-		if _, err := os.Stat("/etc/ipset.conf"); err == nil {
-			// Save current ipset state (without DNSniper sets)
-			if cmd := exec.Command("ipset", "save"); cmd.Run() == nil {
-				if output, err := cmd.Output(); err == nil {
-					os.WriteFile("/etc/ipset.conf", output, 0644)
-				}
-			}
-		}
+	// Save current ip6tables rules
+	saveCmd = exec.Command("ip6tables-save")
+	output, err = saveCmd.Output()
+	if err == nil {
+		os.WriteFile("/etc/iptables/rules.v6", output, 0644)
 	}
+
+	// Save ipset state
+	saveCmd = exec.Command("ipset", "save")
+	output, err = saveCmd.Output()
+	if err == nil {
+		os.WriteFile("/etc/ipset.conf", output, 0644)
+	}
+
+	fmt.Println("Persistence files updated")
 }
