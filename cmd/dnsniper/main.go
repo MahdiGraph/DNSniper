@@ -228,10 +228,11 @@ func handleUninstall() {
 
 	// Remove binaries
 	fmt.Println("Removing binaries...")
-	os.Remove("/usr/bin/dnsniper")
-	os.Remove("/usr/bin/dnsniper-agent")
-	os.Remove("/usr/local/bin/dnsniper")
-	os.Remove("/usr/local/bin/dnsniper-agent")
+	os.Remove("/usr/bin/dnsniper")             // symlink
+	os.Remove("/etc/dnsniper/dnsniper")        // main binary
+	os.Remove("/etc/dnsniper/dnsniper-agent")  // agent binary
+	os.Remove("/usr/local/bin/dnsniper")       // legacy path (backward compatibility)
+	os.Remove("/usr/local/bin/dnsniper-agent") // legacy path (backward compatibility)
 
 	// Remove configuration and data directories
 	fmt.Println("Removing configuration and data...")

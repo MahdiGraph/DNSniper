@@ -21,7 +21,7 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 print_header() { echo -e "${CYAN}${BOLD}$1${NC}"; }
 
 # Installation paths
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="/etc/dnsniper"
 CONFIG_DIR="/etc/dnsniper"
 LOG_DIR="/var/log/dnsniper"
 DATA_DIR="/var/lib/dnsniper"
@@ -345,9 +345,12 @@ uninstall_dnsniper() {
     # Reload systemd
     systemctl daemon-reload
     
-    # Remove binaries
+    # Remove binaries and symlinks
     rm -f "${INSTALL_DIR}/dnsniper"
     rm -f "${INSTALL_DIR}/dnsniper-agent"
+    rm -f "/usr/bin/dnsniper"                         # symlink
+    rm -f "/usr/local/bin/dnsniper"                   # legacy path (backward compatibility)
+    rm -f "/usr/local/bin/dnsniper-agent"             # legacy path (backward compatibility)
     
     # Remove directories (only if clean install)
     if [ "$INSTALL_TYPE" = "clean" ]; then
@@ -718,6 +721,13 @@ enable_persistence_services() {
         print_success "ipset service enabled"
     else
         print_info "Creating ipset persistence configuration"
+        
+        # Create empty ipset configuration file if it doesn't exist
+        if [ ! -f /etc/ipset.conf ]; then
+            print_info "Creating empty ipset configuration file"
+            touch /etc/ipset.conf
+        fi
+        
         # Create basic ipset persistence
         cat > /etc/systemd/system/ipset.service << 'EOF'
 [Unit]

@@ -129,11 +129,12 @@ After installation:
 
 After installation, DNSniper files are located at:
 
-- **Binaries**: `/usr/local/bin/dnsniper`, `/usr/local/bin/dnsniper-agent`
+- **Binaries**: `/etc/dnsniper/dnsniper`, `/etc/dnsniper/dnsniper-agent`
 - **Configuration**: `/etc/dnsniper/config.yaml`
 - **Database**: `/etc/dnsniper/dnsniper.db`
 - **Logs**: `/var/log/dnsniper/`
 - **Services**: `/etc/systemd/system/dnsniper-agent.*`
+- **System Link**: `/usr/bin/dnsniper` (symlink for system-wide access)
 
 ## 🔧 Configuration
 

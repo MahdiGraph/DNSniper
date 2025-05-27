@@ -3,6 +3,7 @@ package firewall
 import (
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -103,9 +104,14 @@ func NewErrorRecovery(backupPath string) *ErrorRecovery {
 func (r *ErrorRecovery) BackupRules() error {
 	timestamp := time.Now().Format("20060102-150405")
 
+	// Ensure backup directory exists
+	if err := os.MkdirAll(r.backupPath, 0755); err != nil {
+		return fmt.Errorf("failed to create backup directory: %w", err)
+	}
+
 	// Backup ipset rules
 	ipsetBackup := fmt.Sprintf("%s/ipset-%s.rules", r.backupPath, timestamp)
-	cmd := exec.Command("ipset", "save", "-f", ipsetBackup)
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("ipset save > %s", ipsetBackup))
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to backup ipset rules: %w", err)
 	}
@@ -131,7 +137,7 @@ func (r *ErrorRecovery) BackupRules() error {
 func (r *ErrorRecovery) RestoreRules(timestamp string) error {
 	// Restore ipset rules
 	ipsetBackup := fmt.Sprintf("%s/ipset-%s.rules", r.backupPath, timestamp)
-	cmd := exec.Command("ipset", "restore", "-f", ipsetBackup)
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("ipset restore < %s", ipsetBackup))
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to restore ipset rules: %w", err)
 	}
