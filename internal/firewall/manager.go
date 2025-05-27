@@ -839,26 +839,80 @@ func (m *IPTablesManager) GenerateRulesFile(chains []string, ipsetNames []string
 		return fmt.Errorf("failed to create iptables directory: %w", err)
 	}
 
-	// Read existing rules to preserve non-DNSniper rules
-	existingRules := []string{}
-	if content, err := os.ReadFile(targetFile); err == nil {
-		lines := strings.Split(string(content), "\n")
-		for _, line := range lines {
-			// Skip DNSniper rules and empty lines
-			if !strings.Contains(line, "DNSniper") && !strings.Contains(line, "dnsniper") && strings.TrimSpace(line) != "" {
-				existingRules = append(existingRules, line)
-			}
+	// Get current rules using iptables-save to preserve existing rules
+	var cmd string
+	if isIPv6 {
+		cmd = "ip6tables-save"
+	} else {
+		cmd = "iptables-save"
+	}
+
+	saveCmd := exec.Command(cmd)
+	currentRules, err := saveCmd.Output()
+	if err != nil {
+		// If iptables-save fails, create basic structure
+		currentRules = []byte("*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\nCOMMIT\n")
+	}
+
+	// Parse existing rules and remove DNSniper rules
+	lines := strings.Split(string(currentRules), "\n")
+	var cleanedRules []string
+
+	for _, line := range lines {
+		// Skip DNSniper rules but keep everything else
+		if !strings.Contains(line, "DNSniper") && !strings.Contains(line, "dnsniper") {
+			cleanedRules = append(cleanedRules, line)
 		}
 	}
 
-	// Generate new DNSniper rules
-	var newRules []string
+	// Find where to insert new rules (after chain definitions, before COMMIT)
+	var finalRules []string
+	insertIndex := -1
 
-	// Add header
-	newRules = append(newRules, "# DNSniper firewall rules")
-	newRules = append(newRules, fmt.Sprintf("# Generated at: %s", time.Now().Format("2006-01-02 15:04:05")))
-	newRules = append(newRules, "# WARNING: Do not edit manually - these rules are auto-generated")
-	newRules = append(newRules, "")
+	for i, line := range cleanedRules {
+		finalRules = append(finalRules, line)
+		// Insert after chain definitions and before COMMIT
+		if strings.HasPrefix(line, ":") && insertIndex == -1 {
+			insertIndex = i + 1
+		}
+		if strings.TrimSpace(line) == "COMMIT" {
+			// Insert DNSniper rules before COMMIT
+			if insertIndex == -1 {
+				insertIndex = i
+			}
+
+			// Generate DNSniper rules
+			dnsniperRules := m.generateDNSniperRules(chains, ipsetNames, isIPv6)
+
+			// Insert at the right position
+			finalRules = append(finalRules[:insertIndex], append(dnsniperRules, finalRules[insertIndex:]...)...)
+			break
+		}
+	}
+
+	// If no COMMIT found, add rules and COMMIT
+	if insertIndex == -1 {
+		dnsniperRules := m.generateDNSniperRules(chains, ipsetNames, isIPv6)
+		finalRules = append(finalRules, dnsniperRules...)
+		finalRules = append(finalRules, "COMMIT")
+	}
+
+	// Write to target file
+	content := strings.Join(finalRules, "\n") + "\n"
+	if err := os.WriteFile(targetFile, []byte(content), 0644); err != nil {
+		return fmt.Errorf("failed to write rules to %s: %w", targetFile, err)
+	}
+
+	return nil
+}
+
+// generateDNSniperRules generates DNSniper-specific iptables rules
+func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []string, isIPv6 bool) []string {
+	var rules []string
+
+	// Add header comment
+	rules = append(rules, "# DNSniper firewall rules")
+	rules = append(rules, fmt.Sprintf("# Generated at: %s", time.Now().Format("2006-01-02 15:04:05")))
 
 	// Separate whitelist and blocklist sets
 	whitelistSets := []string{}
@@ -882,79 +936,33 @@ func (m *IPTablesManager) GenerateRulesFile(chains []string, ipsetNames []string
 
 	// Generate whitelist rules first (higher priority)
 	if len(whitelistSets) > 0 {
-		newRules = append(newRules, "# Whitelist rules (priority protection)")
+		rules = append(rules, "# Whitelist rules (priority protection)")
 		for _, chain := range chains {
 			for _, setName := range whitelistSets {
 				// Only add rules for sets that actually exist
 				if m.ipsetExists(setName) {
-					newRules = append(newRules, fmt.Sprintf("-A %s -m set --match-set %s src -j ACCEPT -m comment --comment \"DNSniper whitelist\"", chain, setName))
-					newRules = append(newRules, fmt.Sprintf("-A %s -m set --match-set %s dst -j ACCEPT -m comment --comment \"DNSniper whitelist\"", chain, setName))
+					rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s src -j ACCEPT", chain, setName))
+					rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s dst -j ACCEPT", chain, setName))
 				}
 			}
 		}
-		newRules = append(newRules, "")
 	}
 
 	// Generate blocklist rules after whitelist
 	if len(blocklistSets) > 0 {
-		newRules = append(newRules, "# Blocklist rules")
+		rules = append(rules, "# Blocklist rules")
 		for _, chain := range chains {
 			for _, setName := range blocklistSets {
 				// Only add rules for sets that actually exist
 				if m.ipsetExists(setName) {
-					newRules = append(newRules, fmt.Sprintf("-A %s -m set --match-set %s src -j DROP -m comment --comment \"DNSniper blocklist\"", chain, setName))
-					newRules = append(newRules, fmt.Sprintf("-A %s -m set --match-set %s dst -j DROP -m comment --comment \"DNSniper blocklist\"", chain, setName))
+					rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s src -j DROP", chain, setName))
+					rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s dst -j DROP", chain, setName))
 				}
 			}
 		}
-		newRules = append(newRules, "")
 	}
 
-	// Combine existing rules with new DNSniper rules
-	var finalRules []string
-
-	// Add standard iptables-save header if not present
-	hasHeader := false
-	for _, rule := range existingRules {
-		if strings.HasPrefix(rule, "*") {
-			hasHeader = true
-			break
-		}
-	}
-
-	if !hasHeader {
-		finalRules = append(finalRules, "*filter")
-		finalRules = append(finalRules, ":INPUT ACCEPT [0:0]")
-		finalRules = append(finalRules, ":FORWARD ACCEPT [0:0]")
-		finalRules = append(finalRules, ":OUTPUT ACCEPT [0:0]")
-	}
-
-	// Add existing rules
-	finalRules = append(finalRules, existingRules...)
-
-	// Add new DNSniper rules
-	finalRules = append(finalRules, newRules...)
-
-	// Add COMMIT if not present
-	hasCommit := false
-	for _, rule := range finalRules {
-		if strings.TrimSpace(rule) == "COMMIT" {
-			hasCommit = true
-			break
-		}
-	}
-
-	if !hasCommit {
-		finalRules = append(finalRules, "COMMIT")
-	}
-
-	// Write to target file
-	content := strings.Join(finalRules, "\n") + "\n"
-	if err := os.WriteFile(targetFile, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to write rules to %s: %w", targetFile, err)
-	}
-
-	return nil
+	return rules
 }
 
 // ipsetExists checks if an ipset exists
@@ -979,6 +987,17 @@ func (m *IPTablesManager) ApplyRules(isIPv6 bool) error {
 		return fmt.Errorf("rules file %s does not exist", rulesFile)
 	}
 
+	// Read the rules file to check its content
+	content, err := os.ReadFile(rulesFile)
+	if err != nil {
+		return fmt.Errorf("failed to read rules file %s: %w", rulesFile, err)
+	}
+
+	// Validate rules file content
+	if len(content) == 0 {
+		return fmt.Errorf("rules file %s is empty", rulesFile)
+	}
+
 	// Create backup of current rules
 	backupFile := fmt.Sprintf("/tmp/dnsniper-backup-%s.rules", cmd)
 	backupCmd := exec.Command(cmd + "-save")
@@ -993,13 +1012,14 @@ func (m *IPTablesManager) ApplyRules(isIPv6 bool) error {
 
 	// Apply new rules using iptables-restore
 	applyCmd := exec.Command(cmd+"-restore", rulesFile)
-	if err := applyCmd.Run(); err != nil {
+	output, err := applyCmd.CombinedOutput()
+	if err != nil {
 		// If application fails, try to restore from backup
 		restoreCmd := exec.Command(cmd+"-restore", backupFile)
 		if restoreErr := restoreCmd.Run(); restoreErr != nil {
-			return fmt.Errorf("failed to apply rules and failed to restore backup: apply error: %w, restore error: %v", err, restoreErr)
+			return fmt.Errorf("failed to apply rules and failed to restore backup: apply error: %w (output: %s), restore error: %v", err, string(output), restoreErr)
 		}
-		return fmt.Errorf("failed to apply %s rules, backup restored: %w", cmd, err)
+		return fmt.Errorf("failed to apply %s rules, backup restored: %w (output: %s)", cmd, err, string(output))
 	}
 
 	// Save rules to persistence files if netfilter-persistent is available

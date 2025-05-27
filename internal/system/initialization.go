@@ -183,7 +183,11 @@ func (s *SystemInitializer) ensureIPTablesRulesExist() error {
 	if needsRulesGeneration {
 		s.logInfo("Generating initial iptables rules...")
 		if err := s.firewallManager.Reload(); err != nil {
-			return fmt.Errorf("failed to generate initial rules: %w", err)
+			s.logInfo("Warning: Failed to generate initial rules, but ipsets are ready")
+			s.logInfo("You can manually run 'dnsniper' menu option 7 to rebuild rules later")
+			// Don't fail initialization just because rules couldn't be applied
+			// The ipsets are created and the system can still work
+			return nil
 		}
 		s.logInfo("Initial iptables rules generated successfully")
 	} else {
