@@ -913,20 +913,34 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 	// Add header comment
 	rules = append(rules, "# DNSniper firewall rules")
 	rules = append(rules, fmt.Sprintf("# Generated at: %s", time.Now().Format("2006-01-02 15:04:05")))
+	if isIPv6 {
+		rules = append(rules, "# IPv6 rules")
+	} else {
+		rules = append(rules, "# IPv4 rules")
+	}
 
-	// Separate whitelist and blocklist sets
+	// Separate whitelist and blocklist sets with proper IPv4/IPv6 filtering
 	whitelistSets := []string{}
 	blocklistSets := []string{}
 
 	for _, setName := range ipsetNames {
-		// Filter by IPv4/IPv6 compatibility
-		if isIPv6 && !strings.Contains(setName, "v6") {
-			continue
-		}
-		if !isIPv6 && strings.Contains(setName, "v6") {
-			continue
+		// Debug logging for filtering logic
+		isSetIPv6 := strings.Contains(setName, "v6")
+
+		// Filter by IPv4/IPv6 compatibility - FIXED LOGIC
+		if isIPv6 {
+			// For IPv6 rules, only include v6 sets
+			if !isSetIPv6 {
+				continue
+			}
+		} else {
+			// For IPv4 rules, only include v4 sets (exclude v6)
+			if isSetIPv6 {
+				continue
+			}
 		}
 
+		// Categorize sets
 		if strings.Contains(setName, "whitelist") {
 			whitelistSets = append(whitelistSets, setName)
 		} else if strings.Contains(setName, "blocklist") {
@@ -934,8 +948,18 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 		}
 	}
 
+	// Add debug comments about which sets are being processed
+	if len(whitelistSets) > 0 || len(blocklistSets) > 0 {
+		rules = append(rules, fmt.Sprintf("# Processing %d whitelist sets and %d blocklist sets", len(whitelistSets), len(blocklistSets)))
+		for _, setName := range whitelistSets {
+			rules = append(rules, fmt.Sprintf("# Whitelist set: %s", setName))
+		}
+		for _, setName := range blocklistSets {
+			rules = append(rules, fmt.Sprintf("# Blocklist set: %s", setName))
+		}
+	}
+
 	// Generate whitelist rules first (higher priority)
-	// Always generate rules for ipsets that should exist, regardless of current existence
 	if len(whitelistSets) > 0 {
 		rules = append(rules, "# Whitelist rules (priority protection)")
 		for _, chain := range chains {
@@ -955,6 +979,11 @@ func (m *IPTablesManager) generateDNSniperRules(chains []string, ipsetNames []st
 				rules = append(rules, fmt.Sprintf("-A %s -m set --match-set %s dst -j DROP", chain, setName))
 			}
 		}
+	}
+
+	// Add final comment
+	if len(whitelistSets) == 0 && len(blocklistSets) == 0 {
+		rules = append(rules, "# No matching ipsets found for this IP version")
 	}
 
 	return rules

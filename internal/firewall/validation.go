@@ -76,12 +76,33 @@ func (v *RuleValidator) ValidateIPTablesRule(chain, setName string, isIPv6 bool)
 		cmd = "ip6tables"
 	}
 
-	// Check if rule exists
-	checkCmd := exec.Command(cmd, "-C", chain, "-m", "set", "--match-set", setName, "src", "-j", "ACCEPT")
-	if err := checkCmd.Run(); err != nil {
+	// Determine expected action based on set type
+	var expectedAction string
+	if strings.Contains(setName, "whitelist") {
+		expectedAction = "ACCEPT"
+	} else if strings.Contains(setName, "blocklist") {
+		expectedAction = "DROP"
+	} else {
 		return &ValidationError{
 			Message: "IPTables validation failed",
-			Details: fmt.Sprintf("Rule for set %s in chain %s not found", setName, chain),
+			Details: fmt.Sprintf("Unknown set type for %s", setName),
+		}
+	}
+
+	// Check if both src and dst rules exist
+	srcCmd := exec.Command(cmd, "-C", chain, "-m", "set", "--match-set", setName, "src", "-j", expectedAction)
+	if err := srcCmd.Run(); err != nil {
+		return &ValidationError{
+			Message: "IPTables validation failed",
+			Details: fmt.Sprintf("Source rule for set %s in chain %s not found (expected action: %s)", setName, chain, expectedAction),
+		}
+	}
+
+	dstCmd := exec.Command(cmd, "-C", chain, "-m", "set", "--match-set", setName, "dst", "-j", expectedAction)
+	if err := dstCmd.Run(); err != nil {
+		return &ValidationError{
+			Message: "IPTables validation failed",
+			Details: fmt.Sprintf("Destination rule for set %s in chain %s not found (expected action: %s)", setName, chain, expectedAction),
 		}
 	}
 
