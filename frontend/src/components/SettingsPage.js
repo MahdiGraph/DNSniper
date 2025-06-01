@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Settings, Shield, RefreshCw, Trash2, Plus, Globe, Play, Pause, TestTube } from 'lucide-react';
+import { Settings, Shield, RefreshCw, Trash2, Plus, Globe, Play, Pause, TestTube, CheckCircle, AlertTriangle } from 'lucide-react';
 
 function SettingsPage() {
   const [firewallStatus, setFirewallStatus] = useState(null);
@@ -11,6 +11,13 @@ function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [showAddSourceModal, setShowAddSourceModal] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
+  const [success, setSuccess] = useState('');
+  const [error, setError] = useState('');
+
+  // Helper function to get auth token from localStorage
+  const getToken = () => {
+    return localStorage.getItem('authToken');
+  };
 
   useEffect(() => {
     fetchSettings();
@@ -171,67 +178,75 @@ function SettingsPage() {
     setHasChanges(false);
   };
 
-  const updateSetting = (key, value) => {
-    setSettings(prev => ({
-      ...prev,
-      [key]: value
-    }));
-  };
-
   const renderSettingInput = (key, value, config) => {
-    // Boolean settings - use checkbox
+    // Handle textarea inputs for critical IPs settings
+    if (config.type === 'textarea') {
+      // Convert array to textarea format (one item per line)
+      const textValue = Array.isArray(value) ? value.join('\n') : '';
+      return (
+        <textarea
+          rows={6}
+          placeholder={config.hint}
+          value={textValue}
+          onChange={(e) => {
+            // Convert textarea input to array and update settings state
+            const arrayValue = e.target.value.split('\n').map(line => line.trim()).filter(line => line);
+            setSettings(prev => ({
+              ...prev,
+              [key]: arrayValue
+            }));
+          }}
+          className="form-textarea"
+        />
+      );
+    }
+    
+    // Handle boolean settings with checkbox
     if (typeof value === 'boolean') {
       return (
-        <label className="checkbox-wrapper inline-checkbox centered-checkbox">
+        <div className="checkbox-wrapper">
           <input
             type="checkbox"
             checked={value}
-            onChange={(e) => updateSetting(key, e.target.checked)}
+            onChange={(e) => setSettings(prev => ({
+              ...prev,
+              [key]: e.target.checked
+            }))}
           />
-          <span className="checkmark">{value ? 'Enabled' : 'Disabled'}</span>
-        </label>
-      );
-    }
-    // Primary/Secondary DNS resolver fields
-    if (key === 'dns_resolver_primary' || key === 'dns_resolver_secondary') {
-      return (
-        <div className="input-with-unit">
-          <input
-            type="text"
-            value={value || ''}
-            placeholder={key === 'dns_resolver_primary' ? 'e.g. 1.1.1.1' : 'e.g. 8.8.8.8'}
-            onChange={(e) => updateSetting(key, e.target.value)}
-          />
+          <span className="setting-value">{value ? 'Enabled' : 'Disabled'}</span>
         </div>
       );
     }
-    // Numeric settings
+
+    // Handle numeric settings with number input
     if (typeof value === 'number') {
       return (
-        <div className="input-with-unit">
+        <div className="number-input-wrapper">
           <input
             type="number"
-            value={value}
             min={config.min}
             max={config.max}
-            step={config.step}
-            onChange={(e) => {
-              const newValue = parseFloat(e.target.value) || 0;
-              updateSetting(key, newValue);
-            }}
+            step={config.step || 1}
+            value={value}
+            onChange={(e) => setSettings(prev => ({
+              ...prev,
+              [key]: parseFloat(e.target.value)
+            }))}
           />
-          {config.unit && (
-            <span className="setting-unit">{config.unit}</span>
-          )}
+          {config.unit && <span className="input-unit">{config.unit}</span>}
         </div>
       );
     }
-    // String settings
+
+    // Handle string settings with text input
     return (
       <input
         type="text"
         value={value}
-        onChange={(e) => updateSetting(key, e.target.value)}
+        onChange={(e) => setSettings(prev => ({
+          ...prev,
+          [key]: e.target.value
+        }))}
       />
     );
   };
@@ -241,6 +256,20 @@ function SettingsPage() {
       <div className="page-header">
         <h1>Settings</h1>
       </div>
+
+      {/* Success/Error Messages */}
+      {success && (
+        <div className="alert alert-success">
+          <CheckCircle size={16} />
+          {success}
+        </div>
+      )}
+      {error && (
+        <div className="alert alert-error">
+          <AlertTriangle size={16} />
+          {error}
+        </div>
+      )}
 
       {/* Auto-Update Sources Management */}
       <div className="settings-section">
@@ -641,9 +670,9 @@ function getSettingConfig(key) {
       label: 'Firewall Logging',
       hint: 'Enable or disable firewall activity logging'
     },
-    manual_domain_resolution: {
-      label: 'Manual Domain Resolution',
-      hint: 'Resolve manually added domains during auto-update cycles'
+    automatic_domain_resolution: {
+      label: 'Automatic Domain Resolution',
+      hint: 'Automatically resolve manually-added domains to IPs during auto-update cycles'
     },
     rate_limit_delay: {
       label: 'Rate Limit Delay',
@@ -657,6 +686,18 @@ function getSettingConfig(key) {
     auto_update_enabled: {
       label: 'Auto-Update Agent',
       hint: 'Enable or disable the auto-update service'
+    },
+    critical_ipv4_ips_ranges: {
+      label: 'Critical IPv4 IPs/Ranges',
+      hint: 'IPv4 addresses and CIDR ranges that should never be auto-blocked (one per line)',
+      type: 'textarea',
+      validation: 'Must be valid IPv4 addresses or CIDR ranges, one per line'
+    },
+    critical_ipv6_ips_ranges: {
+      label: 'Critical IPv6 IPs/Ranges',
+      hint: 'IPv6 addresses and CIDR ranges that should never be auto-blocked (one per line)',
+      type: 'textarea',
+      validation: 'Must be valid IPv6 addresses or CIDR ranges, one per line'
     },
     log_retention_days: {
       label: 'Log Retention Period',
@@ -683,18 +724,6 @@ function getSettingConfig(key) {
     hint: '',
     validation: ''
   };
-}
-
-function validateSetting(key, value) {
-  const config = getSettingConfig(key);
-  if (typeof value === 'number') {
-    if (config.min !== undefined && value < config.min) return false;
-    if (config.max !== undefined && value > config.max) return false;
-  }
-  if (key === 'dns_resolver_primary' || key === 'dns_resolver_secondary') {
-    return /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(value);
-  }
-  return true;
 }
 
 export default SettingsPage; 

@@ -134,6 +134,89 @@
 							"    pm.expect(response).to.have.property('auto_update_interval');",
 							"    pm.expect(response).to.have.property('rule_expiration');",
 							"    pm.expect(response).to.have.property('max_ips_per_domain');",
+							"    pm.expect(response).to.have.property('dns_resolver_primary');",
+							"    pm.expect(response).to.have.property('dns_resolver_secondary');",
+							"    pm.expect(response).to.have.property('automatic_domain_resolution');",
+							"    pm.expect(response).to.have.property('critical_ipv4_ips_ranges');",
+							"    pm.expect(response).to.have.property('critical_ipv6_ips_ranges');",
+							"});",
+							"",
+							"pm.test('Critical IP settings are arrays', function () {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.critical_ipv4_ips_ranges).to.be.an('array');",
+							"    pm.expect(response.critical_ipv6_ips_ranges).to.be.an('array');",
+							"    // Should have default values",
+							"    pm.expect(response.critical_ipv4_ips_ranges.length).to.be.greaterThan(0);",
+							"    pm.expect(response.critical_ipv6_ips_ranges.length).to.be.greaterThan(0);",
+							"});",
+							"",
+							"pm.test('DNS resolver settings are valid', function () {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.dns_resolver_primary).to.be.a('string');",
+							"    pm.expect(response.dns_resolver_secondary).to.be.a('string');",
+							"    // Should be valid IP format (basic check)",
+							"    pm.expect(response.dns_resolver_primary).to.match(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/);",
+							"    pm.expect(response.dns_resolver_secondary).to.match(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/);",
+							"});",
+							"",
+							"pm.test('Automatic domain resolution setting is boolean', function () {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.automatic_domain_resolution).to.be.a('boolean');",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/settings/",
+					"host": ["{{base_url}}"],
+					"path": ["api", "settings", ""]
+				}
+			}
+		},
+		{
+			"name": "Test Critical IP Settings",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Get critical IP settings returns 200', function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('IPv4 critical settings exist and are valid', function () {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response).to.have.property('critical_ipv4_ips_ranges');",
+							"    pm.expect(response.critical_ipv4_ips_ranges).to.be.an('array');",
+							"    pm.expect(response.critical_ipv4_ips_ranges.length).to.be.greaterThan(0);",
+							"    // Should contain localhost",
+							"    pm.expect(response.critical_ipv4_ips_ranges).to.include('127.0.0.1');",
+							"    // Should contain private networks",
+							"    pm.expect(response.critical_ipv4_ips_ranges).to.include('192.168.0.0/16');",
+							"});",
+							"",
+							"pm.test('IPv6 critical settings exist and are valid', function () {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response).to.have.property('critical_ipv6_ips_ranges');",
+							"    pm.expect(response.critical_ipv6_ips_ranges).to.be.an('array');",
+							"    pm.expect(response.critical_ipv6_ips_ranges.length).to.be.greaterThan(0);",
+							"    // Should contain IPv6 localhost",
+							"    pm.expect(response.critical_ipv6_ips_ranges).to.include('::1');",
+							"    // Should contain IPv6 local networks",
+							"    pm.expect(response.critical_ipv6_ips_ranges).to.include('fc00::/7');",
+							"});",
+							"",
+							"pm.test('Auto-update protection settings are configured', function () {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response).to.have.property('automatic_domain_resolution');",
+							"    pm.expect(response.automatic_domain_resolution).to.be.a('boolean');",
+							"    // Should have DNS resolvers configured for protection",
+							"    pm.expect(response).to.have.property('dns_resolver_primary');",
+							"    pm.expect(response).to.have.property('dns_resolver_secondary');",
 							"});"
 						]
 					}

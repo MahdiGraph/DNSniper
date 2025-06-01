@@ -1,7 +1,9 @@
 import subprocess
-import logging
 from typing import List, Optional
 import ipaddress
+from database import SessionLocal
+from models import Log
+from models.logs import ActionType, RuleType
 
 
 class FirewallService:
@@ -28,19 +30,23 @@ class FirewallService:
     CHAIN_V6 = "DNSniper6"
 
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
+        pass
 
     def run_command(self, command: List[str], check: bool = True) -> subprocess.CompletedProcess:
         """Run a command with error handling"""
         try:
             result = subprocess.run(command, capture_output=True, text=True, check=check)
             if result.returncode != 0:
-                self.logger.error(f"Command failed: {' '.join(command)}")
-                self.logger.error(f"Error: {result.stderr}")
+                db = SessionLocal()
+                Log.create_error_log(db, f"Command failed: {' '.join(command)}\nError: {result.stderr}", context="FirewallService", mode="manual")
+                Log.cleanup_old_logs(db)
+                db.close()
             return result
         except subprocess.CalledProcessError as e:
-            self.logger.error(f"Command failed: {' '.join(command)}")
-            self.logger.error(f"Error: {e.stderr}")
+            db = SessionLocal()
+            Log.create_error_log(db, f"Command failed: {' '.join(command)}\nError: {e.stderr}", context="FirewallService", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
             raise
 
     def ipset_exists(self, ipset_name: str) -> bool:
@@ -53,7 +59,7 @@ class FirewallService:
 
     def create_ipsets(self):
         """Create all required IPSets"""
-        self.logger.info("Creating IPSets...")
+        # No logging needed here
         
         # Create IPv4 IPSets
         for ipset_type, ipset_name in self.IPSETS_V4.items():
@@ -62,7 +68,6 @@ class FirewallService:
                     self.run_command(["sudo", "ipset", "create", ipset_name, "hash:net", "family", "inet"])
                 else:
                     self.run_command(["sudo", "ipset", "create", ipset_name, "hash:ip", "family", "inet"])
-                self.logger.info(f"Created IPv4 IPSet: {ipset_name}")
         
         # Create IPv6 IPSets
         for ipset_type, ipset_name in self.IPSETS_V6.items():
@@ -71,7 +76,6 @@ class FirewallService:
                     self.run_command(["sudo", "ipset", "create", ipset_name, "hash:net", "family", "inet6"])
                 else:
                     self.run_command(["sudo", "ipset", "create", ipset_name, "hash:ip", "family", "inet6"])
-                self.logger.info(f"Created IPv6 IPSet: {ipset_name}")
 
     def chain_exists(self, chain_name: str, ipv6: bool = False) -> bool:
         """Check if iptables chain exists"""
@@ -84,7 +88,7 @@ class FirewallService:
 
     def create_iptables_chains(self):
         """Create and configure iptables chains"""
-        self.logger.info("Creating iptables chains...")
+        # No logging needed here
         
         # IPv4 Chain
         if not self.chain_exists(self.CHAIN_V4):
@@ -95,9 +99,7 @@ class FirewallService:
             self.run_command(["sudo", "iptables", "-I", "INPUT", "1", "-j", self.CHAIN_V4])
             self.run_command(["sudo", "iptables", "-I", "FORWARD", "1", "-j", self.CHAIN_V4])
             self.run_command(["sudo", "iptables", "-I", "OUTPUT", "1", "-j", self.CHAIN_V4])
-            
-            self.logger.info(f"Created IPv4 chain: {self.CHAIN_V4}")
-
+        
         # IPv6 Chain
         if not self.chain_exists(self.CHAIN_V6, ipv6=True):
             # Create chain
@@ -107,12 +109,10 @@ class FirewallService:
             self.run_command(["sudo", "ip6tables", "-I", "INPUT", "1", "-j", self.CHAIN_V6])
             self.run_command(["sudo", "ip6tables", "-I", "FORWARD", "1", "-j", self.CHAIN_V6])
             self.run_command(["sudo", "ip6tables", "-I", "OUTPUT", "1", "-j", self.CHAIN_V6])
-            
-            self.logger.info(f"Created IPv6 chain: {self.CHAIN_V6}")
 
     def setup_iptables_rules(self):
         """Setup the complete iptables rule structure"""
-        self.logger.info("Setting up iptables rules...")
+        # No logging needed here
         
         # IPv4 Rules
         self._setup_ipv4_rules()
@@ -287,8 +287,6 @@ class FirewallService:
 
     def initialize_firewall(self):
         """Initialize complete firewall setup"""
-        self.logger.info("Initializing DNSniper firewall...")
-        
         try:
             # Create IPSets
             self.create_ipsets()
@@ -302,10 +300,16 @@ class FirewallService:
             # Save rules
             self.save_rules()
             
-            self.logger.info("Firewall initialization completed successfully")
+            db = SessionLocal()
+            Log.create_rule_log(db, ActionType.update, None, "Firewall initialization completed successfully", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
             
         except Exception as e:
-            self.logger.error(f"Firewall initialization failed: {e}")
+            db = SessionLocal()
+            Log.create_error_log(db, str(e), context="FirewallService.initialize_firewall", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
             raise
 
     def add_ip_to_ipset(self, ip_address: str, list_type: str, ip_version: int):
@@ -315,9 +319,11 @@ class FirewallService:
         
         try:
             self.run_command(["sudo", "ipset", "add", ipset_name, ip_address], check=False)
-            self.logger.debug(f"Added IP {ip_address} to {ipset_name}")
         except Exception as e:
-            self.logger.error(f"Failed to add IP {ip_address} to {ipset_name}: {e}")
+            db = SessionLocal()
+            Log.create_error_log(db, f"Failed to add IP {ip_address} to {ipset_name}: {e}", context="FirewallService.add_ip_to_ipset", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
 
     def remove_ip_from_ipset(self, ip_address: str, list_type: str, ip_version: int):
         """Remove IP address from IPSet"""
@@ -326,9 +332,11 @@ class FirewallService:
         
         try:
             self.run_command(["sudo", "ipset", "del", ipset_name, ip_address], check=False)
-            self.logger.debug(f"Removed IP {ip_address} from {ipset_name}")
         except Exception as e:
-            self.logger.error(f"Failed to remove IP {ip_address} from {ipset_name}: {e}")
+            db = SessionLocal()
+            Log.create_error_log(db, f"Failed to remove IP {ip_address} from {ipset_name}: {e}", context="FirewallService.remove_ip_from_ipset", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
 
     def add_ip_range_to_ipset(self, ip_range: str, list_type: str, ip_version: int):
         """Add IP range to appropriate IPSet"""
@@ -337,9 +345,11 @@ class FirewallService:
         
         try:
             self.run_command(["sudo", "ipset", "add", ipset_name, ip_range], check=False)
-            self.logger.debug(f"Added IP range {ip_range} to {ipset_name}")
         except Exception as e:
-            self.logger.error(f"Failed to add IP range {ip_range} to {ipset_name}: {e}")
+            db = SessionLocal()
+            Log.create_error_log(db, f"Failed to add IP range {ip_range} to {ipset_name}: {e}", context="FirewallService.add_ip_range_to_ipset", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
 
     def remove_ip_range_from_ipset(self, ip_range: str, list_type: str, ip_version: int):
         """Remove IP range from IPSet"""
@@ -348,63 +358,47 @@ class FirewallService:
         
         try:
             self.run_command(["sudo", "ipset", "del", ipset_name, ip_range], check=False)
-            self.logger.debug(f"Removed IP range {ip_range} from {ipset_name}")
         except Exception as e:
-            self.logger.error(f"Failed to remove IP range {ip_range} from {ipset_name}: {e}")
+            db = SessionLocal()
+            Log.create_error_log(db, f"Failed to remove IP range {ip_range} from {ipset_name}: {e}", context="FirewallService.remove_ip_range_from_ipset", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
 
     def clear_all_rules(self):
         """Clear all DNSniper firewall rules and ipsets completely"""
-        self.logger.info("Clearing all DNSniper firewall rules and ipsets...")
-        
         try:
             # Step 1: Remove raw table rules first (to prevent blocking packets)
-            self.logger.info("Removing raw table rules...")
             for ipsets in [self.IPSETS_V4, self.IPSETS_V6]:
                 cmd_prefix = ["sudo", "ip6tables" if ipsets == self.IPSETS_V6 else "iptables", "-t", "raw"]
-                
                 # Remove PREROUTING rules
                 self.run_command(cmd_prefix + ["-D", "PREROUTING", "-m", "set", "--match-set", 
                                               ipsets["blacklist_ip"], "dst", "-j", "DROP"], check=False)
                 self.run_command(cmd_prefix + ["-D", "PREROUTING", "-m", "set", "--match-set", 
                                               ipsets["blacklist_range"], "dst", "-j", "DROP"], check=False)
-                
                 # Remove OUTPUT rules
                 self.run_command(cmd_prefix + ["-D", "OUTPUT", "-m", "set", "--match-set", 
                                               ipsets["blacklist_ip"], "dst", "-j", "DROP"], check=False)
                 self.run_command(cmd_prefix + ["-D", "OUTPUT", "-m", "set", "--match-set", 
                                               ipsets["blacklist_range"], "dst", "-j", "DROP"], check=False)
-            
             # Step 2: Remove chain references from main chains
-            self.logger.info("Removing chain references from main chains...")
-            
             # IPv4 chain references
             self.run_command(["sudo", "iptables", "-D", "INPUT", "-j", self.CHAIN_V4], check=False)
             self.run_command(["sudo", "iptables", "-D", "FORWARD", "-j", self.CHAIN_V4], check=False)
             self.run_command(["sudo", "iptables", "-D", "OUTPUT", "-j", self.CHAIN_V4], check=False)
-            
             # IPv6 chain references
             self.run_command(["sudo", "ip6tables", "-D", "INPUT", "-j", self.CHAIN_V6], check=False)
             self.run_command(["sudo", "ip6tables", "-D", "FORWARD", "-j", self.CHAIN_V6], check=False)
             self.run_command(["sudo", "ip6tables", "-D", "OUTPUT", "-j", self.CHAIN_V6], check=False)
-            
             # Step 3: Flush and delete chains
-            self.logger.info("Flushing and deleting chains...")
-            
             # IPv4 chain
             if self.chain_exists(self.CHAIN_V4):
                 self.run_command(["sudo", "iptables", "-F", self.CHAIN_V4], check=False)
                 self.run_command(["sudo", "iptables", "-X", self.CHAIN_V4], check=False)
-                self.logger.info(f"Removed IPv4 chain: {self.CHAIN_V4}")
-            
             # IPv6 chain
             if self.chain_exists(self.CHAIN_V6, ipv6=True):
                 self.run_command(["sudo", "ip6tables", "-F", self.CHAIN_V6], check=False)
                 self.run_command(["sudo", "ip6tables", "-X", self.CHAIN_V6], check=False)
-                self.logger.info(f"Removed IPv6 chain: {self.CHAIN_V6}")
-            
             # Step 4: Destroy all DNSniper IPSets
-            self.logger.info("Destroying IPSets...")
-            
             all_ipsets = list(self.IPSETS_V4.values()) + list(self.IPSETS_V6.values())
             for ipset_name in all_ipsets:
                 if self.ipset_exists(ipset_name):
@@ -412,59 +406,53 @@ class FirewallService:
                     self.run_command(["sudo", "ipset", "flush", ipset_name], check=False)
                     # Then destroy it
                     self.run_command(["sudo", "ipset", "destroy", ipset_name], check=False)
-                    self.logger.info(f"Destroyed IPSet: {ipset_name}")
-            
             # Step 5: Save the configuration to disk
-            self.logger.info("Saving cleared configuration to disk...")
             self.save_rules()
-            
-            self.logger.info("All DNSniper firewall rules and ipsets cleared successfully")
-            
+            db = SessionLocal()
+            Log.create_rule_log(db, ActionType.update, None, "All DNSniper firewall rules and ipsets cleared successfully", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
         except Exception as e:
-            self.logger.error(f"Failed to clear firewall rules: {e}")
+            db = SessionLocal()
+            Log.create_error_log(db, str(e), context="FirewallService.clear_all_rules", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
             raise
 
     def rebuild_rules_from_database(self, db):
         """Rebuild all firewall rules from database"""
         from models import Domain, IP, IPRange
         
-        self.logger.info("Rebuilding firewall rules from database...")
+        # Clear existing rules
+        self.clear_all_rules()
         
-        try:
-            # Clear existing rules
-            self.clear_all_rules()
-            
-            # Reinitialize firewall
-            self.initialize_firewall()
-            
-            # Add all IPs from database
-            ips = db.query(IP).all()
-            for ip in ips:
-                if not ip.is_expired():
-                    self.add_ip_to_ipset(ip.ip_address, ip.list_type.value, ip.ip_version)
-            
-            # Add all IP ranges from database
-            ip_ranges = db.query(IPRange).all()
-            for ip_range in ip_ranges:
-                if not ip_range.is_expired():
-                    self.add_ip_range_to_ipset(ip_range.ip_range, ip_range.list_type.value, ip_range.ip_version)
-            
-            # Save rules
-            self.save_rules()
-            
-            self.logger.info("Firewall rules rebuilt successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to rebuild firewall rules: {e}")
-            raise
+        # Reinitialize firewall
+        self.initialize_firewall()
+        
+        # Add all IPs from database
+        ips = db.query(IP).all()
+        for ip in ips:
+            if not ip.is_expired():
+                self.add_ip_to_ipset(ip.ip_address, ip.list_type.value, ip.ip_version)
+        
+        # Add all IP ranges from database
+        ip_ranges = db.query(IPRange).all()
+        for ip_range in ip_ranges:
+            if not ip_range.is_expired():
+                self.add_ip_range_to_ipset(ip_range.ip_range, ip_range.list_type.value, ip_range.ip_version)
+        
+        # Save rules
+        self.save_rules()
 
     def save_rules(self):
         """Save iptables and ipsets rules to disk for persistence"""
         try:
             self.run_command(["sudo", "netfilter-persistent", "save"], check=False)
-            self.logger.info("Firewall rules saved to disk")
         except Exception as e:
-            self.logger.warning(f"Failed to save rules to disk: {e}")
+            db = SessionLocal()
+            Log.create_error_log(db, f"Failed to save rules to disk: {e}", context="FirewallService.save_rules", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
 
     def get_status(self) -> dict:
         """Get firewall status information"""

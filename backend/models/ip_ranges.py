@@ -1,11 +1,11 @@
 from sqlalchemy import Column, Integer, String, DateTime, Text, Enum, event
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
-from database import Base
+from database import Base, SessionLocal
 from .domains import ListType, SourceType
-from datetime import datetime
+from datetime import datetime, timezone
 import ipaddress
-import logging
+from models.logs import ActionType, RuleType
 
 
 class IPRange(Base):
@@ -29,7 +29,16 @@ class IPRange(Base):
         """Check if this IP range entry is expired"""
         if self.expired_at is None:
             return False  # Manual entries never expire
-        return self.expired_at < datetime.utcnow()
+        
+        # Handle timezone-aware comparison
+        now = datetime.now(timezone.utc)
+        if self.expired_at.tzinfo is None:
+            # If expired_at is timezone-naive, assume UTC
+            expired_at_utc = self.expired_at.replace(tzinfo=timezone.utc)
+        else:
+            expired_at_utc = self.expired_at
+        
+        return expired_at_utc < now
 
     def is_manual(self) -> bool:
         """Check if this is a manual entry"""
@@ -91,10 +100,12 @@ class IPRange(Base):
     @classmethod
     def get_expired_auto_updates(cls, db: Session):
         """Get all expired auto-update entries"""
+        # Use timezone-aware datetime for comparison
+        now = datetime.now(timezone.utc)
         return db.query(cls).filter(
             cls.source_type == SourceType.auto_update,
             cls.expired_at.isnot(None),
-            cls.expired_at < func.now()
+            cls.expired_at < now
         ).all()
 
     @staticmethod
@@ -111,37 +122,65 @@ class IPRange(Base):
 @event.listens_for(IPRange, 'after_insert')
 def iprange_after_insert(mapper, connection, target):
     from services.firewall_service import FirewallService
-    logger = logging.getLogger(__name__)
+    from models.logs import Log
+    from models.settings import Setting
     if not target.is_expired():
         try:
             firewall = FirewallService()
             firewall.add_ip_range_to_ipset(target.ip_range, target.list_type.value, target.ip_version)
-            logger.info(f"[HOOK] Added IP range {target.ip_range} to ipset ({target.list_type.value}, v{target.ip_version}) after insert.")
+            db = SessionLocal()
+            if Setting.get_setting(db, "logging_enabled", False):
+                Log.create_firewall_log(db, ActionType.allow, f"[HOOK] Added IP range {target.ip_range} to ipset ({target.list_type.value}, v{target.ip_version}) after insert.", ip_address=target.ip_range, mode="manual")
+                Log.cleanup_old_logs(db)
+            db.close()
         except Exception as e:
-            logger.error(f"[HOOK] Failed to add IP range {target.ip_range} to ipset: {e}")
+            db = SessionLocal()
+            Log.create_error_log(db, f"[HOOK] Failed to add IP range {target.ip_range} to ipset: {e}", context="iprange_after_insert", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.close()
 
 @event.listens_for(IPRange, 'after_delete')
 def iprange_after_delete(mapper, connection, target):
     from services.firewall_service import FirewallService
-    logger = logging.getLogger(__name__)
+    from models.logs import Log
+    from models.settings import Setting
     try:
         firewall = FirewallService()
         firewall.remove_ip_range_from_ipset(target.ip_range, target.list_type.value, target.ip_version)
-        logger.info(f"[HOOK] Removed IP range {target.ip_range} from ipset ({target.list_type.value}, v{target.ip_version}) after delete.")
+        db = SessionLocal()
+        if Setting.get_setting(db, "logging_enabled", False):
+            Log.create_firewall_log(db, ActionType.remove_rule, f"[HOOK] Removed IP range {target.ip_range} from ipset ({target.list_type.value}, v{target.ip_version}) after delete.", ip_address=target.ip_range, mode="manual")
+            Log.cleanup_old_logs(db)
+        db.close()
     except Exception as e:
-        logger.error(f"[HOOK] Failed to remove IP range {target.ip_range} from ipset: {e}")
+        db = SessionLocal()
+        Log.create_error_log(db, f"[HOOK] Failed to remove IP range {target.ip_range} from ipset: {e}", context="iprange_after_delete", mode="manual")
+        Log.cleanup_old_logs(db)
+        db.close()
 
 @event.listens_for(IPRange, 'after_update')
 def iprange_after_update(mapper, connection, target):
     from services.firewall_service import FirewallService
-    logger = logging.getLogger(__name__)
+    from models.logs import Log
+    from models.settings import Setting
     try:
         firewall = FirewallService()
         firewall.remove_ip_range_from_ipset(target.ip_range, target.list_type.value, target.ip_version)
         if not target.is_expired():
             firewall.add_ip_range_to_ipset(target.ip_range, target.list_type.value, target.ip_version)
-            logger.info(f"[HOOK] Updated IP range {target.ip_range} in ipset ({target.list_type.value}, v{target.ip_version}) after update.")
+            db = SessionLocal()
+            if Setting.get_setting(db, "logging_enabled", False):
+                Log.create_firewall_log(db, ActionType.update, f"[HOOK] Updated IP range {target.ip_range} in ipset ({target.list_type.value}, v{target.ip_version}) after update.", ip_address=target.ip_range, mode="manual")
+                Log.cleanup_old_logs(db)
+            db.close()
         else:
-            logger.info(f"[HOOK] Removed expired IP range {target.ip_range} from ipset after update.")
+            db = SessionLocal()
+            if Setting.get_setting(db, "logging_enabled", False):
+                Log.create_firewall_log(db, ActionType.remove_rule, f"[HOOK] Removed expired IP range {target.ip_range} from ipset after update.", ip_address=target.ip_range, mode="manual")
+                Log.cleanup_old_logs(db)
+            db.close()
     except Exception as e:
-        logger.error(f"[HOOK] Failed to update IP range {target.ip_range} in ipset: {e}") 
+        db = SessionLocal()
+        Log.create_error_log(db, f"[HOOK] Failed to update IP range {target.ip_range} in ipset: {e}", context="iprange_after_update", mode="manual")
+        Log.cleanup_old_logs(db)
+        db.close() 

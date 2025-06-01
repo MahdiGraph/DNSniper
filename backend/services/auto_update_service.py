@@ -1,6 +1,5 @@
 import asyncio
 import aiohttp
-import logging
 import re
 import ipaddress
 from datetime import datetime, timedelta, timezone
@@ -11,193 +10,343 @@ from models.domains import ListType, SourceType
 from models.logs import ActionType, RuleType
 from services.dns_service import DNSService
 from services.firewall_service import FirewallService
+from services.live_events import live_events
 import time
+from database import SessionLocal
 
 
 class AutoUpdateService:
     """Service for handling auto-update functionality"""
     
-    def __init__(self, db: Session):
-        self.db = db
-        self.logger = logging.getLogger(__name__)
+    def __init__(self, db: Session = None):
+        self.db = db  # Can be None, will create sessions as needed
         self.dns_service = DNSService()
         self.firewall_service = FirewallService()
         self.is_running = False
 
+    def _get_db_session(self):
+        """Get database session - use provided one or create new"""
+        if self.db:
+            return self.db
+        return SessionLocal()
+
+    def _close_db_if_needed(self, db):
+        """Close database session if we created it"""
+        if not self.db:  # Only close if we created it
+            db.close()
+
     async def run_auto_update_cycle(self):
         """Run a complete auto-update cycle"""
         if self.is_running:
-            self.logger.warning("Auto-update cycle already running, skipping")
-            return
+            return  # Already running
         
         self.is_running = True
-        start_time = datetime.now(timezone.utc)
+        cycle_start_time = datetime.now(timezone.utc)
         
+        # Broadcast cycle start event
+        await live_events.broadcast_auto_update_cycle_event("started", {
+            "message": "Auto-update cycle started",
+            "start_time": cycle_start_time.isoformat(),
+            "sources_count": 0
+        })
+        
+        db = self._get_db_session()
         try:
-            self.logger.info("Starting auto-update cycle")
+            # Log cycle start
+            Log.create_rule_log(db, ActionType.update, None, "Starting auto-update cycle", mode="auto_update")
+            Log.cleanup_old_logs(db)
             
-            # Step 1: Cleanup expired entries (PRIORITY)
+            # Get active sources count for progress tracking
+            active_sources = AutoUpdateSource.get_active_sources(db)
+            sources_count = len(active_sources)
+            
+            # Update cycle start with source count
+            await live_events.broadcast_auto_update_cycle_event("progress", {
+                "message": f"Found {sources_count} active auto-update sources",
+                "sources_count": sources_count,
+                "processed_sources": 0
+            })
+            
+            # Clean up expired entries first
             await self.cleanup_expired_entries()
             
-            # Step 2: Resolve manual domains (if enabled)
-            if Setting.get_setting(self.db, "manual_domain_resolution", True):
+            # Broadcast progress
+            await live_events.broadcast_auto_update_cycle_event("progress", {
+                "message": "Cleaned up expired entries",
+                "phase": "cleanup"
+            })
+            
+            # Resolve manual domains if enabled
+            if Setting.get_setting(db, "automatic_domain_resolution", True):
+                await live_events.broadcast_auto_update_cycle_event("progress", {
+                    "message": "Resolving manual domains",
+                    "phase": "domain_resolution"
+                })
                 await self.resolve_manual_domains()
             
-            # Step 3: Process auto-update sources
+            # Process auto-update sources
+            await live_events.broadcast_auto_update_cycle_event("progress", {
+                "message": "Processing auto-update sources",
+                "phase": "auto_update_processing"
+            })
             await self.process_auto_update_sources()
             
-            # Step 4: Cleanup logs
-            await self.cleanup_old_logs()
+            # Final cleanup
+            await live_events.broadcast_auto_update_cycle_event("progress", {
+                "message": "Final cleanup and optimization",
+                "phase": "final_cleanup"
+            })
+            await self.cleanup_expired_entries()
             
-            duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-            self.logger.info(f"Auto-update cycle completed in {duration:.2f} seconds")
+            cycle_end_time = datetime.now(timezone.utc)
+            cycle_duration = (cycle_end_time - cycle_start_time).total_seconds()
             
-            Log.create_rule_log(
-                self.db, ActionType.update, None,
-                f"Auto-update cycle completed successfully in {duration:.2f}s"
-            )
+            # Log completion
+            Log.create_rule_log(db, ActionType.update, None, f"Auto-update cycle completed in {cycle_duration:.2f} seconds", mode="auto_update")
+            Log.cleanup_old_logs(db)
+            
+            # Broadcast completion event
+            await live_events.broadcast_auto_update_cycle_event("completed", {
+                "message": "Auto-update cycle completed successfully",
+                "start_time": cycle_start_time.isoformat(),
+                "end_time": cycle_end_time.isoformat(),
+                "duration_seconds": cycle_duration,
+                "sources_processed": sources_count
+            })
             
         except Exception as e:
-            self.logger.error(f"Auto-update cycle failed: {e}")
-            Log.create_error_log(self.db, str(e), "Auto-update cycle")
+            cycle_end_time = datetime.now(timezone.utc)
+            cycle_duration = (cycle_end_time - cycle_start_time).total_seconds()
             
+            # Log error
+            log_db = SessionLocal()
+            Log.create_error_log(log_db, f"Auto-update cycle failed: {e}", context="AutoUpdateService.run_auto_update_cycle", mode="auto_update")
+            Log.cleanup_old_logs(log_db)
+            log_db.close()
+            
+            # Broadcast failure event
+            await live_events.broadcast_auto_update_cycle_event("failed", {
+                "message": "Auto-update cycle failed",
+                "error": str(e),
+                "start_time": cycle_start_time.isoformat(),
+                "end_time": cycle_end_time.isoformat(),
+                "duration_seconds": cycle_duration
+            })
+            
+            raise
         finally:
             self.is_running = False
+            self._close_db_if_needed(db)
 
     async def cleanup_expired_entries(self):
         """Clean up expired auto-update entries (PRIORITY TASK)"""
-        self.logger.info("Cleaning up expired entries...")
+        db = SessionLocal()
+        Log.create_rule_log(db, ActionType.update, None, "Cleaning up expired entries...", mode="auto_update")
+        Log.cleanup_old_logs(db)
+        db.close()
         
         try:
-            # Find expired domains
-            expired_domains = Domain.get_expired_auto_updates(self.db)
-            
-            # Find expired IPs
-            expired_ips = IP.get_expired_auto_updates(self.db)
-            
-            # Find expired IP ranges
-            expired_ip_ranges = IPRange.get_expired_auto_updates(self.db)
-            
-            cleanup_count = len(expired_domains) + len(expired_ips) + len(expired_ip_ranges)
-            
-            if cleanup_count > 0:
-                self.logger.info(f"Found {cleanup_count} expired entries to clean up")
+            db = self._get_db_session()
+            try:
+                # Find expired domains
+                expired_domains = Domain.get_expired_auto_updates(db)
                 
-                # Delete from database
-                for domain in expired_domains:
-                    self.db.delete(domain)
-                for ip in expired_ips:
-                    self.db.delete(ip)
-                for ip_range in expired_ip_ranges:
-                    self.db.delete(ip_range)
+                # Find expired IPs
+                expired_ips = IP.get_expired_auto_updates(db)
                 
-                self.db.commit()
+                # Find expired IP ranges
+                expired_ip_ranges = IPRange.get_expired_auto_updates(db)
                 
-                self.logger.info(f"Cleaned up {cleanup_count} expired entries")
-                Log.create_rule_log(
-                    self.db, ActionType.remove_rule, None,
-                    f"Cleaned up {cleanup_count} expired auto-update entries"
-                )
-            else:
-                self.logger.info("No expired entries found")
+                cleanup_count = len(expired_domains) + len(expired_ips) + len(expired_ip_ranges)
+                
+                if cleanup_count > 0:
+                    # Delete from database
+                    for domain in expired_domains:
+                        db.delete(domain)
+                    for ip in expired_ips:
+                        db.delete(ip)
+                    for ip_range in expired_ip_ranges:
+                        db.delete(ip_range)
+                    
+                    db.commit()
+                    
+                    # Log the cleanup
+                    log_db = SessionLocal()
+                    Log.create_rule_log(
+                        log_db, ActionType.remove_rule, None,
+                        f"Cleaned up {cleanup_count} expired auto-update entries",
+                        mode='auto_update'
+                    )
+                    Log.cleanup_old_logs(log_db)
+                    log_db.close()
+                else:
+                    # Log that no entries were found
+                    log_db = SessionLocal()
+                    Log.create_rule_log(log_db, ActionType.update, None, "No expired entries found", mode="auto_update")
+                    Log.cleanup_old_logs(log_db)
+                    log_db.close()
+                    
+            finally:
+                self._close_db_if_needed(db)
                 
         except Exception as e:
-            self.logger.error(f"Failed to cleanup expired entries: {e}")
-            self.db.rollback()
+            # Rollback and log error
+            if not self.db:  # Only rollback if we created the session
+                db.rollback()
+            
+            log_db = SessionLocal()
+            Log.create_error_log(log_db, f"Failed to cleanup expired entries: {e}", context="AutoUpdateService.cleanup_expired_entries", mode="auto_update")
+            Log.cleanup_old_logs(log_db)
+            log_db.close()
             raise
 
     async def resolve_manual_domains(self):
         """Resolve manual domains to keep IP mappings current"""
-        self.logger.info("Resolving manual domains...")
+        db = SessionLocal()
+        Log.create_rule_log(db, ActionType.update, None, "Resolving manual domains...", mode="auto_update")
+        Log.cleanup_old_logs(db)
+        db.close()
         
         try:
-            manual_domains = Domain.get_manual_domains(self.db)
-            max_ips_per_domain = Setting.get_setting(self.db, "max_ips_per_domain", 5)
-            dns_resolver_primary = Setting.get_setting(self.db, "dns_resolver_primary", "1.1.1.1")
-            dns_resolver_secondary = Setting.get_setting(self.db, "dns_resolver_secondary", "8.8.8.8")
-            dns_service = DNSService(dns_resolver_primary, dns_resolver_secondary)
-            self.logger.info(f"Found {len(manual_domains)} manual domains to resolve.")
-            
-            for domain in manual_domains:
-                try:
-                    self.logger.info(f"Resolving domain: {domain.domain_name} (list_type={domain.list_type}, id={domain.id})")
-                    # Resolve domain
-                    resolution = dns_service.resolve_domain(domain.domain_name)
-                    self.logger.info(f"Resolution result for {domain.domain_name}: IPv4={resolution['ipv4']}, IPv6={resolution['ipv6']}, errors={resolution['errors']}")
-                    
-                    # Process IPv4 addresses
-                    for ip_str in resolution['ipv4']:
-                        self.logger.info(f"Attempting to add IPv4 {ip_str} for domain {domain.domain_name}")
-                        await self._add_or_update_domain_ip(
-                            domain, ip_str, 4, max_ips_per_domain
-                        )
-                    
-                    # Process IPv6 addresses
-                    for ip_str in resolution['ipv6']:
-                        self.logger.info(f"Attempting to add IPv6 {ip_str} for domain {domain.domain_name}")
-                        await self._add_or_update_domain_ip(
-                            domain, ip_str, 6, max_ips_per_domain
-                        )
-                    
-                    # Update CDN status
-                    domain.update_cdn_status(self.db)
-                    
-                except Exception as e:
-                    self.logger.error(f"Failed to resolve manual domain {domain.domain_name}: {e}")
-                    continue
-            
-            self.db.commit()
+            db = self._get_db_session()
+            try:
+                manual_domains = Domain.get_manual_domains(db)
+                max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
+                dns_resolver_primary = Setting.get_setting(db, "dns_resolver_primary", "1.1.1.1")
+                dns_resolver_secondary = Setting.get_setting(db, "dns_resolver_secondary", "8.8.8.8")
+                # Get critical IPs settings for protection during auto-update (separated by IP version)
+                critical_ipv4_list = Setting.get_setting(db, "critical_ipv4_ips_ranges", [])
+                critical_ipv6_list = Setting.get_setting(db, "critical_ipv6_ips_ranges", [])
+                dns_service = DNSService(dns_resolver_primary, dns_resolver_secondary)
+                
+                for domain in manual_domains:
+                    try:
+                        # Resolve domain
+                        resolution = dns_service.resolve_domain(domain.domain_name)
+                        
+                        # Process IPv4 addresses with critical IP protection
+                        for ip_str in resolution['ipv4']:
+                            if dns_service.is_safe_ip_for_auto_update(ip_str, critical_ipv4_list, critical_ipv6_list, db):
+                                await self._add_or_update_domain_ip(
+                                    domain, ip_str, 4, max_ips_per_domain, db
+                                )
+                        
+                        # Process IPv6 addresses with critical IP protection
+                        for ip_str in resolution['ipv6']:
+                            if dns_service.is_safe_ip_for_auto_update(ip_str, critical_ipv4_list, critical_ipv6_list, db):
+                                await self._add_or_update_domain_ip(
+                                    domain, ip_str, 6, max_ips_per_domain, db
+                                )
+                        
+                        # Update CDN status
+                        domain.update_cdn_status(db)
+                        
+                    except Exception as e:
+                        # Log error but continue with other domains
+                        log_db = SessionLocal()
+                        Log.create_error_log(log_db, f"Failed to resolve manual domain {domain.domain_name}: {e}", context="AutoUpdateService.resolve_manual_domains", mode="auto_update")
+                        Log.cleanup_old_logs(log_db)
+                        log_db.close()
+                        continue
+                
+                db.commit()
+                
+            finally:
+                self._close_db_if_needed(db)
             
         except Exception as e:
-            self.logger.error(f"Failed to resolve manual domains: {e}")
-            self.db.rollback()
+            # Rollback and log error
+            if not self.db:  # Only rollback if we created the session
+                db.rollback()
+            
+            log_db = SessionLocal()
+            Log.create_error_log(log_db, f"Failed to resolve manual domains: {e}", context="AutoUpdateService.resolve_manual_domains", mode="auto_update")
+            Log.cleanup_old_logs(log_db)
+            log_db.close()
             raise
 
     async def process_auto_update_sources(self):
         """Process all active auto-update sources"""
-        self.logger.info("Processing auto-update sources...")
-        
+        db = self._get_db_session()
         try:
-            active_sources = AutoUpdateSource.get_active_sources(self.db)
+            active_sources = AutoUpdateSource.get_active_sources(db)
             
             if not active_sources:
-                self.logger.info("No active auto-update sources configured")
+                log_db = SessionLocal()
+                Log.create_rule_log(log_db, ActionType.update, None, "No active auto-update sources configured", mode="auto_update")
+                Log.cleanup_old_logs(log_db)
+                log_db.close()
                 return
             
-            rate_limit_delay = Setting.get_setting(self.db, "rate_limit_delay", 1.0)
+            rate_limit_delay = Setting.get_setting(db, "rate_limit_delay", 1.0)
+            processed_count = 0
             
             for source in active_sources:
                 try:
-                    self.logger.info(f"Processing source: {source.name}")
+                    # Broadcast progress for each source
+                    await live_events.broadcast_auto_update_cycle_event("progress", {
+                        "message": f"Processing source: {source.name}",
+                        "source_name": source.name,
+                        "source_url": source.url,
+                        "processed_sources": processed_count,
+                        "total_sources": len(active_sources),
+                        "phase": "source_processing"
+                    })
                     
                     # Fetch content
                     content = await self._fetch_url_content(source.url)
                     
                     if content:
                         # Process content
-                        await self._process_list_content(content, source)
+                        await self._process_list_content(content, source, db)
                         
                         # Mark successful update
                         source.mark_successful_update()
-                        self.logger.info(f"Successfully processed source: {source.name}")
+                        
+                        # Broadcast success for this source
+                        await live_events.broadcast_auto_update_cycle_event("progress", {
+                            "message": f"Successfully processed source: {source.name}",
+                            "source_name": source.name,
+                            "status": "success"
+                        })
                     else:
                         source.mark_failed_update("Failed to fetch content")
-                        self.logger.warning(f"Failed to fetch content from: {source.name}")
+                        
+                        # Broadcast failure for this source
+                        await live_events.broadcast_auto_update_cycle_event("progress", {
+                            "message": f"Failed to process source: {source.name}",
+                            "source_name": source.name,
+                            "status": "failed",
+                            "error": "Failed to fetch content"
+                        })
+                    
+                    processed_count += 1
                     
                     # Rate limiting
                     await asyncio.sleep(rate_limit_delay)
                     
                 except Exception as e:
                     source.mark_failed_update(str(e))
-                    self.logger.error(f"Failed to process source {source.name}: {e}")
+                    log_db = SessionLocal()
+                    Log.create_error_log(log_db, f"Failed to process source {source.name}: {e}", context="AutoUpdateService.process_auto_update_sources", mode="auto_update")
+                    Log.cleanup_old_logs(log_db)
+                    log_db.close()
+                    
+                    # Broadcast failure for this source
+                    await live_events.broadcast_auto_update_cycle_event("progress", {
+                        "message": f"Error processing source: {source.name}",
+                        "source_name": source.name,
+                        "status": "error",
+                        "error": str(e)
+                    })
+                    
+                    processed_count += 1
                     continue
             
-            self.db.commit()
+            db.commit()
             
-        except Exception as e:
-            self.logger.error(f"Failed to process auto-update sources: {e}")
-            self.db.rollback()
-            raise
+        finally:
+            self._close_db_if_needed(db)
 
     async def _fetch_url_content(self, url: str) -> Optional[str]:
         """Fetch content from URL"""
@@ -208,18 +357,24 @@ class AutoUpdateService:
                     if response.status == 200:
                         return await response.text()
                     else:
-                        self.logger.warning(f"HTTP {response.status} for URL: {url}")
+                        db = SessionLocal()
+                        Log.create_error_log(db, f"HTTP {response.status} for URL: {url}", context="AutoUpdateService._fetch_url_content", mode="auto_update")
+                        Log.cleanup_old_logs(db)
+                        db.close()
                         return None
         except Exception as e:
-            self.logger.error(f"Failed to fetch URL {url}: {e}")
+            db = SessionLocal()
+            Log.create_error_log(db, f"Failed to fetch URL {url}: {e}", context="AutoUpdateService._fetch_url_content", mode="auto_update")
+            Log.cleanup_old_logs(db)
+            db.close()
             return None
 
-    async def _process_list_content(self, content: str, source: AutoUpdateSource):
+    async def _process_list_content(self, content: str, source: AutoUpdateSource, db: Session):
         """Process blacklist/whitelist content"""
         lines = content.strip().split('\n')
         processed_count = 0
-        rule_expiration = Setting.get_setting(self.db, "rule_expiration", 86400)
-        max_ips_per_domain = Setting.get_setting(self.db, "max_ips_per_domain", 5)
+        rule_expiration = Setting.get_setting(db, "rule_expiration", 86400)
+        max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
         expiration_time = datetime.now(timezone.utc) + timedelta(seconds=rule_expiration)
         
         for line in lines:
@@ -231,65 +386,159 @@ class AutoUpdateService:
             
             try:
                 await self._process_list_entry(
-                    line, source, expiration_time, max_ips_per_domain
+                    line, source, expiration_time, max_ips_per_domain, db
                 )
                 processed_count += 1
                 
             except Exception as e:
-                self.logger.debug(f"Failed to process entry '{line}': {e}")
+                db = SessionLocal()
+                Log.create_error_log(db, f"Failed to process entry '{line}': {e}", context="AutoUpdateService._process_list_content", mode="auto_update")
+                Log.cleanup_old_logs(db)
+                db.close()
                 continue
         
-        self.logger.info(f"Processed {processed_count} entries from {source.name}")
+        # Log the processing result
+        log_db = SessionLocal()
+        Log.create_rule_log(log_db, ActionType.update, None, f"Processed {processed_count} entries from {source.name}", mode="auto_update")
+        Log.cleanup_old_logs(log_db)
+        log_db.close()
 
     async def _process_list_entry(self, entry: str, source: AutoUpdateSource, 
-                                 expiration_time: datetime, max_ips_per_domain: int):
+                                 expiration_time: datetime, max_ips_per_domain: int, db: Session):
         """Process a single entry from auto-update list"""
         # Determine list type from source
         list_type = ListType[source.list_type] if hasattr(source, 'list_type') else ListType.blacklist
+        
+        # Get critical IPs settings for protection during auto-update
+        critical_ipv4_list = Setting.get_setting(db, "critical_ipv4_ips_ranges", [])
+        critical_ipv6_list = Setting.get_setting(db, "critical_ipv6_ips_ranges", [])
+        dns_service = DNSService()
+        
         # Try to parse as IP address
         try:
             ip_obj = ipaddress.ip_address(entry)
-            if IP.is_safe_ip(entry):
+            # Check if IP is safe and not in critical IPs list
+            if IP.is_safe_ip(entry) and not dns_service.is_critical_ip(entry, critical_ipv4_list, critical_ipv6_list, db):
                 await self._add_or_update_ip(
                     entry, ip_obj.version, list_type, 
-                    SourceType.auto_update, source.url, expiration_time
+                    SourceType.auto_update, db, source.url, expiration_time
                 )
+            else:
+                # Skip critical IPs
+                pass
             return
         except ValueError:
             pass
+        
         # Try to parse as IP range
         try:
             network = ipaddress.ip_network(entry, strict=False)
-            if IPRange.is_safe_ip_range(entry):
+            # Check if IP range is safe and not overlapping with critical IP ranges
+            if IPRange.is_safe_ip_range(entry) and not self._is_critical_ip_range(entry, critical_ipv4_list, critical_ipv6_list):
                 await self._add_or_update_ip_range(
                     str(network), network.version, list_type,
-                    SourceType.auto_update, source.url, expiration_time
+                    SourceType.auto_update, db, source.url, expiration_time
                 )
+            else:
+                # Skip critical IP ranges
+                pass
             return
         except ValueError:
             pass
+        
         # Treat as domain
         if self._is_valid_domain(entry):
             domain = await self._add_or_update_domain(
-                entry, list_type, SourceType.auto_update, 
-                source.url, expiration_time
+                entry, list_type, SourceType.auto_update, db, source.url, expiration_time
             )
             if domain:
-                # Resolve domain to IPs
-                dns_resolver_primary = Setting.get_setting(self.db, "dns_resolver_primary", "1.1.1.1")
-                dns_resolver_secondary = Setting.get_setting(self.db, "dns_resolver_secondary", "8.8.8.8")
+                # Resolve domain to IPs with critical IP protection
+                dns_resolver_primary = Setting.get_setting(db, "dns_resolver_primary", "1.1.1.1")
+                dns_resolver_secondary = Setting.get_setting(db, "dns_resolver_secondary", "8.8.8.8")
                 dns_service = DNSService(dns_resolver_primary, dns_resolver_secondary)
                 resolution = dns_service.resolve_domain(entry)
-                # Process IPv4 addresses
+                
+                # Process IPv4 addresses with critical IP protection
                 for ip_str in resolution['ipv4']:
-                    await self._add_or_update_domain_ip(
-                        domain, ip_str, 4, max_ips_per_domain, expiration_time
-                    )
-                # Process IPv6 addresses
+                    if dns_service.is_safe_ip_for_auto_update(ip_str, critical_ipv4_list, critical_ipv6_list, db):
+                        await self._add_or_update_domain_ip(
+                            domain, ip_str, 4, max_ips_per_domain, db, expiration_time
+                        )
+                    else:
+                        # Skip critical IPs
+                        pass
+                
+                # Process IPv6 addresses with critical IP protection
                 for ip_str in resolution['ipv6']:
-                    await self._add_or_update_domain_ip(
-                        domain, ip_str, 6, max_ips_per_domain, expiration_time
-                    )
+                    if dns_service.is_safe_ip_for_auto_update(ip_str, critical_ipv4_list, critical_ipv6_list, db):
+                        await self._add_or_update_domain_ip(
+                            domain, ip_str, 6, max_ips_per_domain, db, expiration_time
+                        )
+                    else:
+                        # Skip critical IPs
+                        pass
+
+    def _is_critical_ip_range(self, ip_range_str: str, critical_ipv4_list: List[str], critical_ipv6_list: List[str]) -> bool:
+        """Check if IP range overlaps with critical IPs or critical IP ranges (includes dynamic detection)"""
+        try:
+            network = ipaddress.ip_network(ip_range_str, strict=False)
+            
+            # Get dynamic critical IPs at runtime
+            dns_service = DNSService()
+            
+            # Create a temporary session for this check
+            temp_db = SessionLocal()
+            try:
+                dynamic_critical = dns_service._get_dynamic_critical_ips(temp_db)
+            finally:
+                temp_db.close()
+            
+            # Ensure critical IP lists are actually lists (they might be None or strings)
+            if critical_ipv4_list is None:
+                critical_ipv4_list = []
+            elif isinstance(critical_ipv4_list, str):
+                try:
+                    import json
+                    critical_ipv4_list = json.loads(critical_ipv4_list)
+                except:
+                    critical_ipv4_list = []
+            
+            if critical_ipv6_list is None:
+                critical_ipv6_list = []
+            elif isinstance(critical_ipv6_list, str):
+                try:
+                    import json
+                    critical_ipv6_list = json.loads(critical_ipv6_list)
+                except:
+                    critical_ipv6_list = []
+            
+            # Combine static (from database) with dynamic (runtime detection)
+            if network.version == 4:
+                combined_critical_list = list(critical_ipv4_list) + list(dynamic_critical['ipv4'])
+            elif network.version == 6:
+                combined_critical_list = list(critical_ipv6_list) + list(dynamic_critical['ipv6'])
+            else:
+                return False
+            
+            # Check if any critical IPs or ranges are in this range or overlap
+            for item in combined_critical_list:
+                try:
+                    # Try as IP address first
+                    critical_ip_obj = ipaddress.ip_address(item)
+                    if critical_ip_obj in network:
+                        return True
+                except ValueError:
+                    try:
+                        # Try as network/CIDR range
+                        critical_network = ipaddress.ip_network(item, strict=False)
+                        if network.overlaps(critical_network):
+                            return True
+                    except ValueError:
+                        continue
+            
+            return False
+        except ValueError:
+            return False
 
     def _is_valid_domain(self, domain: str) -> bool:
         """Validate domain name format"""
@@ -305,12 +554,12 @@ class AutoUpdateService:
         return bool(re.match(pattern, domain))
 
     async def _add_or_update_domain(self, domain_name: str, list_type: ListType, 
-                                   source_type: SourceType, source_url: str = None, 
+                                   source_type: SourceType, db: Session, source_url: str = None, 
                                    expiration_time: datetime = None) -> Optional[Domain]:
         """Add or update domain entry"""
         try:
             # Check if domain exists
-            existing = self.db.query(Domain).filter(
+            existing = db.query(Domain).filter(
                 Domain.domain_name == domain_name
             ).first()
             
@@ -329,21 +578,25 @@ class AutoUpdateService:
                     source_url=source_url,
                     expired_at=expiration_time
                 )
-                self.db.add(domain)
-                self.db.flush()  # Get ID
+                db.add(domain)
+                db.flush()  # Get ID
                 return domain
                 
         except Exception as e:
-            self.logger.error(f"Failed to add/update domain {domain_name}: {e}")
+            # Log error via database
+            log_db = SessionLocal()
+            Log.create_error_log(log_db, f"Failed to add/update domain {domain_name}: {e}", context="AutoUpdateService._add_or_update_domain", mode="auto_update")
+            Log.cleanup_old_logs(log_db)
+            log_db.close()
             return None
 
     async def _add_or_update_ip(self, ip_address: str, ip_version: int, 
-                               list_type: ListType, source_type: SourceType,
+                               list_type: ListType, source_type: SourceType, db: Session,
                                source_url: str = None, expiration_time: datetime = None):
         """Add or update IP entry"""
         try:
             # Check if IP exists
-            existing = self.db.query(IP).filter(
+            existing = db.query(IP).filter(
                 IP.ip_address == ip_address
             ).first()
             
@@ -362,13 +615,17 @@ class AutoUpdateService:
                     source_url=source_url,
                     expired_at=expiration_time
                 )
-                self.db.add(ip)
+                db.add(ip)
                 
         except Exception as e:
-            self.logger.error(f"Failed to add/update IP {ip_address}: {e}")
+            # Log error via database
+            log_db = SessionLocal()
+            Log.create_error_log(log_db, f"Failed to add/update IP {ip_address}: {e}", context="AutoUpdateService._add_or_update_ip", mode="auto_update")
+            Log.cleanup_old_logs(log_db)
+            log_db.close()
 
     async def _add_or_update_ip_range(self, ip_range: str, ip_version: int,
-                                     list_type: ListType, source_type: SourceType,
+                                     list_type: ListType, source_type: SourceType, db: Session,
                                      source_url: str = None, expiration_time: datetime = None):
         """Add or update IP range entry"""
         try:
@@ -376,7 +633,7 @@ class AutoUpdateService:
             normalized_range = IPRange.normalize_cidr(ip_range)
             
             # Check if IP range exists
-            existing = self.db.query(IPRange).filter(
+            existing = db.query(IPRange).filter(
                 IPRange.ip_range == normalized_range
             ).first()
             
@@ -395,31 +652,32 @@ class AutoUpdateService:
                     source_url=source_url,
                     expired_at=expiration_time
                 )
-                self.db.add(ip_range_obj)
+                db.add(ip_range_obj)
                 
         except Exception as e:
-            self.logger.error(f"Failed to add/update IP range {ip_range}: {e}")
+            # Log error via database
+            log_db = SessionLocal()
+            Log.create_error_log(log_db, f"Failed to add/update IP range {ip_range}: {e}", context="AutoUpdateService._add_or_update_ip_range", mode="auto_update")
+            Log.cleanup_old_logs(log_db)
+            log_db.close()
 
     async def _add_or_update_domain_ip(self, domain: Domain, ip_address: str, 
-                                      ip_version: int, max_ips_per_domain: int,
+                                      ip_version: int, max_ips_per_domain: int, db: Session,
                                       expiration_time: datetime = None):
         """Add or update IP for a domain with FIFO management"""
         try:
-            self.logger.info(f"_add_or_update_domain_ip: domain={domain.domain_name}, ip={ip_address}, version={ip_version}, list_type={domain.list_type}, source_type={domain.source_type}")
             # Check if this IP already exists for this domain
-            existing = self.db.query(IP).filter(
+            existing = db.query(IP).filter(
                 IP.domain_id == domain.id,
                 IP.ip_address == ip_address
             ).first()
             
             if existing:
-                self.logger.info(f"IP {ip_address} already exists for domain {domain.domain_name}, updating timestamps if needed.")
                 # Update existing IP
                 if domain.source_type == SourceType.auto_update and expiration_time:
                     existing.expired_at = expiration_time
                 existing.updated_at = datetime.now(timezone.utc)
             else:
-                self.logger.info(f"Adding new IP {ip_address} for domain {domain.domain_name} to DB.")
                 # Create new IP
                 ip = IP(
                     ip_address=ip_address,
@@ -430,34 +688,57 @@ class AutoUpdateService:
                     domain_id=domain.id,
                     expired_at=expiration_time if domain.source_type == SourceType.auto_update else None
                 )
-                self.db.add(ip)
-                self.db.flush()
-                self.logger.info(f"Added IP {ip_address} to DB for domain {domain.domain_name}.")
+                db.add(ip)
+                db.flush()
                 
                 # Apply FIFO limit
-                IP.cleanup_old_ips_for_domain(self.db, domain.id, max_ips_per_domain)
-                self.logger.info(f"Applied FIFO limit for domain {domain.domain_name} (max {max_ips_per_domain} IPs).")
+                IP.cleanup_old_ips_for_domain(db, domain.id, max_ips_per_domain)
                 
         except Exception as e:
-            self.logger.error(f"Failed to add/update domain IP {ip_address} for {domain.domain_name}: {e}")
+            # Log error via database
+            log_db = SessionLocal()
+            Log.create_error_log(log_db, f"Failed to add/update domain IP {ip_address} for {domain.domain_name}: {e}", context="AutoUpdateService._add_or_update_domain_ip", mode="auto_update")
+            Log.cleanup_old_logs(log_db)
+            log_db.close()
 
     async def cleanup_old_logs(self):
         """Clean up old log entries"""
         try:
-            max_entries = Setting.get_setting(self.db, "max_log_entries", 10000)
-            max_days = Setting.get_setting(self.db, "log_retention_days", 7)
-            
-            Log.cleanup_old_logs(self.db, max_entries, max_days)
+            db = self._get_db_session()
+            try:
+                max_entries = Setting.get_setting(db, "max_log_entries", 10000)
+                max_days = Setting.get_setting(db, "log_retention_days", 7)
+                
+                deleted_count = Log.cleanup_old_logs(db, max_entries, max_days)
+                
+                # Log the cleanup if any entries were deleted
+                if deleted_count > 0:
+                    log_db = SessionLocal()
+                    Log.create_rule_log(log_db, ActionType.update, None, f"Cleaned up {deleted_count} old log entries during auto-update", mode="auto_update")
+                    Log.cleanup_old_logs(log_db)
+                    log_db.close()
+                
+            finally:
+                self._close_db_if_needed(db)
             
         except Exception as e:
-            self.logger.error(f"Failed to cleanup old logs: {e}")
+            log_db = SessionLocal()
+            Log.create_error_log(log_db, f"Failed to cleanup old logs: {e}", context="AutoUpdateService.cleanup_old_logs", mode="auto_update")
+            Log.cleanup_old_logs(log_db)
+            log_db.close()
 
     def get_status(self) -> dict:
         """Get auto-update service status"""
-        return {
-            "is_running": self.is_running,
-            "enabled": Setting.get_setting(self.db, "auto_update_enabled", True),
-            "active_sources": len(AutoUpdateSource.get_active_sources(self.db)),
-            "last_update": "Not implemented",  # Would need to track this
-            "next_update": "Not implemented"   # Would need scheduler integration
-        } 
+        db = SessionLocal()
+        try:
+            enabled = Setting.get_setting(db, "auto_update_enabled", True)
+            active_sources = len(AutoUpdateSource.get_active_sources(db))
+            return {
+                "is_running": self.is_running,
+                "enabled": enabled,
+                "active_sources": active_sources,
+                "last_update": "Not implemented",  # Would need to track this
+                "next_update": "Not implemented"   # Would need scheduler integration
+            }
+        finally:
+            db.close() 

@@ -140,6 +140,14 @@ function Logs() {
     }
   };
 
+  const getModeBadgeClass = (mode) => {
+    switch (mode) {
+      case 'manual': return 'badge-manual';
+      case 'auto_update': return 'badge-auto_update';
+      default: return 'badge-secondary';
+    }
+  };
+
   const formatTimestamp = (timestamp) => {
     return new Date(timestamp).toLocaleString();
   };
@@ -298,6 +306,7 @@ function Logs() {
                 <tr>
                   <th>Timestamp</th>
                   <th>Action</th>
+                  <th>Mode</th>
                   <th>Type</th>
                   <th>IP Address</th>
                   <th>Domain</th>
@@ -312,6 +321,13 @@ function Logs() {
                       {log.action && (
                         <span className={`badge ${getActionBadgeClass(log.action)}`}>
                           {log.action}
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {log.mode && (
+                        <span className={`badge ${getModeBadgeClass(log.mode)}`}>
+                          {log.mode}
                         </span>
                       )}
                     </td>

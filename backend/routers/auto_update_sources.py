@@ -11,6 +11,7 @@ import asyncio
 import logging
 import threading
 import functools
+from services.live_events import live_events
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -175,8 +176,26 @@ async def create_auto_update_source(
         # Log the action
         Log.create_rule_log(
             db, ActionType.add_rule, None,
-            f"Added auto-update source: {source.name} ({source.url})"
+            f"Added auto-update source: {source.name} ({source.url})",
+            mode='auto_update'
         )
+        
+        # Prepare event data
+        event_data = {
+            "id": source.id,
+            "name": source.name,
+            "url": source.url,
+            "is_active": source.is_active,
+            "list_type": source.list_type,
+            "last_update": source.last_update,
+            "last_error": source.last_error,
+            "update_count": source.update_count,
+            "created_at": source.created_at,
+            "updated_at": source.updated_at
+        }
+        
+        # Broadcast live event
+        await live_events.broadcast_auto_update_source_event("created", event_data)
         
         return source
         
@@ -241,8 +260,27 @@ async def update_auto_update_source(
             # Log the action
             Log.create_rule_log(
                 db, ActionType.update, None,
-                f"Updated auto-update source {source.name}: {', '.join(changes)}"
+                f"Updated auto-update source {source.name}: {', '.join(changes)}",
+                mode='auto_update'
             )
+            
+            # Prepare event data
+            event_data = {
+                "id": source.id,
+                "name": source.name,
+                "url": source.url,
+                "is_active": source.is_active,
+                "list_type": source.list_type,
+                "last_update": source.last_update,
+                "last_error": source.last_error,
+                "update_count": source.update_count,
+                "created_at": source.created_at,
+                "updated_at": source.updated_at,
+                "changes": changes
+            }
+            
+            # Broadcast live event
+            await live_events.broadcast_auto_update_source_event("updated", event_data)
         
         return source
         
@@ -265,14 +303,28 @@ async def delete_auto_update_source(source_id: int, db: Session = Depends(get_db
         source_name = source.name
         source_url = source.url
         
+        # Prepare event data before deletion
+        event_data = {
+            "id": source.id,
+            "name": source.name,
+            "url": source.url,
+            "is_active": source.is_active,
+            "list_type": source.list_type,
+            "update_count": source.update_count
+        }
+        
         db.delete(source)
         db.commit()
         
         # Log the action
         Log.create_rule_log(
             db, ActionType.remove_rule, None,
-            f"Deleted auto-update source: {source_name} ({source_url})"
+            f"Deleted auto-update source: {source_name} ({source_url})",
+            mode='auto_update'
         )
+        
+        # Broadcast live event
+        await live_events.broadcast_auto_update_source_event("deleted", event_data)
         
         return {"message": "Auto-update source deleted successfully"}
         
@@ -304,8 +356,22 @@ async def toggle_auto_update_source(source_id: int, db: Session = Depends(get_db
         # Log the action
         Log.create_rule_log(
             db, ActionType.update, None,
-            f"Auto-update source {source.name} {status}"
+            f"Auto-update source {source.name} {status}",
+            mode='auto_update'
         )
+        
+        # Prepare event data
+        event_data = {
+            "id": source.id,
+            "name": source.name,
+            "url": source.url,
+            "is_active": source.is_active,
+            "list_type": source.list_type,
+            "status_change": status
+        }
+        
+        # Broadcast live event
+        await live_events.broadcast_auto_update_source_event("toggled", event_data)
         
         return {
             "message": f"Auto-update source {status} successfully",
@@ -365,8 +431,21 @@ async def test_auto_update_source(source_id: int, db: Session = Depends(get_db))
         status_msg = "successful" if result["status"] == "success" else f"failed ({result.get('error', 'unknown error')})"
         Log.create_rule_log(
             db, ActionType.update, None,
-            f"Tested auto-update source {source.name}: {status_msg}"
+            f"Tested auto-update source {source.name}: {status_msg}",
+            mode='auto_update'
         )
+        
+        # Prepare event data
+        event_data = {
+            "id": source.id,
+            "name": source.name,
+            "url": source.url,
+            "test_result": result,
+            "test_status": status_msg
+        }
+        
+        # Broadcast live event
+        await live_events.broadcast_auto_update_source_event("tested", event_data)
         
         return {
             "source": {

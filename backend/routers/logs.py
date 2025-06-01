@@ -23,6 +23,7 @@ class LogResponse(BaseModel):
     rule_type: Optional[str]
     message: str
     created_at: datetime
+    mode: Optional[str]
 
     class Config:
         from_attributes = True
@@ -99,7 +100,8 @@ async def get_logs(
             "destination_ip": log.destination_ip,
             "rule_type": log.rule_type.value if log.rule_type else None,
             "message": log.message,
-            "created_at": log.created_at
+            "created_at": log.created_at,
+            "mode": log.mode
         })
     
     return result
@@ -177,7 +179,8 @@ async def get_recent_logs(
             "destination_ip": log.destination_ip,
             "rule_type": log.rule_type.value if log.rule_type else None,
             "message": log.message,
-            "created_at": log.created_at
+            "created_at": log.created_at,
+            "mode": log.mode
         })
     
     return result
@@ -224,7 +227,8 @@ async def cleanup_old_logs(
         # Log the cleanup action
         Log.create_rule_log(
             db, ActionType.update, None,
-            f"Cleaned up {deleted_count} old log entries"
+            f"Cleaned up {deleted_count} old log entries",
+            mode='manual'
         )
         
         return {"message": f"Successfully deleted {deleted_count} old log entries"}
@@ -255,7 +259,8 @@ async def search_logs(
             "destination_ip": log.destination_ip,
             "rule_type": log.rule_type.value if log.rule_type else None,
             "message": log.message,
-            "created_at": log.created_at
+            "created_at": log.created_at,
+            "mode": log.mode
         })
     
     return result
@@ -317,7 +322,8 @@ async def export_logs(
                 "destination_ip": log.destination_ip,
                 "rule_type": log.rule_type.value if log.rule_type else None,
                 "message": log.message,
-                "created_at": log.created_at.isoformat()
+                "created_at": log.created_at.isoformat(),
+                "mode": log.mode
             })
         
         return {"logs": result, "total": len(result), "hours": hours} 

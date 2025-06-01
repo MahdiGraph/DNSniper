@@ -12,6 +12,7 @@ from models.domains import ListType, SourceType
 from models.logs import ActionType, RuleType
 from services.dns_service import DNSService
 from services.firewall_service import FirewallService
+from services.live_events import live_events
 
 router = APIRouter()
 security = HTTPBearer()
@@ -23,7 +24,7 @@ class DomainCreate(BaseModel):
     notes: Optional[str] = None
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "domain_name": "malware.example.com",
                 "list_type": "blacklist",
@@ -36,7 +37,7 @@ class DomainUpdate(BaseModel):
     notes: Optional[str] = None
 
     class Config:
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "list_type": "whitelist",
                 "notes": "Updated notes for this domain"
@@ -58,7 +59,7 @@ class DomainResponse(BaseModel):
 
     class Config:
         from_attributes = True
-        schema_extra = {
+        json_schema_extra = {
             "example": {
                 "id": 1,
                 "domain_name": "malware.example.com",
@@ -217,12 +218,14 @@ async def create_domain(domain_data: DomainCreate, db: Session = Depends(get_db)
     Log.create_rule_log(
         db, ActionType.add_rule, RuleType.domain,
         f"Added manual domain: {domain_name} to {list_type_enum.value} (will be resolved in next auto-update cycle)",
-        domain_name=domain_name
+        domain_name=domain_name,
+        mode='manual'
     )
     
     ip_count = 0  # No IPs resolved yet
     
-    return {
+    # Prepare response data
+    response_data = {
         "id": domain.id,
         "domain_name": domain.domain_name,
         "list_type": domain.list_type.value,
@@ -235,6 +238,11 @@ async def create_domain(domain_data: DomainCreate, db: Session = Depends(get_db)
         "notes": domain.notes,
         "ip_count": ip_count
     }
+    
+    # Broadcast live event
+    await live_events.broadcast_domain_event("created", response_data)
+    
+    return response_data
 
 @router.put("/{domain_id}", response_model=DomainResponse)
 async def update_domain(domain_id: int, domain_data: DomainUpdate, db: Session = Depends(get_db)):
@@ -278,12 +286,14 @@ async def update_domain(domain_id: int, domain_data: DomainUpdate, db: Session =
     Log.create_rule_log(
         db, ActionType.update, RuleType.domain,
         f"Updated manual domain: {domain.domain_name}",
-        domain_name=domain.domain_name
+        domain_name=domain.domain_name,
+        mode='manual'
     )
     
     ip_count = db.query(IP).filter(IP.domain_id == domain.id).count()
     
-    return {
+    # Prepare response data
+    response_data = {
         "id": domain.id,
         "domain_name": domain.domain_name,
         "list_type": domain.list_type.value,
@@ -296,6 +306,11 @@ async def update_domain(domain_id: int, domain_data: DomainUpdate, db: Session =
         "notes": domain.notes,
         "ip_count": ip_count
     }
+    
+    # Broadcast live event
+    await live_events.broadcast_domain_event("updated", response_data)
+    
+    return response_data
 
 @router.delete("/{domain_id}")
 async def delete_domain(domain_id: int, db: Session = Depends(get_db)):
@@ -308,6 +323,15 @@ async def delete_domain(domain_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Can only delete manual domains")
     
     domain_name = domain.domain_name
+    
+    # Prepare event data before deletion
+    event_data = {
+        "id": domain.id,
+        "domain_name": domain.domain_name,
+        "list_type": domain.list_type.value,
+        "source_type": domain.source_type.value,
+        "notes": domain.notes
+    }
     
     # Remove associated IPs from firewall - handled by hooks
     # firewall_service = FirewallService()
@@ -323,8 +347,12 @@ async def delete_domain(domain_id: int, db: Session = Depends(get_db)):
     Log.create_rule_log(
         db, ActionType.remove_rule, RuleType.domain,
         f"Deleted manual domain: {domain_name}",
-        domain_name=domain_name
+        domain_name=domain_name,
+        mode='manual'
     )
+    
+    # Broadcast live event
+    await live_events.broadcast_domain_event("deleted", event_data)
     
     return {"message": f"Domain {domain_name} deleted successfully"}
 
@@ -424,8 +452,21 @@ async def resolve_domain(domain_id: int, db: Session = Depends(get_db)):
     Log.create_rule_log(
         db, ActionType.update, RuleType.domain,
         f"Manually resolved domain: {domain.domain_name}",
-        domain_name=domain.domain_name
+        domain_name=domain.domain_name,
+        mode='manual'
     )
+    
+    # Broadcast live event for domain resolution
+    ip_count = db.query(IP).filter(IP.domain_id == domain.id).count()
+    event_data = {
+        "id": domain.id,
+        "domain_name": domain.domain_name,
+        "list_type": domain.list_type.value,
+        "source_type": domain.source_type.value,
+        "ip_count": ip_count,
+        "resolution": resolution
+    }
+    await live_events.broadcast_domain_event("resolved", event_data)
     
     return {
         "message": f"Domain {domain.domain_name} resolved successfully",

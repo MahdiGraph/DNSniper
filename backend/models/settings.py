@@ -111,9 +111,9 @@ class Setting(Base):
                 "value": False,
                 "description": "Enable/disable firewall logging"
             },
-            "manual_domain_resolution": {
+            "automatic_domain_resolution": {
                 "value": True,
-                "description": "Resolve manual domains during auto-update cycles"
+                "description": "Automatically resolve manually-added domains to IPs during auto-update cycles"
             },
             "rate_limit_delay": {
                 "value": 1.0,
@@ -130,6 +130,80 @@ class Setting(Base):
             "max_log_entries": {
                 "value": 10000,
                 "description": "Maximum number of log entries to keep"
+            },
+            # Critical IPs configuration for auto-update protection (IPv4 and IPv6 separated)
+            # NOTE: Dynamic detection (local network, DNS resolvers, public IP) happens automatically at runtime
+            "critical_ipv4_ips_ranges": {
+                "value": [
+                    # Loopback and null addresses
+                    "0.0.0.0",
+                    "127.0.0.1",
+                    "127.0.0.0/8",          # Entire loopback range
+                    
+                    # RFC 1918 Private Networks (ALL private ranges)
+                    "10.0.0.0/8",           # Class A private (10.0.0.0 - 10.255.255.255)
+                    "172.16.0.0/12",        # Class B private (172.16.0.0 - 172.31.255.255)
+                    "192.168.0.0/16",       # Class C private (192.168.0.0 - 192.168.255.255)
+                    
+                    # Special Use Networks (RFC 3927, RFC 5735, RFC 6598)
+                    "169.254.0.0/16",       # Link-Local (APIPA)
+                    "100.64.0.0/10",        # Carrier Grade NAT (RFC 6598)
+                    
+                    # Multicast and Reserved
+                    "224.0.0.0/4",          # Multicast (224.0.0.0 - 239.255.255.255)
+                    "240.0.0.0/4",          # Reserved (240.0.0.0 - 255.255.255.255)
+                    
+                    # Special Documentation/Testing (RFC 5737)
+                    "192.0.2.0/24",         # TEST-NET-1 (documentation)
+                    "198.51.100.0/24",      # TEST-NET-2 (documentation)
+                    "203.0.113.0/24",       # TEST-NET-3 (documentation)
+                    
+                    # Benchmarking (RFC 2544)
+                    "198.18.0.0/15",        # Network benchmark tests
+                    
+                    # Common DNS servers (to prevent accidental blocking)
+                    "1.1.1.1",              # Cloudflare
+                    "1.0.0.1",              # Cloudflare
+                    "8.8.8.8",              # Google
+                    "8.8.4.4",              # Google
+                    "9.9.9.9",              # Quad9
+                    "208.67.222.222",       # OpenDNS
+                    "208.67.220.220",       # OpenDNS
+                ],
+                "description": "List of static critical IPv4 addresses and ranges that should never be auto-blocked (dynamic detection happens automatically at runtime)"
+            },
+            "critical_ipv6_ips_ranges": {
+                "value": [
+                    # Loopback and null addresses
+                    "::",                   # Unspecified address
+                    "::1",                  # Loopback
+                    
+                    # Private/Local Networks (RFC 4193)
+                    "fc00::/7",             # Unique Local Addresses (fc00:: - fdff::)
+                    "fe80::/10",            # Link-Local Addresses
+                    
+                    # Special Networks
+                    "ff00::/8",             # Multicast
+                    "::/128",               # Unspecified
+                    "::1/128",              # Loopback
+                    
+                    # Documentation/Testing (RFC 3849)
+                    "2001:db8::/32",        # Documentation prefix
+                    
+                    # 6to4 and Teredo
+                    "2002::/16",            # 6to4 addressing
+                    "2001::/32",            # Teredo tunneling
+                    
+                    # Common IPv6 DNS servers
+                    "2606:4700:4700::1111", # Cloudflare
+                    "2606:4700:4700::1001", # Cloudflare
+                    "2001:4860:4860::8888", # Google
+                    "2001:4860:4860::8844", # Google
+                    "2620:fe::fe",          # Quad9
+                    "2620:0:ccc::2",        # OpenDNS
+                    "2620:0:ccd::2",        # OpenDNS
+                ],
+                "description": "List of static critical IPv6 addresses and ranges that should never be auto-blocked (dynamic detection happens automatically at runtime)"
             },
             # SSL configuration
             "force_https": {

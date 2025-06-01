@@ -567,8 +567,37 @@ function APIDocumentation() {
   "max_ips_per_domain": 5,
   "dns_resolver_primary": "1.1.1.1",
   "dns_resolver_secondary": "8.8.8.8",
-  "manual_domain_resolution": true,
-  "rate_limit_delay": 1.0
+  "automatic_domain_resolution": true,
+  "rate_limit_delay": 1.0,
+  "logging_enabled": false,
+  "max_log_entries": 10000,
+  "log_retention_days": 7,
+  "critical_ipv4_ips_ranges": [
+    "127.0.0.1",
+    "127.0.0.0/8",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+    "224.0.0.0/4",
+    "1.1.1.1",
+    "8.8.8.8"
+  ],
+  "critical_ipv6_ips_ranges": [
+    "::1",
+    "::",
+    "fc00::/7",
+    "fe80::/10",
+    "ff00::/8",
+    "2001:db8::/32",
+    "2606:4700:4700::1111",
+    "2001:4860:4860::8888"
+  ],
+  "enable_ssl": false,
+  "force_https": false,
+  "ssl_domain": "",
+  "ssl_certfile": "",
+  "ssl_keyfile": ""
 }`
           }
         },

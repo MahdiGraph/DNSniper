@@ -10,6 +10,9 @@ import asyncio
 from database import get_db
 from models import Setting
 from services.firewall_service import FirewallService
+from services.firewall_log_monitor import firewall_log_monitor
+from services.dns_service import DNSService
+from services.live_events import live_events
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -55,9 +58,46 @@ def validate_setting_value(key: str, value):
             raise ValueError(f"{key.replace('_', ' ').title()} must be a valid IPv4 address string")
     
     # Boolean validation
-    boolean_settings = ['logging_enabled', 'manual_domain_resolution', 'auto_update_enabled']
+    boolean_settings = ['logging_enabled', 'automatic_domain_resolution', 'auto_update_enabled']
     if key in boolean_settings and not isinstance(value, bool):
         raise ValueError(f"Value for {key} must be a boolean")
+    
+    # Critical IPs validation
+    if key == 'critical_ipv4_ips_ranges':
+        if not isinstance(value, list):
+            raise ValueError("Critical IPv4 IPs/Ranges must be a list of IPv4 addresses and CIDR ranges")
+        
+        import ipaddress
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("Each critical IPv4 item must be a string")
+            try:
+                # Try as IP address first
+                ipaddress.IPv4Address(item)
+            except ValueError:
+                try:
+                    # Try as network/CIDR range
+                    ipaddress.IPv4Network(item, strict=False)
+                except ValueError:
+                    raise ValueError(f"Invalid IPv4 address or CIDR range in critical IPv4 list: {item}")
+    
+    if key == 'critical_ipv6_ips_ranges':
+        if not isinstance(value, list):
+            raise ValueError("Critical IPv6 IPs/Ranges must be a list of IPv6 addresses and CIDR ranges")
+        
+        import ipaddress
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("Each critical IPv6 item must be a string")
+            try:
+                # Try as IP address first
+                ipaddress.IPv6Address(item)
+            except ValueError:
+                try:
+                    # Try as network/CIDR range
+                    ipaddress.IPv6Network(item, strict=False)
+                except ValueError:
+                    raise ValueError(f"Invalid IPv6 address or CIDR range in critical IPv6 list: {item}")
     
     # SSL settings validation
     if key == 'force_https':
@@ -189,6 +229,13 @@ async def update_ssl_settings(
             (new_enable_ssl and any(key in ssl_update for key in ['ssl_domain', 'ssl_certfile', 'ssl_keyfile']))
         )
         
+        # Broadcast live event for SSL settings update
+        await live_events.broadcast_settings_event("updated", {
+            "category": "ssl",
+            "updated_settings": updated_settings,
+            "restart_required": restart_required
+        })
+        
         if restart_required:
             logger.info("SSL configuration changed, server restart will be triggered")
             asyncio.create_task(restart_server_with_ssl(db))
@@ -213,6 +260,8 @@ async def update_settings_bulk(
     try:
         updated_settings = {}
         validation_errors = {}
+        logging_enabled_changed = False
+        
         # Only update non-SSL settings
         ssl_keys = {'force_https', 'ssl_domain', 'ssl_certfile', 'ssl_keyfile'}
         for key, value in settings_update.settings.items():
@@ -223,13 +272,33 @@ async def update_settings_bulk(
                 Setting.set_setting(db, key, value)
                 updated_settings[key] = value
                 logger.info(f"Setting {key} updated to: {value}")
+                
+                # Track if logging_enabled was changed
+                if key == "logging_enabled":
+                    logging_enabled_changed = True
+                    
             except ValueError as e:
                 validation_errors[key] = str(e)
+                
         if validation_errors:
             raise HTTPException(
                 status_code=400,
                 detail={"message": "Validation failed", "errors": validation_errors}
             )
+        
+        # Restart firewall log monitoring if logging_enabled was changed
+        if logging_enabled_changed:
+            firewall_log_monitor.restart_if_needed()
+            
+        # Broadcast live event for bulk settings update
+        if updated_settings:
+            await live_events.broadcast_settings_event("updated", {
+                "category": "bulk",
+                "updated_settings": updated_settings,
+                "count": len(updated_settings),
+                "logging_restarted": logging_enabled_changed
+            })
+            
         return {
             "message": f"Successfully updated {len(updated_settings)} settings",
             "updated_settings": updated_settings
@@ -278,18 +347,36 @@ async def update_setting(
         # Log the action
         logger.info(f"Setting {key} updated to: {setting_update.value}")
         
+        # Restart firewall log monitoring if logging_enabled was changed
+        logging_restarted = False
+        if key == "logging_enabled":
+            firewall_log_monitor.restart_if_needed()
+            logging_restarted = True
+        
         response_data = {
             "message": f"Setting {key} updated successfully", 
             "value": setting_update.value
         }
         
         # If SSL setting changed, trigger server restart
+        ssl_restart_required = False
         if is_ssl_setting:
             response_data["ssl_restart_required"] = True
+            ssl_restart_required = True
             logger.info("SSL setting changed, server restart will be triggered")
             
             # Import and trigger server restart asynchronously
             asyncio.create_task(restart_server_with_ssl(db))
+        
+        # Broadcast live event for individual setting update
+        await live_events.broadcast_settings_event("updated", {
+            "category": "individual",
+            "key": key,
+            "value": setting_update.value,
+            "is_ssl_setting": is_ssl_setting,
+            "ssl_restart_required": ssl_restart_required,
+            "logging_restarted": logging_restarted
+        })
         
         return response_data
         
@@ -315,6 +402,13 @@ async def rebuild_firewall_rules(db: Session = Depends(get_db)):
     try:
         firewall = FirewallService()
         firewall.rebuild_rules_from_database(db)
+        
+        # Broadcast live event for firewall rebuild
+        await live_events.broadcast_firewall_event("rules_rebuilt", {
+            "message": "Firewall rules rebuilt from database",
+            "action": "rebuild"
+        })
+        
         return {"message": "Firewall rules rebuilt successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to rebuild firewall rules: {str(e)}")
@@ -394,6 +488,131 @@ async def get_ssl_status(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Failed to get SSL status: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get SSL status: {str(e)}")
+
+@router.get("/critical-ips/test")
+async def test_critical_ip_detection(db: Session = Depends(get_db)):
+    """Test critical IP detection system"""
+    try:
+        # Get current critical IP settings
+        critical_ipv4_list = Setting.get_setting(db, "critical_ipv4_ips_ranges", [])
+        critical_ipv6_list = Setting.get_setting(db, "critical_ipv6_ips_ranges", [])
+        
+        # Initialize DNS service
+        dns_resolver_primary = Setting.get_setting(db, "dns_resolver_primary", "1.1.1.1")
+        dns_resolver_secondary = Setting.get_setting(db, "dns_resolver_secondary", "8.8.8.8")
+        dns_service = DNSService(dns_resolver_primary, dns_resolver_secondary)
+        
+        # Get dynamic critical IPs
+        dynamic_critical = dns_service._get_dynamic_critical_ips(db)
+        
+        # Test some common IPs
+        test_ips = [
+            "127.0.0.1",        # Localhost
+            "192.168.1.1",      # Private network
+            "8.8.8.8",          # Google DNS
+            "1.1.1.1",          # Cloudflare DNS
+            "208.67.222.222",   # OpenDNS
+            "192.0.2.1",        # Test network
+            "10.0.0.1",         # Private network
+        ]
+        
+        test_results = {}
+        for ip in test_ips:
+            is_critical = dns_service.is_critical_ip(ip, critical_ipv4_list, critical_ipv6_list, db)
+            is_safe = dns_service.is_safe_ip(ip)
+            is_safe_for_auto_update = dns_service.is_safe_ip_for_auto_update(ip, critical_ipv4_list, critical_ipv6_list, db)
+            
+            test_results[ip] = {
+                "is_critical": is_critical,
+                "is_safe": is_safe,
+                "is_safe_for_auto_update": is_safe_for_auto_update
+            }
+        
+        return {
+            "static_critical_ipv4": critical_ipv4_list,
+            "static_critical_ipv6": critical_ipv6_list,
+            "dynamic_critical": dynamic_critical,
+            "test_results": test_results,
+            "summary": {
+                "total_static_ipv4": len(critical_ipv4_list),
+                "total_static_ipv6": len(critical_ipv6_list),
+                "total_dynamic_ipv4": len(dynamic_critical['ipv4']),
+                "total_dynamic_ipv6": len(dynamic_critical['ipv6']),
+                "protected_count": sum(1 for result in test_results.values() if result["is_critical"])
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to test critical IP detection: {str(e)}")
+
+@router.post("/critical-ips/validate")
+async def validate_critical_ips(critical_ips: dict, db: Session = Depends(get_db)):
+    """Validate critical IP lists without saving them"""
+    try:
+        validation_results = {
+            "ipv4": {"valid": [], "invalid": []},
+            "ipv6": {"valid": [], "invalid": []},
+            "errors": []
+        }
+        
+        # Validate IPv4 list
+        if 'ipv4' in critical_ips:
+            if not isinstance(critical_ips['ipv4'], list):
+                validation_results["errors"].append("IPv4 list must be an array")
+            else:
+                for item in critical_ips['ipv4']:
+                    if not isinstance(item, str):
+                        validation_results["ipv4"]["invalid"].append({"item": item, "error": "Must be a string"})
+                        continue
+                    
+                    try:
+                        # Try as IP address first
+                        import ipaddress
+                        ipaddress.IPv4Address(item)
+                        validation_results["ipv4"]["valid"].append({"item": item, "type": "ip"})
+                    except ValueError:
+                        try:
+                            # Try as network/CIDR range
+                            ipaddress.IPv4Network(item, strict=False)
+                            validation_results["ipv4"]["valid"].append({"item": item, "type": "network"})
+                        except ValueError:
+                            validation_results["ipv4"]["invalid"].append({"item": item, "error": "Invalid IPv4 address or CIDR range"})
+        
+        # Validate IPv6 list
+        if 'ipv6' in critical_ips:
+            if not isinstance(critical_ips['ipv6'], list):
+                validation_results["errors"].append("IPv6 list must be an array")
+            else:
+                for item in critical_ips['ipv6']:
+                    if not isinstance(item, str):
+                        validation_results["ipv6"]["invalid"].append({"item": item, "error": "Must be a string"})
+                        continue
+                    
+                    try:
+                        # Try as IP address first
+                        import ipaddress
+                        ipaddress.IPv6Address(item)
+                        validation_results["ipv6"]["valid"].append({"item": item, "type": "ip"})
+                    except ValueError:
+                        try:
+                            # Try as network/CIDR range
+                            ipaddress.IPv6Network(item, strict=False)
+                            validation_results["ipv6"]["valid"].append({"item": item, "type": "network"})
+                        except ValueError:
+                            validation_results["ipv6"]["invalid"].append({"item": item, "error": "Invalid IPv6 address or CIDR range"})
+        
+        # Calculate summary
+        total_valid = len(validation_results["ipv4"]["valid"]) + len(validation_results["ipv6"]["valid"])
+        total_invalid = len(validation_results["ipv4"]["invalid"]) + len(validation_results["ipv6"]["invalid"])
+        
+        validation_results["summary"] = {
+            "total_valid": total_valid,
+            "total_invalid": total_invalid,
+            "is_valid": total_invalid == 0 and len(validation_results["errors"]) == 0
+        }
+        
+        return validation_results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to validate critical IPs: {str(e)}")
 
 async def restart_server_with_ssl(db: Session):
     """Log and exit the process to allow external service manager to restart the server with new SSL config."""

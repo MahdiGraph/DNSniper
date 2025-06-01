@@ -32,6 +32,7 @@ import SecurityPage from './components/SecurityPage';
 import APITokens from './components/APITokens';
 import APIDocumentation from './components/APIDocumentation';
 import NotFound from './components/NotFound';
+import LiveToastNotifications from './components/LiveToastNotifications';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -171,6 +172,9 @@ function AppContent({ user, setUser, sidebarOpen, setSidebarOpen, apiStatus, onL
           </Routes>
         </div>
       </main>
+      
+      {/* Global Live Toast Notifications - Appears on ALL pages */}
+      <LiveToastNotifications />
     </div>
   );
 }

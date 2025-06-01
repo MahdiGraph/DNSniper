@@ -9,6 +9,7 @@ from database import get_db
 from models import IP, Log
 from models.domains import ListType, SourceType
 from models.logs import ActionType, RuleType
+from services.live_events import live_events
 
 router = APIRouter()
 
@@ -16,6 +17,10 @@ router = APIRouter()
 class IPCreate(BaseModel):
     ip_address: str
     list_type: str  # "blacklist" or "whitelist"
+    notes: Optional[str] = None
+
+class IPUpdate(BaseModel):
+    list_type: Optional[str] = None
     notes: Optional[str] = None
 
 class IPResponse(BaseModel):
@@ -117,7 +122,16 @@ async def create_ip(ip_data: IPCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(ip)
     
-    return {
+    # Log the action
+    Log.create_rule_log(
+        db, ActionType.add_rule, RuleType.ip,
+        f"Added manual IP: {ip_data.ip_address} to {list_type_enum.value}",
+        ip_address=ip_data.ip_address,
+        mode='manual'
+    )
+    
+    # Prepare response data
+    response_data = {
         "id": ip.id,
         "ip_address": ip.ip_address,
         "ip_version": ip.ip_version,
@@ -130,6 +144,64 @@ async def create_ip(ip_data: IPCreate, db: Session = Depends(get_db)):
         "updated_at": ip.updated_at,
         "notes": ip.notes
     }
+    
+    # Broadcast live event
+    await live_events.broadcast_ip_event("created", response_data)
+    
+    return response_data
+
+@router.put("/{ip_id}", response_model=IPResponse)
+async def update_ip(ip_id: int, ip_data: IPUpdate, db: Session = Depends(get_db)):
+    """Update an IP (manual entries only)"""
+    ip = db.query(IP).filter(IP.id == ip_id).first()
+    if not ip:
+        raise HTTPException(status_code=404, detail="IP not found")
+    
+    if ip.source_type != SourceType.manual:
+        raise HTTPException(status_code=400, detail="Can only update manual IPs")
+    
+    # Update list_type if provided
+    if ip_data.list_type:
+        try:
+            list_type_enum = ListType(ip_data.list_type)
+            ip.list_type = list_type_enum
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid list_type")
+    
+    # Update notes if provided
+    if ip_data.notes is not None:
+        ip.notes = ip_data.notes
+    
+    ip.updated_at = datetime.utcnow()
+    db.commit()
+    
+    # Log the action
+    Log.create_rule_log(
+        db, ActionType.update, RuleType.ip,
+        f"Updated manual IP: {ip.ip_address}",
+        ip_address=ip.ip_address,
+        mode='manual'
+    )
+    
+    # Prepare response data
+    response_data = {
+        "id": ip.id,
+        "ip_address": ip.ip_address,
+        "ip_version": ip.ip_version,
+        "list_type": ip.list_type.value,
+        "source_type": ip.source_type.value,
+        "source_url": ip.source_url,
+        "domain_id": ip.domain_id,
+        "expired_at": ip.expired_at,
+        "created_at": ip.created_at,
+        "updated_at": ip.updated_at,
+        "notes": ip.notes
+    }
+    
+    # Broadcast live event
+    await live_events.broadcast_ip_event("updated", response_data)
+    
+    return response_data
 
 @router.delete("/{ip_id}")
 async def delete_ip(ip_id: int, db: Session = Depends(get_db)):
@@ -142,7 +214,29 @@ async def delete_ip(ip_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Can only delete manual IPs")
     
     ip_address = ip.ip_address
+    
+    # Prepare event data before deletion
+    event_data = {
+        "id": ip.id,
+        "ip_address": ip.ip_address,
+        "ip_version": ip.ip_version,
+        "list_type": ip.list_type.value,
+        "source_type": ip.source_type.value,
+        "notes": ip.notes
+    }
+    
     db.delete(ip)
     db.commit()
+    
+    # Log the action
+    Log.create_rule_log(
+        db, ActionType.remove_rule, RuleType.ip,
+        f"Deleted manual IP: {ip_address}",
+        ip_address=ip_address,
+        mode='manual'
+    )
+    
+    # Broadcast live event
+    await live_events.broadcast_ip_event("deleted", event_data)
     
     return {"message": f"IP {ip_address} deleted successfully"} 

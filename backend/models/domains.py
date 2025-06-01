@@ -3,7 +3,7 @@ from sqlalchemy.orm import relationship, Session
 from sqlalchemy.sql import func
 from database import Base
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class ListType(enum.Enum):
@@ -40,7 +40,16 @@ class Domain(Base):
         """Check if this domain entry is expired"""
         if self.expired_at is None:
             return False  # Manual entries never expire
-        return self.expired_at < datetime.utcnow()
+        
+        # Handle timezone-aware comparison
+        now = datetime.now(timezone.utc)
+        if self.expired_at.tzinfo is None:
+            # If expired_at is timezone-naive, assume UTC
+            expired_at_utc = self.expired_at.replace(tzinfo=timezone.utc)
+        else:
+            expired_at_utc = self.expired_at
+        
+        return expired_at_utc < now
 
     def is_manual(self) -> bool:
         """Check if this is a manual entry"""
@@ -62,10 +71,12 @@ class Domain(Base):
     @classmethod
     def get_expired_auto_updates(cls, db: Session):
         """Get all expired auto-update entries"""
+        # Use timezone-aware datetime for comparison
+        now = datetime.now(timezone.utc)
         return db.query(cls).filter(
             cls.source_type == SourceType.auto_update,
             cls.expired_at.isnot(None),
-            cls.expired_at < func.now()
+            cls.expired_at < now
         ).all()
 
     @classmethod

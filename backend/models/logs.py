@@ -33,6 +33,7 @@ class Log(Base):
     rule_type = Column(Enum(RuleType), nullable=True, index=True)
     message = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False, default=func.now(), index=True)
+    mode = Column(String, nullable=True, index=True)  # 'manual', 'auto_update', etc.
 
     def __repr__(self):
         return f"<Log(id={self.id}, action='{self.action}', message='{self.message[:50]}...')>"
@@ -50,17 +51,32 @@ class Log(Base):
         return self.action == ActionType.error
 
     @classmethod
+    def _is_logging_enabled(cls, db: Session) -> bool:
+        """Check if logging is enabled in settings"""
+        try:
+            # Import here to avoid circular import
+            from models.settings import Setting
+            return Setting.get_setting(db, "logging_enabled", False)
+        except Exception:
+            # If there's any error checking the setting, default to enabled
+            return True
+
+    @classmethod
     def create_firewall_log(cls, db: Session, action: ActionType, message: str, 
                            source_ip: str = None, destination_ip: str = None, 
-                           ip_address: str = None, domain_name: str = None):
+                           ip_address: str = None, domain_name: str = None, mode: str = None):
         """Create a firewall activity log entry"""
+        if not cls._is_logging_enabled(db):
+            return None
+            
         log = cls(
             action=action,
             message=message,
             source_ip=source_ip,
             destination_ip=destination_ip,
             ip_address=ip_address,
-            domain_name=domain_name
+            domain_name=domain_name,
+            mode=mode
         )
         db.add(log)
         db.commit()
@@ -68,34 +84,57 @@ class Log(Base):
 
     @classmethod
     def create_rule_log(cls, db: Session, action: ActionType, rule_type: RuleType, 
-                       message: str, ip_address: str = None, domain_name: str = None):
+                       message: str, ip_address: str = None, domain_name: str = None, mode: str = None):
         """Create a rule management log entry"""
+        if not cls._is_logging_enabled(db):
+            return None
+            
         log = cls(
             action=action,
             rule_type=rule_type,
             message=message,
             ip_address=ip_address,
-            domain_name=domain_name
+            domain_name=domain_name,
+            mode=mode
         )
         db.add(log)
         db.commit()
         return log
 
     @classmethod
-    def create_error_log(cls, db: Session, message: str, context: str = None):
+    def create_error_log(cls, db: Session, message: str, context: str = None, mode: str = None):
         """Create an error log entry"""
+        if not cls._is_logging_enabled(db):
+            return None
+            
         full_message = f"{context}: {message}" if context else message
         log = cls(
             action=ActionType.error,
-            message=full_message
+            message=full_message,
+            mode=mode
         )
         db.add(log)
         db.commit()
         return log
 
     @classmethod
-    def cleanup_old_logs(cls, db: Session, max_entries: int = 10000, max_days: int = 30):
+    def cleanup_old_logs(cls, db: Session, max_entries: int = None, max_days: int = None):
         """Clean up old log entries (FIFO mechanism)"""
+        
+        # Get settings if not provided
+        if max_entries is None or max_days is None:
+            try:
+                from models.settings import Setting
+                if max_entries is None:
+                    max_entries = Setting.get_setting(db, "max_log_entries", 10000)
+                if max_days is None:
+                    max_days = Setting.get_setting(db, "log_retention_days", 7)
+            except Exception:
+                # Default values if settings can't be retrieved
+                max_entries = max_entries or 10000
+                max_days = max_days or 7
+        
+        deleted_count = 0
         
         # Clean by count (keep newest max_entries)
         total_count = db.query(cls).count()
@@ -104,14 +143,17 @@ class Log(Base):
             oldest_logs = db.query(cls).order_by(cls.created_at.asc()).limit(entries_to_delete)
             for log in oldest_logs:
                 db.delete(log)
+                deleted_count += 1
         
         # Clean by age (remove entries older than max_days)
         cutoff_date = datetime.utcnow() - timedelta(days=max_days)
         old_logs = db.query(cls).filter(cls.created_at < cutoff_date)
         for log in old_logs:
             db.delete(log)
+            deleted_count += 1
         
         db.commit()
+        return deleted_count
 
     @classmethod
     def get_recent_logs(cls, db: Session, limit: int = 100, action_filter: ActionType = None):

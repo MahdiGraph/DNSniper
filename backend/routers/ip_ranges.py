@@ -10,6 +10,7 @@ from database import get_db
 from models import IPRange, Log
 from models.domains import ListType, SourceType
 from models.logs import ActionType, RuleType
+from services.live_events import live_events
 
 router = APIRouter()
 
@@ -150,10 +151,12 @@ async def create_ip_range(ip_range_data: IPRangeCreate, db: Session = Depends(ge
     # Log the action
     Log.create_rule_log(
         db, ActionType.add_rule, RuleType.ip_range,
-        f"Added manual IP range: {normalized_range} to {list_type_enum.value}"
+        f"Added manual IP range: {normalized_range} to {list_type_enum.value}",
+        mode='manual'
     )
     
-    return {
+    # Prepare response data
+    response_data = {
         "id": ip_range.id,
         "ip_range": ip_range.ip_range,
         "ip_version": ip_range.ip_version,
@@ -165,6 +168,11 @@ async def create_ip_range(ip_range_data: IPRangeCreate, db: Session = Depends(ge
         "updated_at": ip_range.updated_at,
         "notes": ip_range.notes
     }
+    
+    # Broadcast live event
+    await live_events.broadcast_ip_range_event("created", response_data)
+    
+    return response_data
 
 @router.put("/{ip_range_id}", response_model=IPRangeResponse)
 async def update_ip_range(ip_range_id: int, ip_range_data: IPRangeUpdate, db: Session = Depends(get_db)):
@@ -194,10 +202,12 @@ async def update_ip_range(ip_range_id: int, ip_range_data: IPRangeUpdate, db: Se
     # Log the action
     Log.create_rule_log(
         db, ActionType.update, RuleType.ip_range,
-        f"Updated manual IP range: {ip_range.ip_range}"
+        f"Updated manual IP range: {ip_range.ip_range}",
+        mode='manual'
     )
     
-    return {
+    # Prepare response data
+    response_data = {
         "id": ip_range.id,
         "ip_range": ip_range.ip_range,
         "ip_version": ip_range.ip_version,
@@ -209,6 +219,11 @@ async def update_ip_range(ip_range_id: int, ip_range_data: IPRangeUpdate, db: Se
         "updated_at": ip_range.updated_at,
         "notes": ip_range.notes
     }
+    
+    # Broadcast live event
+    await live_events.broadcast_ip_range_event("updated", response_data)
+    
+    return response_data
 
 @router.delete("/{ip_range_id}")
 async def delete_ip_range(ip_range_id: int, db: Session = Depends(get_db)):
@@ -221,13 +236,28 @@ async def delete_ip_range(ip_range_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Can only delete manual IP ranges")
     
     ip_range_str = ip_range.ip_range
+    
+    # Prepare event data before deletion
+    event_data = {
+        "id": ip_range.id,
+        "ip_range": ip_range.ip_range,
+        "ip_version": ip_range.ip_version,
+        "list_type": ip_range.list_type.value,
+        "source_type": ip_range.source_type.value,
+        "notes": ip_range.notes
+    }
+    
     db.delete(ip_range)
     db.commit()
     
     # Log the action
     Log.create_rule_log(
         db, ActionType.remove_rule, RuleType.ip_range,
-        f"Deleted manual IP range: {ip_range_str}"
+        f"Deleted manual IP range: {ip_range_str}",
+        mode='manual'
     )
+    
+    # Broadcast live event
+    await live_events.broadcast_ip_range_event("deleted", event_data)
     
     return {"message": f"IP range {ip_range_str} deleted successfully"} 
