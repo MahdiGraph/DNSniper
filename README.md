@@ -1,232 +1,278 @@
-# DNSniper v2.0 - Automated DNS Firewall
+# DNSniper: Advanced Firewall Management Application
 
-DNSniper is an advanced DNS-based firewall solution that automatically blocks malicious domains and their associated IP addresses using iptables and ipset for high-performance traffic filtering.
+🎯 **DNSniper** is a comprehensive firewall management application that manages blacklists and whitelists using iptables and ipsets to block malware domains and IPs at the firewall layer on Ubuntu servers.
 
-## 🚀 Quick Install
+![DNSniper Dashboard](https://img.shields.io/badge/Status-Production%20Ready-green)
+![Python](https://img.shields.io/badge/Python-3.8+-blue)
+![FastAPI](https://img.shields.io/badge/FastAPI-Latest-00a393)
+![React](https://img.shields.io/badge/React-18+-61dafb)
 
-### One-Line Installation (Recommended)
+## 🚀 Features
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/scripts/installer.sh | sudo bash
-```
+### Core Functionality
+- **Advanced Firewall Management**: Complete iptables and ipsets integration with IPv4/IPv6 support
+- **Domain & IP Management**: Add, edit, and delete domains, IPs, and IP ranges
+- **Auto-Update System**: Automated fetching and processing of blacklists from external sources
+- **Intelligent DNS Resolution**: Safe domain resolution with private IP filtering
+- **CDN Detection**: Automatic detection of CDNs based on IP count
+- **Expiration Management**: FIFO mechanism for IP limits and automatic cleanup
 
-Or with wget:
-```bash
-wget -qO- https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/scripts/installer.sh | sudo bash
-```
+### User Interface
+- **Modern Dashboard**: Real-time statistics and system status
+- **Domain Management**: Search, filter, and manage domains with CDN indicators
+- **IP Management**: IPv4/IPv6 address management with validation
+- **Settings Panel**: Firewall configuration and auto-update settings
+- **Activity Logs**: Real-time monitoring of firewall activity
+
+### Security Features
+- **Safe IP Filtering**: Automatic filtering of private, localhost, and server IPs
+- **Manual vs Auto-Update**: Clear distinction between user entries and auto-updates
+- **Expiration Controls**: Manual entries are permanent, auto-updates expire
+- **Firewall Safety**: Whitelist processing before blacklist rules
+
+## 📋 Requirements
+
+### System Requirements
+- **OS**: Ubuntu 18.04+ (or any Linux with iptables/ipset support)
+- **Python**: 3.8 or higher
+- **Node.js**: 16+ (for frontend development)
+- **Sudo Access**: Required for firewall management
+
+### Dependencies
+- `iptables` and `ip6tables`
+- `ipset`
+- `netfilter-persistent` (recommended for rule persistence)
+- `ipset-persistent` (recommended for ipset persistence)
+
+## 🛠️ Installation
+
+### Quick Start
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/yourusername/dnsniper.git
+   cd dnsniper
+   ```
+
+2. **Run the automated setup:**
+   ```bash
+   # For full installation with systemd service (requires sudo)
+   sudo python3 setup.py
+   
+   # Or for development setup
+   python3 setup.py
+   ```
+
+3. **Access the application:**
+   - Web Interface: http://localhost:8000
+   - API Documentation: http://localhost:8000/docs
 
 ### Manual Installation
 
-1. Download the installer:
+#### Backend Setup
 ```bash
-wget https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/scripts/installer.sh
-chmod +x installer.sh
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-2. Run the installer:
+#### Frontend Setup
 ```bash
-sudo ./installer.sh
+cd frontend
+npm install
+npm run build
 ```
 
-### Build from Source
-
-If you want to build from the latest source code:
+#### Run the Application
 ```bash
-git clone https://github.com/MahdiGraph/DNSniper.git
-cd DNSniper
-sudo ./scripts/installer.sh --build
+cd backend
+python main.py
 ```
 
-## 📋 System Requirements
+## ⚙️ Configuration
 
-- **Operating System**: Linux with systemd (Ubuntu 18.04+, Debian 10+, CentOS 7+, Fedora 30+)
-- **Architecture**: x86_64, ARM64, ARMv7, or i386
-- **Kernel**: Linux 3.10+ (for optimal iptables/netfilter support)
-- **Memory**: Minimum 512MB RAM
-- **Storage**: 100MB free space
-- **Network**: Internet connection for downloading domain lists
+### Environment Variables
+Create a `.env` file in the backend directory:
 
-## 🔧 What the Installer Does
+```env
+# Server Configuration
+PORT=8000
+DATABASE_URL=sqlite:///./dnsniper.db
 
-The enhanced installer automatically:
+# Auto-update Settings
+AUTO_UPDATE_INTERVAL=3600
+RULE_EXPIRATION=86400
+MAX_IPS_PER_DOMAIN=5
+RATE_LIMIT_DELAY=1.0
 
-1. **System Compatibility Check**
-   - Detects Linux distribution and version
-   - Verifies systemd availability
-   - Checks kernel version for netfilter support
+# DNS Settings
+DNS_RESOLVERS=1.1.1.1,8.8.8.8
 
-2. **Dependency Installation**
-   - Installs iptables, ipset, and persistence tools
-   - Configures package manager (apt/yum/dnf)
-   - Verifies all critical commands are available
+# Security
+MANUAL_DOMAIN_RESOLUTION=true
+AUTO_UPDATE_ENABLED=true
 
-3. **Existing Installation Detection**
-   - Scans for previous DNSniper installations
-   - Offers upgrade, clean install, or uninstall options
-   - Preserves user data during upgrades
-
-4. **Binary Management**
-   - Downloads latest release from GitHub (default)
-   - Verifies SHA256 checksums for security
-   - Supports building from source with `--build` flag
-   - Installs binaries to `/usr/local/bin`
-
-5. **Configuration Setup**
-   - Creates default configuration in `/etc/dnsniper/`
-   - Preserves existing settings during upgrades
-   - Sets up logging and database paths
-
-6. **Service Configuration**
-   - Creates systemd services and timers
-   - Reads update interval from configuration
-   - Enables firewall rule persistence
-   - Starts services automatically
-
-7. **System Integration**
-   - Creates system-wide `dnsniper` command
-   - Enables iptables/ipset persistence
-   - Configures automatic startup
-
-## 🎯 Quick Start
-
-After installation:
-
-1. **Open the management interface**:
-   ```bash
-   dnsniper
-   ```
-
-2. **Check service status**:
-   ```bash
-   systemctl status dnsniper-agent.timer
-   ```
-
-3. **View logs**:
-   ```bash
-   journalctl -u dnsniper-agent.service -f
-   ```
-
-4. **Manual agent run**:
-   ```bash
-   dnsniper-agent
-   ```
-
-## 🛡️ Features
-
-- **Automatic Domain Blocking**: Downloads and processes malicious domain lists
-- **IP Resolution & Blocking**: Resolves domains to IPs and blocks them via iptables
-- **Whitelist Priority**: Whitelist rules always take precedence over blocklist
-- **High Performance**: Uses ipset for O(1) IP lookup performance
-- **IPv4/IPv6 Support**: Full dual-stack support
-- **Database Integration**: GORM-based with automatic firewall synchronization
-- **Web Interface**: User-friendly management interface
-- **Systemd Integration**: Automatic startup and scheduling
-- **Rule Persistence**: Firewall rules survive reboots
-- **Comprehensive Logging**: Detailed operation logs
-- **Rate Limiting**: Prevents DNS resolver overload
-
-## 📁 File Locations
-
-After installation, DNSniper files are located at:
-
-- **Binaries**: `/etc/dnsniper/dnsniper`, `/etc/dnsniper/dnsniper-agent`
-- **Configuration**: `/etc/dnsniper/config.yaml`
-- **Database**: `/etc/dnsniper/dnsniper.db`
-- **Logs**: `/var/log/dnsniper/`
-- **Services**: `/etc/systemd/system/dnsniper-agent.*`
-- **System Link**: `/usr/bin/dnsniper` (symlink for system-wide access)
-
-## 🔧 Configuration
-
-The main configuration file is located at `/etc/dnsniper/config.yaml`:
-
-```yaml
-version: "2.0"
-dns_resolvers:
-  - "8.8.8.8"
-  - "1.1.1.1"
-affected_chains:
-  - "INPUT"
-  - "OUTPUT"
-  - "FORWARD"
-enable_ipv6: true
-update_interval: "3h"
-rule_expiration: "12h"
-max_ips_per_domain: 5
-update_urls:
-  - "https://raw.githubusercontent.com/MahdiGraph/DNSniper/main/domains-default.txt"
+# Logging
+LOG_LEVEL=INFO
+LOGGING_ENABLED=false
+LOG_RETENTION_DAYS=30
+MAX_LOG_ENTRIES=10000
 ```
 
-## 🚨 Uninstallation
+### Firewall Configuration
 
-To completely remove DNSniper:
+DNSniper creates the following IPSets and iptables chains:
+
+#### IPSets (8 total)
+- IPv4: `dnsniper-whitelistIP-v4`, `dnsniper-whitelistRange-v4`, `dnsniper-blocklistIP-v4`, `dnsniper-blocklistRange-v4`
+- IPv6: `dnsniper-whitelistIP-v6`, `dnsniper-whitelistRange-v6`, `dnsniper-blocklistIP-v6`, `dnsniper-blocklistRange-v6`
+
+#### Chains
+- IPv4: `DNSniper` chain integrated with INPUT, FORWARD, OUTPUT
+- IPv6: `DNSniper6` chain integrated with INPUT, FORWARD, OUTPUT
+
+## 📖 Usage
+
+### Dashboard
+- View system statistics and firewall status
+- Monitor auto-update agent activity
+- Check recent firewall activity
+
+### Domain Management
+- **Add Domains**: Manually add domains to blacklist/whitelist
+- **Auto-Resolution**: Domains are automatically resolved to IPs
+- **CDN Detection**: Domains with >3 IPs are flagged as CDNs
+- **Search & Filter**: Find domains by name, list type, or source
+
+### IP Management
+- **Direct IP Control**: Add IPv4/IPv6 addresses directly
+- **Validation**: Automatic IP address validation
+- **Source Tracking**: Track manual vs auto-update entries
+
+### Settings
+- **Firewall Management**: Clear and rebuild firewall rules
+- **Auto-Update Sources**: Configure external blacklist URLs
+- **System Configuration**: Adjust intervals, limits, and behavior
+
+### Auto-Update System
+
+The auto-update system:
+1. **Cleans expired entries** (restores access first)
+2. **Resolves manual domains** (keeps IP mappings current)
+3. **Processes auto-update sources** (adds new blocks with expiration)
+4. **Maintains FIFO limits** (prevents database bloat)
+
+## 🔧 API Reference
+
+### Core Endpoints
+- `GET /api/health` - System health check
+- `GET /api/dashboard` - Dashboard statistics
+
+### Domain Management
+- `GET /api/domains` - List domains with filtering
+- `POST /api/domains` - Add new domain
+- `PUT /api/domains/{id}` - Update domain (manual only)
+- `DELETE /api/domains/{id}` - Delete domain (manual only)
+- `POST /api/domains/{id}/resolve` - Manually resolve domain
+
+### IP Management
+- `GET /api/ips` - List IPs with filtering
+- `POST /api/ips` - Add new IP
+- `DELETE /api/ips/{id}` - Delete IP (manual only)
+
+### Settings
+- `GET /api/settings` - Get all settings
+- `PUT /api/settings/{key}` - Update setting
+- `POST /api/settings/firewall/clear` - Clear firewall rules
+- `POST /api/settings/firewall/rebuild` - Rebuild rules from database
+
+## 🔒 Security Considerations
+
+### IP Safety Checks
+DNSniper automatically filters out:
+- Private network IPs (RFC 1918)
+- Localhost addresses (127.0.0.1, ::1)
+- Null routes (0.0.0.0, ::)
+- Server's own public IP
+- Gateway and route IPs
+- Multicast and reserved ranges
+
+### Entry Management
+- **Manual Entries**: Permanent until manually removed (`expired_at = NULL`)
+- **Auto-Update Entries**: Expire based on configuration
+- **Whitelist Priority**: Whitelist rules processed before blacklist
+- **FIFO Limits**: Prevents database bloat from domains with many IPs
+
+## 🚀 Production Deployment
+
+### Systemd Service
+The setup script creates a systemd service:
 
 ```bash
-sudo dnsniper --uninstall
+sudo systemctl start dnsniper
+sudo systemctl enable dnsniper
+sudo systemctl status dnsniper
 ```
 
-Or use the installer:
+### Rule Persistence
+Ensure firewall rules persist across reboots:
+
 ```bash
-sudo ./installer.sh
-# Choose option 3 (Uninstall)
+sudo apt install netfilter-persistent ipset-persistent
+sudo netfilter-persistent save
 ```
 
-## 🐛 Troubleshooting
+### Monitoring
+- Check application logs: `sudo journalctl -u dnsniper -f`
+- Monitor firewall activity: `sudo tail -f /var/log/kern.log | grep DNSniper`
+- View IPSet contents: `sudo ipset list`
+
+## 🔧 Troubleshooting
 
 ### Common Issues
 
-1. **Permission Denied**
-   ```bash
-   # Make sure to run with sudo
-   sudo ./installer.sh
-   ```
+1. **Permission Denied**: Ensure the application runs with sudo for firewall access
+2. **IPSet Not Found**: Run firewall initialization from Settings
+3. **Frontend Not Loading**: Build the frontend with `npm run build`
+4. **Database Errors**: Check write permissions in the backend directory
 
-2. **Service Not Starting**
-   ```bash
-   # Check service status
-   systemctl status dnsniper-agent.service
-   
-   # Check logs
-   journalctl -u dnsniper-agent.service
-   ```
-
-3. **Firewall Rules Not Working**
-   ```bash
-   # Verify iptables rules
-   iptables -L | grep DNSniper
-   
-   # Check ipset lists
-   ipset list
-   ```
-
-4. **Build Failures**
-   ```bash
-   # Install Go 1.21+
-   # Then use build flag
-   sudo ./installer.sh --build
-   ```
-
-## 📚 Documentation
-
-- [Configuration Guide](docs/configuration.md)
-- [API Reference](docs/api.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Contributing](CONTRIBUTING.md)
+### Debug Mode
+Enable debug logging in settings or environment:
+```env
+LOG_LEVEL=DEBUG
+```
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+We welcome contributions! Please see our contributing guidelines:
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
 
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🔗 Links
+## 🆘 Support
 
-- [GitHub Repository](https://github.com/MahdiGraph/DNSniper)
-- [Issue Tracker](https://github.com/MahdiGraph/DNSniper/issues)
-- [Releases](https://github.com/MahdiGraph/DNSniper/releases)
+- **Documentation**: Check the `/docs` endpoint when running
+- **Issues**: Report bugs on GitHub Issues
+- **Community**: Join our discussions
+
+## 🗺️ Roadmap
+
+- [ ] IPv6 auto-update source support
+- [ ] Geographic IP blocking
+- [ ] Integration with threat intelligence feeds
+- [ ] Webhook notifications
+- [ ] REST API rate limiting
+- [ ] Multi-user support with roles
+- [ ] Backup and restore functionality
 
 ---
 
-**⚠️ Important**: DNSniper modifies your system's firewall rules. Always test in a non-production environment first and ensure you have alternative access methods to your system.
+**⚠️ Important**: DNSniper modifies your system's firewall rules. Always test in a development environment first and ensure you have alternative access methods to your server.

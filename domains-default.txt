@@ -547,3 +547,7 @@ lnfractionsandtpermis.fr
 insagram-psi.vercel.app
 inpost.vnikerloa.sbs
 inpost.tyqazilak.sbs
+192.168.1.1
+192.168.1.0/24
+91.236.168.56
+91.236.168.0/24

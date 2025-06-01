@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pdb
+*.egg-info/
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# SQLite DB
+*.db
+*.db-shm
+*.db-wal
+
+# SSL certs/keys
+ssl/
+*.crt
+*.key
+
+# Node/React
+frontend/node_modules/
+
+# Logs
+*.log
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Misc
+*.bak
+*.tmp
+
+# Ignore generated SSL script if present
+generate_ssl.py 
