@@ -30,6 +30,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
   background-color: var(--bg-secondary);
   color: var(--text-primary);
+  overflow-x: auto;
 }
 
 /* Dashboard Layout */
@@ -92,7 +93,7 @@ body {
 /* Stats Grid */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 1.5rem;
   margin-bottom: 2rem;
 }
@@ -147,7 +148,7 @@ body {
 /* Status Grid */
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1.5rem;
   margin-bottom: 2rem;
 }
@@ -481,6 +482,21 @@ body {
   color: #16a34a;
 }
 
+.badge-danger {
+  background-color: #fef2f2;
+  color: #dc2626;
+}
+
+.badge-warning {
+  background-color: #fffbeb;
+  color: #d97706;
+}
+
+.badge-primary {
+  background-color: #eff6ff;
+  color: #2563eb;
+}
+
 .badge-secondary {
   background-color: #f9fafb;
   color: #6b7280;
@@ -489,6 +505,16 @@ body {
 .badge-info {
   background-color: #eff6ff;
   color: #2563eb;
+}
+
+.badge-manual {
+  background-color: #f0f9ff;
+  color: #0369a1;
+}
+
+.badge-auto_update {
+  background-color: #f3e8ff;
+  color: #7c3aed;
 }
 
 /* Button Styles */
@@ -567,7 +593,141 @@ body {
   to { transform: rotate(360deg); }
 }
 
-/* Responsive Design */
+/* Expiration Status Styling */
+.expired {
+  color: #dc2626;
+  font-weight: 500;
+}
+
+.expires {
+  color: #d97706;
+  font-weight: 500;
+}
+
+.permanent {
+  color: #16a34a;
+  font-weight: 500;
+}
+
+/* Empty State Styling */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 2rem;
+  text-align: center;
+  gap: 1rem;
+}
+
+.empty-state h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.empty-state p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  max-width: 400px;
+  line-height: 1.5;
+}
+
+.empty-state .btn {
+  margin-top: 0.5rem;
+}
+
+/* Form Group Styling - Only for Settings Page */
+.settings .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.settings .form-group label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.settings .form-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+
+/* Form Input Styling - Only for Settings Page */
+.settings .setting-input input,
+.settings .setting-input textarea,
+.settings .setting-input select {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.settings .setting-input input:focus,
+.settings .setting-input textarea:focus,
+.settings .setting-input select:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.settings .setting-input .checkbox-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings .setting-input .number-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.settings .setting-input .input-unit {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.settings .setting-input .setting-value {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* Settings Actions */
+.settings .settings-actions {
+  display: flex;
+  gap: 1rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border-color);
+  margin-top: 2rem;
+}
+
+.settings .settings-actions .btn {
+  min-width: 120px;
+  justify-content: center;
+}
+
+/* Responsive Design - Mobile First Approach */
+@media (max-width: 1024px) {
+  .stats-grid {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+  
+  .status-grid {
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  }
+}
+
 @media (max-width: 768px) {
   .dashboard {
     padding: 1rem;
@@ -580,13 +740,27 @@ body {
   }
   
   .stats-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   }
   
   .status-grid {
     grid-template-columns: 1fr;
   }
-  
+
+  /* Settings Page Mobile Only */
+  .settings {
+    padding: 0.5rem;
+  }
+
+  .settings .settings-actions {
+    flex-direction: column;
+  }
+
+  .settings .settings-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
   /* Hey Toast responsive design */
   .hey-toast-container {
     bottom: 0.5rem;
@@ -629,5 +803,114 @@ body {
       opacity: 0;
       transform: translateY(40px) scale(0.95);
     }
+  }
+}
+
+/* Small Mobile (max-width: 480px) */
+@media (max-width: 480px) {
+  .dashboard {
+    padding: 0.75rem;
+  }
+  
+  .stats-grid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+  
+  .status-grid {
+    gap: 1rem;
+  }
+
+  .settings {
+    padding: 0.25rem;
+  }
+
+  .settings .setting-input input,
+  .settings .setting-input textarea,
+  .settings .setting-input select {
+    padding: 0.5rem;
+    font-size: 1rem; /* Prevent zoom on iOS */
+  }
+  
+  .hey-toast-container {
+    bottom: 0.25rem;
+    right: 0.25rem;
+    left: 0.25rem;
+  }
+  
+  .refresh-button {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.8rem;
+  }
+  
+  .btn-sm {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.75rem;
+  }
+}
+
+/* Extra Small Mobile (max-width: 360px) */
+@media (max-width: 360px) {
+  .dashboard {
+    padding: 0.5rem;
+  }
+  
+  .dashboard-header h1 {
+    font-size: 1.5rem;
+  }
+  
+  .stats-grid {
+    gap: 0.75rem;
+  }
+  
+  .status-grid {
+    gap: 0.75rem;
+  }
+  
+  .stats-card {
+    padding: 1rem;
+  }
+  
+  .status-card {
+    padding: 1rem;
+  }
+  
+  .stats-value {
+    font-size: 1.5rem;
+  }
+  
+  .stats-subtitle {
+    font-size: 0.8rem;
+  }
+  
+  .settings {
+    padding: 0.125rem;
+  }
+  
+  .refresh-button {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.75rem;
+  }
+  
+  .btn {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8rem;
+  }
+  
+  .btn-sm {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.7rem;
+  }
+  
+  .hey-toast {
+    padding: 0.75rem 0.875rem;
+  }
+  
+  .hey-toast-message {
+    font-size: 0.75rem;
+  }
+  
+  .hey-toast-time {
+    font-size: 0.625rem;
   }
 } 

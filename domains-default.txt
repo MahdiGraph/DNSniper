@@ -1,6 +1,3 @@
-ivahid.com
-exnovin.io
-mettifdgdfgjg.com
-91.236.169.56
-91.236.168.0/24
-#Here it is
+google.com
+cloudflare.com
+speedtest.net

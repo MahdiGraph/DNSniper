@@ -1,6 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Settings, Shield, RefreshCw, Trash2, Plus, Globe, Play, Pause, TestTube, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Settings, Shield, RefreshCw, Trash2, Plus, Globe, Play, Pause, TestTube, CheckCircle, AlertTriangle, Database } from 'lucide-react';
+import {
+  showSuccess,
+  showError,
+  showWarning,
+  showConfirm,
+  showDeleteConfirm,
+  showDangerousConfirm
+} from '../utils/customAlert';
 
 function SettingsPage() {
   const [firewallStatus, setFirewallStatus] = useState(null);
@@ -75,37 +83,98 @@ function SettingsPage() {
   };
 
   const clearFirewallRules = async () => {
-    if (!window.confirm('Are you sure you want to clear all DNSniper firewall rules?')) return;
+    const result = await showDeleteConfirm(
+      'Clear Firewall Rules',
+      'Are you sure you want to clear all firewall rules? This action cannot be undone.',
+      { confirmButtonText: 'Clear Rules' }
+    );
     
-    try {
-      await axios.post('/api/settings/firewall/clear');
-      alert('Firewall rules cleared successfully');
-      fetchFirewallStatus();
-    } catch (error) {
-      alert('Failed to clear firewall rules: ' + (error.response?.data?.detail || error.message));
+    if (result.isConfirmed) {
+      try {
+        const response = await axios.delete('/api/settings/firewall/clear', {
+          headers: { Authorization: `Bearer ${getToken()}` }
+        });
+        await showSuccess('Success', 'Firewall rules cleared successfully');
+        await fetchFirewallStatus();
+      } catch (error) {
+        await showError(
+          'Clear Failed',
+          `Failed to clear firewall rules: ${error.response?.data?.detail || error.message}`
+        );
+      }
     }
   };
 
   const rebuildFirewallRules = async () => {
-    if (!window.confirm('Are you sure you want to rebuild all firewall rules from database?')) return;
+    const result = await showConfirm(
+      'Rebuild Firewall Rules',
+      'Are you sure you want to rebuild all firewall rules? This will recreate all rules from the current database.'
+    );
     
-    try {
-      await axios.post('/api/settings/firewall/rebuild');
-      alert('Firewall rules rebuilt successfully');
-      fetchFirewallStatus();
-    } catch (error) {
-      alert('Failed to rebuild firewall rules: ' + (error.response?.data?.detail || error.message));
+    if (result.isConfirmed) {
+      try {
+        const response = await axios.post('/api/settings/firewall/rebuild', {}, {
+          headers: { Authorization: `Bearer ${getToken()}` }
+        });
+        await showSuccess('Success', 'Firewall rules rebuilt successfully');
+        await fetchFirewallStatus();
+      } catch (error) {
+        await showError(
+          'Rebuild Failed',
+          `Failed to rebuild firewall rules: ${error.response?.data?.detail || error.message}`
+        );
+      }
+    }
+  };
+
+  const clearAllData = async () => {
+    const result = await showDangerousConfirm(
+      'Clear ALL Database Data',
+      'This will permanently delete:\n• All domains, IPs, and IP ranges\n• Clear all firewall rules\n• Cannot be undone\n\nThis is a destructive operation!',
+      'CONFIRM'
+    );
+    
+    if (result.isConfirmed) {
+      try {
+        const response = await axios.delete('/api/clear-all-data', {
+          headers: { Authorization: `Bearer ${getToken()}` }
+        });
+        const data = response.data;
+        
+        await showSuccess(
+          'Database Cleared Successfully!',
+          `Removed:\n• ${data.cleared.domains} domains\n• ${data.cleared.ips} IPs\n• ${data.cleared.ip_ranges} IP ranges\n• Total: ${data.cleared.total} entries\n\nAll firewall rules have also been cleared.`
+        );
+        
+        // Refresh all data
+        await fetchSettings();
+        await fetchFirewallStatus();
+        await fetchAutoUpdateSources();
+      } catch (error) {
+        await showError(
+          'Clear Failed',
+          `Failed to clear database data: ${error.response?.data?.detail || error.message}`
+        );
+      }
     }
   };
 
   const deleteAutoUpdateSource = async (sourceId) => {
-    if (!window.confirm('Are you sure you want to delete this auto-update source?')) return;
+    const result = await showDeleteConfirm(
+      'Delete Auto-Update Source',
+      'Are you sure you want to delete this auto-update source?'
+    );
     
-    try {
-      await axios.delete(`/api/auto-update-sources/${sourceId}`);
-      fetchAutoUpdateSources();
-    } catch (error) {
-      alert('Failed to delete auto-update source: ' + (error.response?.data?.detail || error.message));
+    if (result.isConfirmed) {
+      try {
+        await axios.delete(`/api/auto-update-sources/${sourceId}`);
+        fetchAutoUpdateSources();
+      } catch (error) {
+        await showError(
+          'Delete Failed',
+          `Failed to delete auto-update source: ${error.response?.data?.detail || error.message}`
+        );
+      }
     }
   };
 
@@ -114,37 +183,63 @@ function SettingsPage() {
       await axios.put(`/api/auto-update-sources/${sourceId}`, { is_active: !isActive });
       fetchAutoUpdateSources();
     } catch (error) {
-      alert('Failed to toggle auto-update source: ' + (error.response?.data?.detail || error.message));
+      await showError(
+        'Toggle Failed',
+        `Failed to toggle auto-update source: ${error.response?.data?.detail || error.message}`
+      );
     }
   };
 
   const testAutoUpdateSource = async (sourceId) => {
     try {
-      const response = await axios.get(`/api/auto-update-sources/test/${sourceId}`);
+      const response = await axios.post(`/api/auto-update-sources/${sourceId}/test`);
       const result = response.data.test_result;
       
       if (result.status === 'success') {
-        alert(`✅ Test Successful!\n\nHTTP Status: ${result.http_status}\nContent Length: ${result.content_length} bytes\nContent Type: ${result.content_type}\n\nThe auto-update source is working correctly and will be processed during updates.`);
+        await showSuccess(
+          '✅ Test Successful!',
+          `HTTP Status: ${result.http_status}\nContent Length: ${result.content_length} bytes\nContent Type: ${result.content_type}\n\nThe auto-update source is working correctly and will be processed during updates.`
+        );
       } else if (result.status === 'failed') {
-        alert(`❌ Test Failed!\n\nHTTP Status: ${result.http_status || 'Unknown'}\nError: ${result.error}\nContent Length: ${result.content_length || 0} bytes\n\nThis source will be skipped during auto-updates until the issue is resolved.`);
+        await showError(
+          '❌ Test Failed!',
+          `HTTP Status: ${result.http_status || 'Unknown'}\nError: ${result.error}\nContent Length: ${result.content_length || 0} bytes\n\nThis source will be skipped during auto-updates until the issue is resolved.`
+        );
       } else if (result.status === 'timeout') {
-        alert(`⏱️ Test Timed Out!\n\nError: ${result.error}\n\nThe source took too long to respond and will be skipped during auto-updates.`);
+        await showWarning(
+          '⏱️ Test Timed Out!',
+          `Error: ${result.error}\n\nThe source took too long to respond and will be skipped during auto-updates.`
+        );
       } else {
-        alert(`❌ Test Failed!\n\nError: ${result.error || 'Unknown error occurred'}\n\nThis source will be skipped during auto-updates.`);
+        await showError(
+          '❌ Test Failed!',
+          `Error: ${result.error || 'Unknown error occurred'}\n\nThis source will be skipped during auto-updates.`
+        );
       }
     } catch (error) {
-      alert('Failed to test auto-update source: ' + (error.response?.data?.detail || error.message));
+      await showError(
+        'Test Failed',
+        `Failed to test auto-update source: ${error.response?.data?.detail || error.message}`
+      );
     }
   };
 
-  const triggerManualUpdate = async () => {
-    if (!window.confirm('Are you sure you want to manually trigger an auto-update cycle?')) return;
+  const triggerAutoUpdate = async () => {
+    const result = await showConfirm(
+      'Trigger Auto-Update',
+      'Are you sure you want to manually trigger an auto-update cycle?'
+    );
     
-    try {
-      await axios.post('/api/auto-update-sources/trigger-update');
-      alert('Auto-update cycle triggered successfully');
-    } catch (error) {
-      alert('Failed to trigger auto-update: ' + (error.response?.data?.detail || error.message));
+    if (result.isConfirmed) {
+      try {
+        await axios.post('/api/auto-update-sources/trigger-update');
+        await showSuccess('Success', 'Auto-update cycle triggered successfully');
+      } catch (error) {
+        await showError(
+          'Trigger Failed',
+          `Failed to trigger auto-update: ${error.response?.data?.detail || error.message}`
+        );
+      }
     }
   };
 
@@ -155,18 +250,27 @@ function SettingsPage() {
       const response = await axios.put('/api/settings/bulk', {
         settings: settings
       });
-      alert('Settings updated successfully!');
+      await showSuccess('Success', 'Settings updated successfully!');
       setOriginalSettings(settings);
       setHasChanges(false);
     } catch (error) {
       if (error.response?.data?.detail?.errors) {
         const errors = error.response.data.detail.errors;
         const errorMessages = Object.entries(errors).map(([key, msg]) => `${key}: ${msg}`).join('\n');
-        alert(`Validation errors:\n${errorMessages}`);
+        await showError(
+          'Validation Errors',
+          `Validation errors:\n${errorMessages}`
+        );
       } else if (error.response?.data?.detail) {
-        alert(`Validation error:\n${error.response.data.detail}`);
+        await showError(
+          'Validation Error',
+          `Validation error:\n${error.response.data.detail}`
+        );
       } else {
-        alert('Failed to update settings: ' + (error.message || 'Unknown error'));
+        await showError(
+          'Update Failed',
+          `Failed to update settings: ${error.message || 'Unknown error'}`
+        );
       }
     } finally {
       setSaving(false);
@@ -283,7 +387,7 @@ function SettingsPage() {
           <div className="section-actions">
             <button 
               className="btn btn-success"
-              onClick={triggerManualUpdate}
+              onClick={triggerAutoUpdate}
               title="Manually trigger auto-update cycle"
             >
               <Play size={16} />
@@ -431,6 +535,13 @@ function SettingsPage() {
                 <Trash2 size={16} />
                 Clear All Rules
               </button>
+              <button 
+                className="btn btn-secondary"
+                onClick={clearAllData}
+              >
+                <Database size={16} />
+                Clear All Database Data
+              </button>
             </div>
 
             {/* Detailed IPSet Status */}
@@ -481,21 +592,21 @@ function SettingsPage() {
           <Settings size={20} />
           Application Settings
         </h2>
-        <div className="settings-grid compact-grid">
+        <div className="settings-grid">
           {Object.entries(settings).filter(([key]) => 
             // Filter out SSL settings since they are now in SecurityPage
             !['enable_ssl', 'force_https', 'ssl_domain', 'ssl_certfile', 'ssl_keyfile'].includes(key)
           ).map(([key, value]) => {
             const settingConfig = getSettingConfig(key);
             return (
-              <div key={key} className="setting-item-editable compact-item">
+              <div key={key} className="form-group">
                 <label>
                   {settingConfig.label}
                   {settingConfig.hint && (
-                    <span className="setting-hint">{settingConfig.hint}</span>
+                    <small className="form-hint">{settingConfig.hint}</small>
                   )}
                 </label>
-                <div className="setting-input compact-input">
+                <div className="setting-input">
                   {renderSettingInput(key, value, settingConfig)}
                 </div>
               </div>
@@ -557,7 +668,10 @@ function AddAutoUpdateSourceModal({ onClose, onSuccess }) {
       await axios.post('/api/auto-update-sources/', formData);
       onSuccess();
     } catch (error) {
-      alert('Failed to add auto-update source: ' + (error.response?.data?.detail || error.message));
+      await showError(
+        'Add Failed',
+        `Failed to add auto-update source: ${error.response?.data?.detail || error.message}`
+      );
     } finally {
       setLoading(false);
     }

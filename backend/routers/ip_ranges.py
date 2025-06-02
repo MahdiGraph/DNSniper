@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import List, Optional
 from pydantic import BaseModel, validator
-from datetime import datetime
+from datetime import datetime, timezone
 import ipaddress
 
 from database import get_db
@@ -13,6 +13,46 @@ from models.logs import ActionType, RuleType
 from services.live_events import live_events
 
 router = APIRouter()
+
+def calculate_time_remaining(expired_at: Optional[datetime]) -> Optional[str]:
+    """Calculate time remaining until expiration in a human-readable format"""
+    if not expired_at:
+        return None
+    
+    # Ensure we're working with timezone-aware datetime
+    now = datetime.now(timezone.utc)
+    if expired_at.tzinfo is None:
+        expired_at = expired_at.replace(tzinfo=timezone.utc)
+    
+    # If already expired
+    if expired_at <= now:
+        return "Expired"
+    
+    # Calculate the difference
+    diff = expired_at - now
+    total_seconds = int(diff.total_seconds())
+    
+    # Convert to appropriate time unit
+    if total_seconds < 3600:  # Less than 1 hour
+        minutes = total_seconds // 60
+        if minutes == 0:
+            return "in less than 1 minute"
+        elif minutes == 1:
+            return "in 1 minute"
+        else:
+            return f"in {minutes} minutes"
+    elif total_seconds < 86400:  # Less than 1 day
+        hours = total_seconds // 3600
+        if hours == 1:
+            return "in 1 hour"
+        else:
+            return f"in {hours} hours"
+    else:  # 1 day or more
+        days = total_seconds // 86400
+        if days == 1:
+            return "in 1 day"
+        else:
+            return f"in {days} days"
 
 # Pydantic models
 class IPRangeCreate(BaseModel):
@@ -32,6 +72,7 @@ class IPRangeResponse(BaseModel):
     source_type: str
     source_url: Optional[str]
     expired_at: Optional[datetime]
+    expires_in: Optional[str]
     created_at: datetime
     updated_at: datetime
     notes: Optional[str]
@@ -39,16 +80,24 @@ class IPRangeResponse(BaseModel):
     class Config:
         from_attributes = True
 
-@router.get("/", response_model=List[IPRangeResponse])
+class PaginatedIPRangesResponse(BaseModel):
+    ip_ranges: List[IPRangeResponse]
+    page: int
+    per_page: int
+    total: int
+    pages: int
+
+@router.get("/", response_model=PaginatedIPRangesResponse)
 async def get_ip_ranges(
     db: Session = Depends(get_db),
     list_type: Optional[str] = Query(None),
     source_type: Optional[str] = Query(None),
     ip_version: Optional[int] = Query(None),
-    limit: int = Query(100, le=1000),
-    offset: int = Query(0)
+    search: Optional[str] = Query(None, description="Search IP ranges (partial match)"),
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    per_page: int = Query(50, ge=1, le=1000, description="Items per page")
 ):
-    """Get IP ranges with optional filtering"""
+    """Get IP ranges with optional filtering and search"""
     query = db.query(IPRange)
     
     if list_type:
@@ -68,7 +117,17 @@ async def get_ip_ranges(
     if ip_version:
         query = query.filter(IPRange.ip_version == ip_version)
     
-    ip_ranges = query.offset(offset).limit(limit).all()
+    if search:
+        query = query.filter(IPRange.ip_range.contains(search))
+    
+    # Get total count before pagination
+    total = query.count()
+    
+    # Calculate pagination
+    offset = (page - 1) * per_page
+    pages = (total + per_page - 1) // per_page  # Ceiling division
+    
+    ip_ranges = query.offset(offset).limit(per_page).all()
     
     result = []
     for ip_range in ip_ranges:
@@ -80,12 +139,19 @@ async def get_ip_ranges(
             "source_type": ip_range.source_type.value,
             "source_url": ip_range.source_url,
             "expired_at": ip_range.expired_at,
+            "expires_in": calculate_time_remaining(ip_range.expired_at),
             "created_at": ip_range.created_at,
             "updated_at": ip_range.updated_at,
             "notes": ip_range.notes
         })
     
-    return result
+    return {
+        "ip_ranges": result,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": pages
+    }
 
 @router.get("/{ip_range_id}", response_model=IPRangeResponse)
 async def get_ip_range(ip_range_id: int, db: Session = Depends(get_db)):
@@ -102,6 +168,7 @@ async def get_ip_range(ip_range_id: int, db: Session = Depends(get_db)):
         "source_type": ip_range.source_type.value,
         "source_url": ip_range.source_url,
         "expired_at": ip_range.expired_at,
+        "expires_in": calculate_time_remaining(ip_range.expired_at),
         "created_at": ip_range.created_at,
         "updated_at": ip_range.updated_at,
         "notes": ip_range.notes
@@ -164,6 +231,7 @@ async def create_ip_range(ip_range_data: IPRangeCreate, db: Session = Depends(ge
         "source_type": ip_range.source_type.value,
         "source_url": ip_range.source_url,
         "expired_at": ip_range.expired_at,
+        "expires_in": calculate_time_remaining(ip_range.expired_at),
         "created_at": ip_range.created_at,
         "updated_at": ip_range.updated_at,
         "notes": ip_range.notes
@@ -215,6 +283,7 @@ async def update_ip_range(ip_range_id: int, ip_range_data: IPRangeUpdate, db: Se
         "source_type": ip_range.source_type.value,
         "source_url": ip_range.source_url,
         "expired_at": ip_range.expired_at,
+        "expires_in": calculate_time_remaining(ip_range.expired_at),
         "created_at": ip_range.created_at,
         "updated_at": ip_range.updated_at,
         "notes": ip_range.notes
@@ -227,15 +296,13 @@ async def update_ip_range(ip_range_id: int, ip_range_data: IPRangeUpdate, db: Se
 
 @router.delete("/{ip_range_id}")
 async def delete_ip_range(ip_range_id: int, db: Session = Depends(get_db)):
-    """Delete an IP range (manual entries only)"""
+    """Delete an IP range (allows deletion of both manual and auto-update entries)"""
     ip_range = db.query(IPRange).filter(IPRange.id == ip_range_id).first()
     if not ip_range:
         raise HTTPException(status_code=404, detail="IP range not found")
     
-    if ip_range.source_type != SourceType.manual:
-        raise HTTPException(status_code=400, detail="Can only delete manual IP ranges")
-    
     ip_range_str = ip_range.ip_range
+    source_type = ip_range.source_type.value
     
     # Prepare event data before deletion
     event_data = {
@@ -253,8 +320,8 @@ async def delete_ip_range(ip_range_id: int, db: Session = Depends(get_db)):
     # Log the action
     Log.create_rule_log(
         db, ActionType.remove_rule, RuleType.ip_range,
-        f"Deleted manual IP range: {ip_range_str}",
-        mode='manual'
+        f"Deleted {source_type} IP range: {ip_range_str}",
+        mode='manual' if source_type == 'manual' else 'auto'
     )
     
     # Broadcast live event

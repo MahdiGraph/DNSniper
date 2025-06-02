@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Shield, Lock, Eye, EyeOff, CheckCircle, AlertTriangle } from 'lucide-react';
+import { showSuccess, showError, showWarning } from '../utils/customAlert';
 
 function SecurityPage({ user, setUser }) {
   const [settings, setSettings] = useState({});
@@ -71,18 +72,24 @@ function SecurityPage({ user, setUser }) {
       const newEnableSsl = settings.enable_ssl;
       const response = await axios.put('/api/settings/ssl', getSslSettings(settings));
       if (prevEnableSsl !== newEnableSsl && response.data.ssl_restart_required) {
-        alert('SSL enable/disable state changed. The web server will now shut down. Please restart the DNSniper service manually or ensure your process manager (e.g., systemd) restarts it automatically.');
+        await showWarning(
+          'Server Restart Required',
+          'SSL enable/disable state changed. The web server will now shut down. Please restart the DNSniper service manually or ensure your process manager (e.g., systemd) restarts it automatically.'
+        );
       } else if (response.data.ssl_restart_required) {
-        alert('SSL configuration has changed. The web server will now shut down. Please restart the DNSniper service manually or ensure your process manager (e.g., systemd) restarts it automatically.');
+        await showWarning(
+          'Server Restart Required',
+          'SSL configuration has changed. The web server will now shut down. Please restart the DNSniper service manually or ensure your process manager (e.g., systemd) restarts it automatically.'
+        );
       } else {
-        alert('SSL settings updated successfully!');
+        await showSuccess('Success', 'SSL settings updated successfully!');
       }
       setOriginalSettings(settings);
     } catch (error) {
       if (error.response?.data?.detail) {
-        alert('SSL Update Error: ' + error.response.data.detail);
+        await showError('SSL Update Error', error.response.data.detail);
       } else {
-        alert('Failed to update SSL settings: ' + (error.message || 'Unknown error'));
+        await showError('Update Failed', `Failed to update SSL settings: ${error.message || 'Unknown error'}`);
       }
     } finally {
       setSaving(false);
@@ -92,11 +99,11 @@ function SecurityPage({ user, setUser }) {
   const handlePasswordChange = async (e) => {
     e.preventDefault();
     if (passwordForm.new_password !== passwordForm.confirm_password) {
-      alert('New passwords do not match');
+      await showError('Password Mismatch', 'New passwords do not match');
       return;
     }
     if (passwordForm.new_password.length < 6) {
-      alert('Password must be at least 6 characters long');
+      await showError('Password Too Short', 'Password must be at least 6 characters long');
       return;
     }
 
@@ -121,9 +128,9 @@ function SecurityPage({ user, setUser }) {
       
     } catch (error) {
       if (error.response?.data?.detail) {
-        alert('Password Change Error: ' + error.response.data.detail);
+        await showError('Password Change Error', error.response.data.detail);
       } else {
-        alert('Failed to change password: ' + (error.message || 'Unknown error'));
+        await showError('Change Failed', `Failed to change password: ${error.message || 'Unknown error'}`);
       }
     } finally {
       setPasswordSaving(false);
@@ -133,7 +140,7 @@ function SecurityPage({ user, setUser }) {
   const handleUsernameChange = async (e) => {
     e.preventDefault();
     if (usernameForm.new_username.length < 3) {
-      alert('Username must be at least 3 characters long');
+      await showError('Username Too Short', 'Username must be at least 3 characters long');
       return;
     }
 
@@ -155,9 +162,9 @@ function SecurityPage({ user, setUser }) {
       
     } catch (error) {
       if (error.response?.data?.detail) {
-        alert('Username Change Error: ' + error.response.data.detail);
+        await showError('Username Change Error', error.response.data.detail);
       } else {
-        alert('Failed to change username: ' + (error.message || 'Unknown error'));
+        await showError('Change Failed', `Failed to change username: ${error.message || 'Unknown error'}`);
       }
     } finally {
       setUsernameSaving(false);

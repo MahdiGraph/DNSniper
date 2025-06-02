@@ -590,6 +590,73 @@ async def get_dashboard_stats(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Failed to get dashboard stats")
 
 
+# Clear all database data endpoint
+@app.delete("/api/clear-all-data")
+async def clear_all_database_data(db: Session = Depends(get_db)):
+    """Clear all domains, IPs, and IP ranges from the database"""
+    try:
+        # Get counts before deletion for logging
+        domain_count = db.query(Domain).count()
+        ip_count = db.query(IP).count()
+        ip_range_count = db.query(IPRange).count()
+        
+        # Delete all records
+        db.query(Domain).delete()
+        db.query(IP).delete()
+        db.query(IPRange).delete()
+        
+        # Commit the transaction
+        db.commit()
+        
+        # Log the action
+        Log.create_rule_log(
+            db, 
+            ActionType.remove_rule, 
+            None, 
+            f"Cleared all database data: {domain_count} domains, {ip_count} IPs, {ip_range_count} IP ranges", 
+            mode="manual"
+        )
+        Log.cleanup_old_logs(db)
+        db.commit()
+        
+        # Clear firewall rules after database cleanup
+        try:
+            firewall = FirewallService()
+            firewall.clear_all_rules()
+            Log.create_rule_log(db, ActionType.remove_rule, None, "Firewall rules cleared after database cleanup", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.commit()
+        except Exception as fw_error:
+            logger.error(f"Failed to clear firewall rules after database cleanup: {fw_error}")
+            Log.create_error_log(db, f"Failed to clear firewall rules after database cleanup: {fw_error}", context="clear_all_data", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.commit()
+        
+        return {
+            "message": "All database data cleared successfully",
+            "cleared": {
+                "domains": domain_count,
+                "ips": ip_count,
+                "ip_ranges": ip_range_count,
+                "total": domain_count + ip_count + ip_range_count
+            },
+            "firewall_cleared": True
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to clear database data: {e}")
+        
+        # Log the error
+        try:
+            Log.create_error_log(db, f"Failed to clear all database data: {e}", context="clear_all_data", mode="manual")
+            Log.cleanup_old_logs(db)
+            db.commit()
+        except:
+            pass
+        
+        raise HTTPException(status_code=500, detail=f"Failed to clear database data: {str(e)}")
+
+
 # Include API routers
 app.include_router(auth.router, prefix="/api/auth", tags=["authentication"])
 app.include_router(domains.router, prefix="/api/domains", tags=["domains"])

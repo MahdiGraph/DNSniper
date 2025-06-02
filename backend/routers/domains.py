@@ -17,6 +17,46 @@ from services.live_events import live_events
 router = APIRouter()
 security = HTTPBearer()
 
+def calculate_time_remaining(expired_at: Optional[datetime]) -> Optional[str]:
+    """Calculate time remaining until expiration in a human-readable format"""
+    if not expired_at:
+        return None
+    
+    # Ensure we're working with timezone-aware datetime
+    now = datetime.now(timezone.utc)
+    if expired_at.tzinfo is None:
+        expired_at = expired_at.replace(tzinfo=timezone.utc)
+    
+    # If already expired
+    if expired_at <= now:
+        return "Expired"
+    
+    # Calculate the difference
+    diff = expired_at - now
+    total_seconds = int(diff.total_seconds())
+    
+    # Convert to appropriate time unit
+    if total_seconds < 3600:  # Less than 1 hour
+        minutes = total_seconds // 60
+        if minutes == 0:
+            return "in less than 1 minute"
+        elif minutes == 1:
+            return "in 1 minute"
+        else:
+            return f"in {minutes} minutes"
+    elif total_seconds < 86400:  # Less than 1 day
+        hours = total_seconds // 3600
+        if hours == 1:
+            return "in 1 hour"
+        else:
+            return f"in {hours} hours"
+    else:  # 1 day or more
+        days = total_seconds // 86400
+        if days == 1:
+            return "in 1 day"
+        else:
+            return f"in {days} days"
+
 # Pydantic models
 class DomainCreate(BaseModel):
     domain_name: str
@@ -52,6 +92,7 @@ class DomainResponse(BaseModel):
     source_url: Optional[str]
     is_cdn: bool
     expired_at: Optional[datetime]
+    expires_in: Optional[str]
     created_at: datetime
     updated_at: datetime
     notes: Optional[str]
@@ -68,6 +109,7 @@ class DomainResponse(BaseModel):
                 "source_url": None,
                 "is_cdn": False,
                 "expired_at": None,
+                "expires_in": None,
                 "created_at": "2024-01-01T12:00:00Z",
                 "updated_at": "2024-01-01T12:00:00Z",
                 "notes": "Known malware domain",
@@ -75,31 +117,45 @@ class DomainResponse(BaseModel):
             }
         }
 
+class PaginatedDomainsResponse(BaseModel):
+    domains: List[DomainResponse]
+    page: int
+    per_page: int
+    total: int
+    pages: int
+
 @router.get("/", 
-    response_model=List[DomainResponse],
+    response_model=PaginatedDomainsResponse,
     summary="List domains",
     description="Get all domains with optional filtering by list type, source type, and search term. Supports pagination.",
     dependencies=[Depends(security)],
     responses={
         200: {
-            "description": "List of domains matching the criteria",
+            "description": "Paginated list of domains matching the criteria",
             "content": {
                 "application/json": {
-                    "example": [
-                        {
-                            "id": 1,
-                            "domain_name": "malware.example.com",
-                            "list_type": "blacklist",
-                            "source_type": "manual",
-                            "source_url": None,
-                            "is_cdn": False,
-                            "expired_at": None,
-                            "created_at": "2024-01-01T12:00:00Z",
-                            "updated_at": "2024-01-01T12:00:00Z",
-                            "notes": "Known malware domain",
-                            "ip_count": 3
-                        }
-                    ]
+                    "example": {
+                        "domains": [
+                            {
+                                "id": 1,
+                                "domain_name": "malware.example.com",
+                                "list_type": "blacklist",
+                                "source_type": "manual",
+                                "source_url": None,
+                                "is_cdn": False,
+                                "expired_at": None,
+                                "expires_in": None,
+                                "created_at": "2024-01-01T12:00:00Z",
+                                "updated_at": "2024-01-01T12:00:00Z",
+                                "notes": "Known malware domain",
+                                "ip_count": 3
+                            }
+                        ],
+                        "page": 1,
+                        "per_page": 50,
+                        "total": 100,
+                        "pages": 2
+                    }
                 }
             }
         },
@@ -112,8 +168,8 @@ async def get_domains(
     list_type: Optional[str] = Query(None, description="Filter by list type (blacklist or whitelist)"),
     source_type: Optional[str] = Query(None, description="Filter by source type (manual or auto_update)"),
     search: Optional[str] = Query(None, description="Search domain names (partial match)"),
-    limit: int = Query(100, le=1000, description="Maximum number of results (max 1000)"),
-    offset: int = Query(0, description="Number of results to skip for pagination")
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    per_page: int = Query(50, ge=1, le=1000, description="Items per page")
 ):
     """Get domains with optional filtering and pagination"""
     query = db.query(Domain)
@@ -136,8 +192,15 @@ async def get_domains(
     if search:
         query = query.filter(Domain.domain_name.contains(search.lower()))
     
+    # Get total count before pagination
+    total = query.count()
+    
+    # Calculate pagination
+    offset = (page - 1) * per_page
+    pages = (total + per_page - 1) // per_page  # Ceiling division
+    
     # Get domains with pagination
-    domains = query.offset(offset).limit(limit).all()
+    domains = query.offset(offset).limit(per_page).all()
     
     # Add IP count for each domain
     result = []
@@ -151,6 +214,7 @@ async def get_domains(
             "source_url": domain.source_url,
             "is_cdn": domain.is_cdn,
             "expired_at": domain.expired_at,
+            "expires_in": calculate_time_remaining(domain.expired_at),
             "created_at": domain.created_at,
             "updated_at": domain.updated_at,
             "notes": domain.notes,
@@ -158,7 +222,13 @@ async def get_domains(
         }
         result.append(domain_dict)
     
-    return result
+    return {
+        "domains": result,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": pages
+    }
 
 @router.get("/{domain_id}", response_model=DomainResponse)
 async def get_domain(domain_id: int, db: Session = Depends(get_db)):
@@ -177,6 +247,7 @@ async def get_domain(domain_id: int, db: Session = Depends(get_db)):
         "source_url": domain.source_url,
         "is_cdn": domain.is_cdn,
         "expired_at": domain.expired_at,
+        "expires_in": calculate_time_remaining(domain.expired_at),
         "created_at": domain.created_at,
         "updated_at": domain.updated_at,
         "notes": domain.notes,
@@ -233,6 +304,7 @@ async def create_domain(domain_data: DomainCreate, db: Session = Depends(get_db)
         "source_url": domain.source_url,
         "is_cdn": domain.is_cdn,
         "expired_at": domain.expired_at,
+        "expires_in": calculate_time_remaining(domain.expired_at),
         "created_at": domain.created_at,
         "updated_at": domain.updated_at,
         "notes": domain.notes,
@@ -301,6 +373,7 @@ async def update_domain(domain_id: int, domain_data: DomainUpdate, db: Session =
         "source_url": domain.source_url,
         "is_cdn": domain.is_cdn,
         "expired_at": domain.expired_at,
+        "expires_in": calculate_time_remaining(domain.expired_at),
         "created_at": domain.created_at,
         "updated_at": domain.updated_at,
         "notes": domain.notes,
@@ -314,15 +387,13 @@ async def update_domain(domain_id: int, domain_data: DomainUpdate, db: Session =
 
 @router.delete("/{domain_id}")
 async def delete_domain(domain_id: int, db: Session = Depends(get_db)):
-    """Delete a domain (manual entries only)"""
+    """Delete a domain (allows deletion of both manual and auto-update entries)"""
     domain = db.query(Domain).filter(Domain.id == domain_id).first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found")
     
-    if domain.source_type != SourceType.manual:
-        raise HTTPException(status_code=400, detail="Can only delete manual domains")
-    
     domain_name = domain.domain_name
+    source_type = domain.source_type.value
     
     # Prepare event data before deletion
     event_data = {
@@ -346,9 +417,9 @@ async def delete_domain(domain_id: int, db: Session = Depends(get_db)):
     # Log the action
     Log.create_rule_log(
         db, ActionType.remove_rule, RuleType.domain,
-        f"Deleted manual domain: {domain_name}",
+        f"Deleted {source_type} domain: {domain_name}",
         domain_name=domain_name,
-        mode='manual'
+        mode='manual' if source_type == 'manual' else 'auto'
     )
     
     # Broadcast live event

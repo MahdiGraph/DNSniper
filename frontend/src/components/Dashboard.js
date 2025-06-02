@@ -11,6 +11,7 @@ import {
   Clock,
   RefreshCw
 } from 'lucide-react';
+import { showSuccess, showError } from '../utils/customAlert';
 
 function Dashboard() {
   const [stats, setStats] = useState(null);
@@ -58,12 +59,15 @@ function Dashboard() {
       }
 
       await axios.post(endpoint);
-      alert(message);
+      await showSuccess('Success', message);
       
       // Refresh dashboard data
       fetchDashboardStats();
     } catch (error) {
-      alert(`Failed to ${action} auto-update agent: ` + (error.response?.data?.detail || error.message));
+      await showError(
+        'Operation Failed',
+        `Failed to ${action} auto-update agent: ${error.response?.data?.detail || error.message}`
+      );
     }
   };
 

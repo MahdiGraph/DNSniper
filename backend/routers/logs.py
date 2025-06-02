@@ -28,6 +28,13 @@ class LogResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class PaginatedLogsResponse(BaseModel):
+    logs: List[LogResponse]
+    page: int
+    per_page: int
+    total: int
+    pages: int
+
 class LogStatsResponse(BaseModel):
     total_logs: int
     logs_by_action: dict
@@ -36,7 +43,7 @@ class LogStatsResponse(BaseModel):
     recent_blocks: int
     recent_allows: int
 
-@router.get("/", response_model=List[LogResponse])
+@router.get("/", response_model=PaginatedLogsResponse)
 async def get_logs(
     db: Session = Depends(get_db),
     action: Optional[str] = Query(None, description="Filter by action type"),
@@ -44,8 +51,8 @@ async def get_logs(
     ip_address: Optional[str] = Query(None, description="Filter by IP address"),
     domain_name: Optional[str] = Query(None, description="Filter by domain name"),
     hours: Optional[int] = Query(24, description="Hours of history to fetch"),
-    limit: int = Query(100, le=1000),
-    offset: int = Query(0)
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    per_page: int = Query(50, ge=1, le=1000, description="Items per page")
 ):
     """Get logs with filtering and pagination"""
     query = db.query(Log)
@@ -86,8 +93,15 @@ async def get_logs(
     # Order by newest first
     query = query.order_by(Log.created_at.desc())
     
+    # Get total count before pagination
+    total = query.count()
+    
+    # Calculate pagination
+    offset = (page - 1) * per_page
+    pages = (total + per_page - 1) // per_page  # Ceiling division
+    
     # Apply pagination
-    logs = query.offset(offset).limit(limit).all()
+    logs = query.offset(offset).limit(per_page).all()
     
     result = []
     for log in logs:
@@ -104,7 +118,13 @@ async def get_logs(
             "mode": log.mode
         })
     
-    return result
+    return {
+        "logs": result,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": pages
+    }
 
 @router.get("/stats", response_model=LogStatsResponse)
 async def get_log_statistics(

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { FileText, Filter, Search, Download, RefreshCw, Trash2, Eye } from 'lucide-react';
+import { showSuccess, showError, showConfirm } from '../utils/customAlert';
 
 function Logs() {
   const [logs, setLogs] = useState([]);
@@ -92,23 +93,31 @@ function Logs() {
         link.remove();
       }
     } catch (error) {
-      alert('Failed to export logs: ' + (error.response?.data?.detail || error.message));
+      await showError(
+        'Export Failed',
+        `Failed to export logs: ${error.response?.data?.detail || error.message}`
+      );
     }
   };
 
-  const cleanupLogs = async () => {
-    const days = prompt('Delete logs older than how many days? (Enter number):');
-    if (!days || isNaN(days)) return;
-
-    if (!window.confirm(`Are you sure you want to delete logs older than ${days} days?`)) return;
-
-    try {
-      await axios.delete(`/api/logs/cleanup?days=${days}`);
-      alert('Logs cleaned up successfully');
-      fetchLogs();
-      fetchStats();
-    } catch (error) {
-      alert('Failed to cleanup logs: ' + (error.response?.data?.detail || error.message));
+  const cleanupLogs = async (days) => {
+    const result = await showConfirm(
+      'Cleanup Old Logs',
+      `Are you sure you want to delete logs older than ${days} days?`
+    );
+    
+    if (result.isConfirmed) {
+      try {
+        await axios.delete(`/api/logs/cleanup?days=${days}`);
+        await showSuccess('Success', 'Logs cleaned up successfully');
+        fetchLogs();
+        fetchStats();
+      } catch (error) {
+        await showError(
+          'Cleanup Failed',
+          `Failed to cleanup logs: ${error.response?.data?.detail || error.message}`
+        );
+      }
     }
   };
 
@@ -223,7 +232,7 @@ function Logs() {
             <Download size={16} />
             Export CSV
           </button>
-          <button className="btn btn-danger" onClick={cleanupLogs}>
+          <button className="btn btn-danger" onClick={() => cleanupLogs(24)}>
             <Trash2 size={16} />
             Cleanup Old
           </button>

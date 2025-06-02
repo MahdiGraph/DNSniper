@@ -140,7 +140,9 @@ def ip_after_insert(mapper, connection, target):
             firewall.add_ip_to_ipset(target.ip_address, target.list_type.value, target.ip_version)
             db = SessionLocal()
             if Setting.get_setting(db, "logging_enabled", False):
-                Log.create_firewall_log(db, ActionType.allow, f"[HOOK] Added IP {target.ip_address} to ipset ({target.list_type.value}, v{target.ip_version}) after insert.", ip_address=target.ip_address, mode="manual")
+                # Log block for blacklist, allow for whitelist
+                action = ActionType.block if target.list_type.value == "blacklist" else ActionType.allow
+                Log.create_firewall_log(db, action, f"[HOOK] Added IP {target.ip_address} to ipset ({target.list_type.value}, v{target.ip_version}) after insert.", ip_address=target.ip_address, mode="manual")
                 Log.cleanup_old_logs(db)
             db.close()
         except Exception as e:
@@ -158,7 +160,9 @@ def ip_after_delete(mapper, connection, target):
         firewall.remove_ip_from_ipset(target.ip_address, target.list_type.value, target.ip_version)
         db = SessionLocal()
         if Setting.get_setting(db, "logging_enabled", False):
-            Log.create_firewall_log(db, ActionType.remove_rule, f"[HOOK] Removed IP {target.ip_address} from ipset ({target.list_type.value}, v{target.ip_version}) after delete.", ip_address=target.ip_address, mode="manual")
+            # Log allow for blacklist removal (no longer blocked), block for whitelist removal (no longer allowed)
+            action = ActionType.allow if target.list_type.value == "blacklist" else ActionType.block
+            Log.create_firewall_log(db, action, f"[HOOK] Removed IP {target.ip_address} from ipset ({target.list_type.value}, v{target.ip_version}) after delete.", ip_address=target.ip_address, mode="manual")
             Log.cleanup_old_logs(db)
         db.close()
     except Exception as e:
@@ -179,13 +183,17 @@ def ip_after_update(mapper, connection, target):
             firewall.add_ip_to_ipset(target.ip_address, target.list_type.value, target.ip_version)
             db = SessionLocal()
             if Setting.get_setting(db, "logging_enabled", False):
-                Log.create_firewall_log(db, ActionType.update, f"[HOOK] Updated IP {target.ip_address} in ipset ({target.list_type.value}, v{target.ip_version}) after update.", ip_address=target.ip_address, mode="manual")
+                # Log block for blacklist, allow for whitelist
+                action = ActionType.block if target.list_type.value == "blacklist" else ActionType.allow
+                Log.create_firewall_log(db, action, f"[HOOK] Updated IP {target.ip_address} in ipset ({target.list_type.value}, v{target.ip_version}) after update.", ip_address=target.ip_address, mode="manual")
                 Log.cleanup_old_logs(db)
             db.close()
         else:
             db = SessionLocal()
             if Setting.get_setting(db, "logging_enabled", False):
-                Log.create_firewall_log(db, ActionType.remove_rule, f"[HOOK] Removed expired IP {target.ip_address} from ipset after update.", ip_address=target.ip_address, mode="manual")
+                # Log allow for blacklist removal (no longer blocked), block for whitelist removal (no longer allowed)
+                action = ActionType.allow if target.list_type.value == "blacklist" else ActionType.block
+                Log.create_firewall_log(db, action, f"[HOOK] Removed expired IP {target.ip_address} from ipset after update.", ip_address=target.ip_address, mode="manual")
                 Log.cleanup_old_logs(db)
             db.close()
     except Exception as e:

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import List, Optional
 from pydantic import BaseModel
-from datetime import datetime
+from datetime import datetime, timezone
 
 from database import get_db
 from models import IP, Log
@@ -12,6 +12,46 @@ from models.logs import ActionType, RuleType
 from services.live_events import live_events
 
 router = APIRouter()
+
+def calculate_time_remaining(expired_at: Optional[datetime]) -> Optional[str]:
+    """Calculate time remaining until expiration in a human-readable format"""
+    if not expired_at:
+        return None
+    
+    # Ensure we're working with timezone-aware datetime
+    now = datetime.now(timezone.utc)
+    if expired_at.tzinfo is None:
+        expired_at = expired_at.replace(tzinfo=timezone.utc)
+    
+    # If already expired
+    if expired_at <= now:
+        return "Expired"
+    
+    # Calculate the difference
+    diff = expired_at - now
+    total_seconds = int(diff.total_seconds())
+    
+    # Convert to appropriate time unit
+    if total_seconds < 3600:  # Less than 1 hour
+        minutes = total_seconds // 60
+        if minutes == 0:
+            return "in less than 1 minute"
+        elif minutes == 1:
+            return "in 1 minute"
+        else:
+            return f"in {minutes} minutes"
+    elif total_seconds < 86400:  # Less than 1 day
+        hours = total_seconds // 3600
+        if hours == 1:
+            return "in 1 hour"
+        else:
+            return f"in {hours} hours"
+    else:  # 1 day or more
+        days = total_seconds // 86400
+        if days == 1:
+            return "in 1 day"
+        else:
+            return f"in {days} days"
 
 # Pydantic models
 class IPCreate(BaseModel):
@@ -32,6 +72,7 @@ class IPResponse(BaseModel):
     source_url: Optional[str]
     domain_id: Optional[int]
     expired_at: Optional[datetime]
+    expires_in: Optional[str]
     created_at: datetime
     updated_at: datetime
     notes: Optional[str]
@@ -39,16 +80,24 @@ class IPResponse(BaseModel):
     class Config:
         from_attributes = True
 
-@router.get("/", response_model=List[IPResponse])
+class PaginatedIPsResponse(BaseModel):
+    ips: List[IPResponse]
+    page: int
+    per_page: int
+    total: int
+    pages: int
+
+@router.get("/", response_model=PaginatedIPsResponse)
 async def get_ips(
     db: Session = Depends(get_db),
     list_type: Optional[str] = Query(None),
     source_type: Optional[str] = Query(None),
     ip_version: Optional[int] = Query(None),
-    limit: int = Query(100, le=1000),
-    offset: int = Query(0)
+    search: Optional[str] = Query(None, description="Search IP addresses (partial match)"),
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    per_page: int = Query(50, ge=1, le=1000, description="Items per page")
 ):
-    """Get IPs with optional filtering"""
+    """Get IPs with optional filtering and search"""
     query = db.query(IP)
     
     if list_type:
@@ -68,7 +117,17 @@ async def get_ips(
     if ip_version:
         query = query.filter(IP.ip_version == ip_version)
     
-    ips = query.offset(offset).limit(limit).all()
+    if search:
+        query = query.filter(IP.ip_address.contains(search))
+    
+    # Get total count before pagination
+    total = query.count()
+    
+    # Calculate pagination
+    offset = (page - 1) * per_page
+    pages = (total + per_page - 1) // per_page  # Ceiling division
+    
+    ips = query.offset(offset).limit(per_page).all()
     
     result = []
     for ip in ips:
@@ -81,12 +140,19 @@ async def get_ips(
             "source_url": ip.source_url,
             "domain_id": ip.domain_id,
             "expired_at": ip.expired_at,
+            "expires_in": calculate_time_remaining(ip.expired_at),
             "created_at": ip.created_at,
             "updated_at": ip.updated_at,
             "notes": ip.notes
         })
     
-    return result
+    return {
+        "ips": result,
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "pages": pages
+    }
 
 @router.post("/", response_model=IPResponse)
 async def create_ip(ip_data: IPCreate, db: Session = Depends(get_db)):
@@ -140,6 +206,7 @@ async def create_ip(ip_data: IPCreate, db: Session = Depends(get_db)):
         "source_url": ip.source_url,
         "domain_id": ip.domain_id,
         "expired_at": ip.expired_at,
+        "expires_in": calculate_time_remaining(ip.expired_at),
         "created_at": ip.created_at,
         "updated_at": ip.updated_at,
         "notes": ip.notes
@@ -193,6 +260,7 @@ async def update_ip(ip_id: int, ip_data: IPUpdate, db: Session = Depends(get_db)
         "source_url": ip.source_url,
         "domain_id": ip.domain_id,
         "expired_at": ip.expired_at,
+        "expires_in": calculate_time_remaining(ip.expired_at),
         "created_at": ip.created_at,
         "updated_at": ip.updated_at,
         "notes": ip.notes
@@ -205,15 +273,13 @@ async def update_ip(ip_id: int, ip_data: IPUpdate, db: Session = Depends(get_db)
 
 @router.delete("/{ip_id}")
 async def delete_ip(ip_id: int, db: Session = Depends(get_db)):
-    """Delete an IP (manual entries only)"""
+    """Delete an IP (allows deletion of both manual and auto-update entries)"""
     ip = db.query(IP).filter(IP.id == ip_id).first()
     if not ip:
         raise HTTPException(status_code=404, detail="IP not found")
     
-    if ip.source_type != SourceType.manual:
-        raise HTTPException(status_code=400, detail="Can only delete manual IPs")
-    
     ip_address = ip.ip_address
+    source_type = ip.source_type.value
     
     # Prepare event data before deletion
     event_data = {
@@ -231,9 +297,9 @@ async def delete_ip(ip_id: int, db: Session = Depends(get_db)):
     # Log the action
     Log.create_rule_log(
         db, ActionType.remove_rule, RuleType.ip,
-        f"Deleted manual IP: {ip_address}",
+        f"Deleted {source_type} IP: {ip_address}",
         ip_address=ip_address,
-        mode='manual'
+        mode='manual' if source_type == 'manual' else 'auto'
     )
     
     # Broadcast live event

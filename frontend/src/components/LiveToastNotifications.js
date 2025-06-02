@@ -56,10 +56,20 @@ function LiveToastNotifications() {
 
       ws.onmessage = (event) => {
         try {
+          // Check for plain text messages first (ping/pong, connection status, etc.)
+          if (typeof event.data === 'string') {
+            // Handle plain text responses that aren't JSON
+            if (event.data === 'pong' || event.data === 'ping' || event.data.startsWith('connected') || event.data.startsWith('error')) {
+              console.log('WebSocket plain text message:', event.data);
+              return;
+            }
+          }
+          
+          // Try to parse as JSON for structured events
           const eventData = JSON.parse(event.data);
           
-          // Skip connection and ping/pong events for toasts
-          if (eventData.type === 'connection' || event.data === 'pong') {
+          // Skip connection and system events for toasts
+          if (eventData.type === 'connection' || eventData.type === 'ping' || eventData.type === 'pong') {
             return;
           }
           
@@ -79,7 +89,10 @@ function LiveToastNotifications() {
           }, 6000);
           
         } catch (error) {
-          console.error('Failed to parse WebSocket event:', error);
+          // Only log error if it's not a known plain text message
+          if (event.data !== 'pong' && event.data !== 'ping' && !event.data.startsWith('connected')) {
+            console.error('Failed to parse WebSocket event:', error, 'Raw data:', event.data);
+          }
         }
       };
 

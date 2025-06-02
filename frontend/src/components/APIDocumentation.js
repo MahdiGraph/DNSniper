@@ -493,13 +493,13 @@ function APIDocumentation() {
           }
         },
         {
-          method: 'GET',
-          path: '/api/auto-update-sources/test/{id}',
+          method: 'POST',
+          path: '/api/auto-update-sources/{id}/test',
           title: 'Test Auto-Update Source',
           description: 'Test connectivity to an auto-update source',
           example: {
-            request: `curl -H "Authorization: Bearer YOUR_TOKEN" \\
-  ${baseUrl}/api/auto-update-sources/test/1`,
+            request: `curl -X POST -H "Authorization: Bearer YOUR_TOKEN" \\
+  ${baseUrl}/api/auto-update-sources/1/test`,
             response: `{
   "source": {
     "id": 1,

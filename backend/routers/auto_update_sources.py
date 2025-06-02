@@ -385,7 +385,7 @@ async def toggle_auto_update_source(source_id: int, db: Session = Depends(get_db
         raise HTTPException(status_code=500, detail=f"Failed to toggle auto-update source: {str(e)}")
 
 
-@router.get("/test/{source_id}")
+@router.post("/{source_id}/test")
 async def test_auto_update_source(source_id: int, db: Session = Depends(get_db)):
     """Test connectivity to an auto-update source"""
     try:

@@ -386,7 +386,7 @@ async def update_setting(
         logger.error(f"Failed to update setting {key}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update setting: {str(e)}")
 
-@router.post("/firewall/clear")
+@router.delete("/firewall/clear")
 async def clear_firewall_rules(db: Session = Depends(get_db)):
     """Clear all DNSniper firewall rules"""
     try:

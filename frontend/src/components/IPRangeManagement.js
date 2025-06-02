@@ -1,45 +1,105 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Trash2, Network, Edit, Eye } from 'lucide-react';
+import { Plus, Search, Trash2, Network, RefreshCw } from 'lucide-react';
+import { showError, showDeleteConfirm } from '../utils/customAlert';
+import Pagination from './Pagination';
 
 function IPRangeManagement() {
   const [ipRanges, setIPRanges] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [filter, setFilter] = useState({ list_type: '', source_type: '', ip_version: '' });
+  const [pagination, setPagination] = useState({
+    page: 1,
+    per_page: 50,
+    total: 0,
+    pages: 0
+  });
 
-  const fetchIPRanges = useCallback(async () => {
+  const fetchIPRanges = useCallback(async (page = 1, perPage = pagination.per_page) => {
     try {
       setLoading(true);
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({
+        page: page.toString(),
+        per_page: perPage.toString()
+      });
+      if (search) params.append('search', search);
       if (filter.list_type) params.append('list_type', filter.list_type);
       if (filter.source_type) params.append('source_type', filter.source_type);
       if (filter.ip_version) params.append('ip_version', filter.ip_version);
       
       const response = await axios.get(`/api/ip-ranges/?${params}`);
-      // Ensure we always have an array
-      setIPRanges(Array.isArray(response.data) ? response.data : []);
+      
+      // Handle new pagination response structure
+      if (response.data && response.data.ip_ranges) {
+        setIPRanges(response.data.ip_ranges);
+        setPagination({
+          page: response.data.page,
+          per_page: response.data.per_page,
+          total: response.data.total,
+          pages: response.data.pages
+        });
+      } else {
+        // Fallback for old API response format
+        setIPRanges(Array.isArray(response.data) ? response.data : []);
+        setPagination(prev => ({ 
+          ...prev, 
+          page: page, 
+          per_page: perPage, 
+          total: Array.isArray(response.data) ? response.data.length : 0,
+          pages: 1
+        }));
+      }
     } catch (error) {
       console.error('Failed to fetch IP ranges:', error);
-      setIPRanges([]); // Set empty array on error
+      setIPRanges([]);
+      setPagination(prev => ({ ...prev, total: 0, pages: 0 }));
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [search, filter, pagination.per_page]);
 
   useEffect(() => {
-    fetchIPRanges();
-  }, [fetchIPRanges]);
+    fetchIPRanges(1);
+  }, [search, filter]); // Reset to page 1 when search or filter changes
+
+  const handlePageChange = (newPage) => {
+    fetchIPRanges(newPage, pagination.per_page);
+  };
+
+  const handleItemsPerPageChange = (newPerPage) => {
+    setPagination(prev => ({ ...prev, per_page: newPerPage }));
+    fetchIPRanges(1, newPerPage); // Reset to page 1 when changing items per page
+  };
 
   const deleteIPRange = async (ipRangeId) => {
-    if (!window.confirm('Are you sure you want to delete this IP range?')) return;
+    const result = await showDeleteConfirm(
+      'Delete IP Range',
+      'Are you sure you want to delete this IP range? This action cannot be undone.'
+    );
     
-    try {
-      await axios.delete(`/api/ip-ranges/${ipRangeId}`);
-      fetchIPRanges();
-    } catch (error) {
-      alert('Failed to delete IP range: ' + (error.response?.data?.detail || error.message));
+    if (result.isConfirmed) {
+      try {
+        await axios.delete(`/api/ip-ranges/${ipRangeId}`);
+        // Refresh current page or go to previous page if current page becomes empty
+        const newTotal = pagination.total - 1;
+        const maxPage = Math.ceil(newTotal / pagination.per_page);
+        const currentPage = pagination.page > maxPage ? Math.max(1, maxPage) : pagination.page;
+        fetchIPRanges(currentPage, pagination.per_page);
+      } catch (error) {
+        await showError(
+          'Delete Failed',
+          `Failed to delete IP range: ${error.response?.data?.detail || error.message}`
+        );
+      }
     }
+  };
+
+  const handleAddSuccess = () => {
+    setShowAddModal(false);
+    // Refresh to show the new IP range (it might be on a different page)
+    fetchIPRanges(1, pagination.per_page);
   };
 
   return (
@@ -54,6 +114,15 @@ function IPRangeManagement() {
 
       {/* Filters */}
       <div className="filters">
+        <div className="search-box">
+          <Search size={16} />
+          <input
+            type="text"
+            placeholder="Search IP ranges..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
         <select
           value={filter.list_type}
           onChange={(e) => setFilter({ ...filter, list_type: e.target.value })}
@@ -78,7 +147,8 @@ function IPRangeManagement() {
           <option value="4">IPv4</option>
           <option value="6">IPv6</option>
         </select>
-        <button className="btn btn-secondary" onClick={fetchIPRanges}>
+        <button className="btn btn-secondary" onClick={() => fetchIPRanges(pagination.page, pagination.per_page)}>
+          <RefreshCw size={16} />
           Refresh
         </button>
       </div>
@@ -91,85 +161,94 @@ function IPRangeManagement() {
           <div className="empty-state">
             <Network size={48} />
             <h3>No IP ranges found</h3>
-            <p>Add your first IP range to get started</p>
+            <p>
+              {search || filter.list_type || filter.source_type || filter.ip_version
+                ? 'No IP ranges match your current filters' 
+                : 'Add your first IP range to get started'
+              }
+            </p>
           </div>
         ) : (
-          <div className="table-container">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>IP Range (CIDR)</th>
-                  <th>Version</th>
-                  <th>List Type</th>
-                  <th>Source</th>
-                  <th>Created</th>
-                  <th>Expires</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ipRanges.map((ipRange) => (
-                  <tr key={ipRange.id}>
-                    <td className="ip-address">{ipRange.ip_range}</td>
-                    <td>IPv{ipRange.ip_version}</td>
-                    <td>
-                      <span className={`badge badge-${ipRange.list_type}`}>
-                        {ipRange.list_type}
-                      </span>
-                    </td>
-                    <td>
-                      <span className={`badge badge-${ipRange.source_type}`}>
-                        {ipRange.source_type}
-                      </span>
-                    </td>
-                    <td>{new Date(ipRange.created_at).toLocaleDateString()}</td>
-                    <td>
-                      {ipRange.expired_at ? (
-                        <span className={
-                          new Date(ipRange.expired_at) < new Date() ? 'expired' : 'expires'
-                        }>
-                          {new Date(ipRange.expired_at).toLocaleDateString()}
-                        </span>
-                      ) : (
-                        <span className="permanent">Never</span>
-                      )}
-                    </td>
-                    <td>
-                      <div className="actions">
-                        <button className="btn-icon" title="View Details">
-                          <Eye size={14} />
-                        </button>
-                        {ipRange.source_type === 'manual' && (
-                          <>
-                            <button className="btn-icon" title="Edit">
-                              <Edit size={14} />
-                            </button>
-                            <button 
-                              className="btn-icon btn-danger" 
-                              title="Delete"
-                              onClick={() => deleteIPRange(ipRange.id)}
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
+          <>
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>IP Range (CIDR)</th>
+                    <th>Version</th>
+                    <th>List Type</th>
+                    <th>Source</th>
+                    <th>Created</th>
+                    <th>Expires</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {ipRanges.map((ipRange) => (
+                    <tr key={ipRange.id}>
+                      <td className="ip-range">{ipRange.ip_range}</td>
+                      <td>
+                        <span className={`badge badge-ipv${ipRange.ip_version}`}>
+                          IPv{ipRange.ip_version}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`badge badge-${ipRange.list_type}`}>
+                          {ipRange.list_type}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`badge badge-${ipRange.source_type}`}>
+                          {ipRange.source_type}
+                        </span>
+                      </td>
+                      <td>{new Date(ipRange.created_at).toLocaleDateString()}</td>
+                      <td>
+                        {ipRange.expires_in ? (
+                          <span className={
+                            ipRange.expires_in === 'Expired' ? 'expired' : 'expires'
+                          }>
+                            {ipRange.expires_in}
+                          </span>
+                        ) : (
+                          <span className="permanent">Never</span>
+                        )}
+                      </td>
+                      <td>
+                        <div className="actions">
+                          <button 
+                            className="btn-icon btn-danger" 
+                            title="Delete"
+                            onClick={() => deleteIPRange(ipRange.id)}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            
+            {/* Pagination */}
+            <Pagination
+              currentPage={pagination.page}
+              totalPages={pagination.pages}
+              totalItems={pagination.total}
+              itemsPerPage={pagination.per_page}
+              onPageChange={handlePageChange}
+              onItemsPerPageChange={handleItemsPerPageChange}
+            />
+          </>
         )}
       </div>
 
+      {/* Add IP Range Modal */}
       {showAddModal && (
-        <AddIPRangeModal
-          onClose={() => setShowAddModal(false)}
-          onSuccess={() => {
-            setShowAddModal(false);
-            fetchIPRanges();
-          }}
+        <AddIPRangeModal 
+          onClose={() => setShowAddModal(false)} 
+          onSuccess={handleAddSuccess}
         />
       )}
     </div>
@@ -192,7 +271,10 @@ function AddIPRangeModal({ onClose, onSuccess }) {
       await axios.post('/api/ip-ranges/', formData);
       onSuccess();
     } catch (error) {
-      alert('Failed to add IP range: ' + (error.response?.data?.detail || error.message));
+      await showError(
+        'Add IP Range Failed',
+        `Failed to add IP range: ${error.response?.data?.detail || error.message}`
+      );
     } finally {
       setLoading(false);
     }

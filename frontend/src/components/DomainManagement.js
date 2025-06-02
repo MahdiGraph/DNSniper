@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { Plus, Search, Edit, Trash2, Eye, Globe, RefreshCw } from 'lucide-react';
+import { Plus, Search, Trash2, Globe, RefreshCw } from 'lucide-react';
+import { showError, showDeleteConfirm } from '../utils/customAlert';
+import Pagination from './Pagination';
 
 function DomainManagement() {
   const [domains, setDomains] = useState([]);
@@ -8,39 +10,95 @@ function DomainManagement() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState({ list_type: '', source_type: '' });
   const [showAddModal, setShowAddModal] = useState(false);
+  const [pagination, setPagination] = useState({
+    page: 1,
+    per_page: 50,
+    total: 0,
+    pages: 0
+  });
 
-  const fetchDomains = useCallback(async () => {
+  const fetchDomains = useCallback(async (page = 1, perPage = pagination.per_page) => {
     try {
       setLoading(true);
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({
+        page: page.toString(),
+        per_page: perPage.toString()
+      });
       if (search) params.append('search', search);
       if (filter.list_type) params.append('list_type', filter.list_type);
       if (filter.source_type) params.append('source_type', filter.source_type);
       
       const response = await axios.get(`/api/domains/?${params}`);
-      // Ensure we always have an array
-      setDomains(Array.isArray(response.data) ? response.data : []);
+      
+      // Handle new pagination response structure
+      if (response.data && response.data.domains) {
+        setDomains(response.data.domains);
+        setPagination({
+          page: response.data.page,
+          per_page: response.data.per_page,
+          total: response.data.total,
+          pages: response.data.pages
+        });
+      } else {
+        // Fallback for old API response format
+        setDomains(Array.isArray(response.data) ? response.data : []);
+        setPagination(prev => ({ 
+          ...prev, 
+          page: page, 
+          per_page: perPage, 
+          total: Array.isArray(response.data) ? response.data.length : 0,
+          pages: 1
+        }));
+      }
     } catch (error) {
       console.error('Failed to fetch domains:', error);
-      setDomains([]); // Set empty array on error
+      setDomains([]);
+      setPagination(prev => ({ ...prev, total: 0, pages: 0 }));
     } finally {
       setLoading(false);
     }
-  }, [search, filter]);
+  }, [search, filter, pagination.per_page]);
 
   useEffect(() => {
-    fetchDomains();
-  }, [fetchDomains]);
+    fetchDomains(1);
+  }, [search, filter]); // Reset to page 1 when search or filter changes
+
+  const handlePageChange = (newPage) => {
+    fetchDomains(newPage, pagination.per_page);
+  };
+
+  const handleItemsPerPageChange = (newPerPage) => {
+    setPagination(prev => ({ ...prev, per_page: newPerPage }));
+    fetchDomains(1, newPerPage); // Reset to page 1 when changing items per page
+  };
 
   const deleteDomain = async (domainId) => {
-    if (!window.confirm('Are you sure you want to delete this domain?')) return;
+    const result = await showDeleteConfirm(
+      'Delete Domain',
+      'Are you sure you want to delete this domain? This action cannot be undone.'
+    );
     
-    try {
-      await axios.delete(`/api/domains/${domainId}`);
-      fetchDomains();
-    } catch (error) {
-      alert('Failed to delete domain: ' + error.response?.data?.detail);
+    if (result.isConfirmed) {
+      try {
+        await axios.delete(`/api/domains/${domainId}`);
+        // Refresh current page or go to previous page if current page becomes empty
+        const newTotal = pagination.total - 1;
+        const maxPage = Math.ceil(newTotal / pagination.per_page);
+        const currentPage = pagination.page > maxPage ? Math.max(1, maxPage) : pagination.page;
+        fetchDomains(currentPage, pagination.per_page);
+      } catch (error) {
+        await showError(
+          'Delete Failed',
+          `Failed to delete domain: ${error.response?.data?.detail || error.message}`
+        );
+      }
     }
+  };
+
+  const handleAddSuccess = () => {
+    setShowAddModal(false);
+    // Refresh to show the new domain (it might be on a different page)
+    fetchDomains(1, pagination.per_page);
   };
 
   return (
@@ -80,7 +138,7 @@ function DomainManagement() {
           <option value="manual">Manual</option>
           <option value="auto_update">Auto-Update</option>
         </select>
-        <button className="btn btn-secondary" onClick={fetchDomains}>
+        <button className="btn btn-secondary" onClick={() => fetchDomains(pagination.page, pagination.per_page)}>
           <RefreshCw size={16} />
           Refresh
         </button>
@@ -94,76 +152,92 @@ function DomainManagement() {
           <div className="empty-state">
             <Globe size={48} />
             <h3>No domains found</h3>
-            <p>Add your first domain to get started</p>
+            <p>
+              {search || filter.list_type || filter.source_type 
+                ? 'No domains match your current filters' 
+                : 'Add your first domain to get started'
+              }
+            </p>
           </div>
         ) : (
-          <div className="table-container">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Domain</th>
-                  <th>List Type</th>
-                  <th>Source</th>
-                  <th>IPs</th>
-                  <th>CDN</th>
-                  <th>Created</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {domains.map((domain) => (
-                  <tr key={domain.id}>
-                    <td className="domain-name">{domain.domain_name}</td>
-                    <td>
-                      <span className={`badge badge-${domain.list_type}`}>
-                        {domain.list_type}
-                      </span>
-                    </td>
-                    <td>
-                      <span className={`badge badge-${domain.source_type}`}>
-                        {domain.source_type}
-                      </span>
-                    </td>
-                    <td>{domain.ip_count}</td>
-                    <td>{domain.is_cdn ? '✓' : '✗'}</td>
-                    <td>{new Date(domain.created_at).toLocaleDateString()}</td>
-                    <td>
-                      <div className="actions">
-                        <button className="btn-icon" title="View Details">
-                          <Eye size={14} />
-                        </button>
-                        {domain.source_type === 'manual' && (
-                          <>
-                            <button className="btn-icon" title="Edit">
-                              <Edit size={14} />
-                            </button>
-                            <button 
-                              className="btn-icon btn-danger" 
-                              title="Delete"
-                              onClick={() => deleteDomain(domain.id)}
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </td>
+          <>
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Domain</th>
+                    <th>List Type</th>
+                    <th>Source</th>
+                    <th>IPs</th>
+                    <th>CDN</th>
+                    <th>Created</th>
+                    <th>Expires</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {domains.map((domain) => (
+                    <tr key={domain.id}>
+                      <td className="domain-name">{domain.domain_name}</td>
+                      <td>
+                        <span className={`badge badge-${domain.list_type}`}>
+                          {domain.list_type}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`badge badge-${domain.source_type}`}>
+                          {domain.source_type}
+                        </span>
+                      </td>
+                      <td>{domain.ip_count}</td>
+                      <td>{domain.is_cdn ? '✓' : '✗'}</td>
+                      <td>{new Date(domain.created_at).toLocaleDateString()}</td>
+                      <td>
+                        {domain.expires_in ? (
+                          <span className={
+                            domain.expires_in === 'Expired' ? 'expired' : 'expires'
+                          }>
+                            {domain.expires_in}
+                          </span>
+                        ) : (
+                          <span className="permanent">Never</span>
+                        )}
+                      </td>
+                      <td>
+                        <div className="actions">
+                          <button 
+                            className="btn-icon btn-danger" 
+                            title="Delete"
+                            onClick={() => deleteDomain(domain.id)}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            
+            {/* Pagination */}
+            <Pagination
+              currentPage={pagination.page}
+              totalPages={pagination.pages}
+              totalItems={pagination.total}
+              itemsPerPage={pagination.per_page}
+              onPageChange={handlePageChange}
+              onItemsPerPageChange={handleItemsPerPageChange}
+            />
+          </>
         )}
       </div>
 
       {/* Add Domain Modal */}
       {showAddModal && (
-        <AddDomainModal
-          onClose={() => setShowAddModal(false)}
-          onSuccess={() => {
-            setShowAddModal(false);
-            fetchDomains();
-          }}
+        <AddDomainModal 
+          onClose={() => setShowAddModal(false)} 
+          onSuccess={handleAddSuccess}
         />
       )}
     </div>
@@ -186,7 +260,10 @@ function AddDomainModal({ onClose, onSuccess }) {
       await axios.post('/api/domains/', formData);
       onSuccess();
     } catch (error) {
-      alert('Failed to add domain: ' + error.response?.data?.detail);
+      await showError(
+        'Add Domain Failed',
+        `Failed to add domain: ${error.response?.data?.detail || error.message}`
+      );
     } finally {
       setLoading(false);
     }

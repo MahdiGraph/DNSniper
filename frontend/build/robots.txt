@@ -1,0 +1,43 @@
+# DNSniper Personal Administration Panel
+# This is a private administration interface
+# No search engine indexing or crawling allowed
+
+User-agent: *
+Disallow: /
+
+# Explicitly disallow common search engine bots
+User-agent: Googlebot
+Disallow: /
+
+User-agent: Bingbot
+Disallow: /
+
+User-agent: Slurp
+Disallow: /
+
+User-agent: DuckDuckBot
+Disallow: /
+
+User-agent: Baiduspider
+Disallow: /
+
+User-agent: YandexBot
+Disallow: /
+
+User-agent: facebookexternalhit
+Disallow: /
+
+User-agent: Twitterbot
+Disallow: /
+
+User-agent: LinkedInBot
+Disallow: /
+
+User-agent: WhatsApp
+Disallow: /
+
+User-agent: Applebot
+Disallow: /
+
+# No sitemap provided - this is a private interface
+# Crawl-delay: N/A (crawling not allowed) 

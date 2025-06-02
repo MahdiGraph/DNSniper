@@ -174,6 +174,17 @@
 }
 
 /* Responsive design */
+@media (max-width: 768px) {
+  .login-container {
+    padding: 1rem;
+  }
+  
+  .login-box {
+    padding: 2rem;
+    max-width: 380px;
+  }
+}
+
 @media (max-width: 480px) {
   .login-container {
     padding: 0.5rem;
@@ -181,9 +192,15 @@
   
   .login-box {
     padding: 2rem 1.5rem;
+    max-width: none;
+    width: 100%;
   }
   
   .login-header h1 {
     font-size: 1.75rem;
+  }
+  
+  .form-group input {
+    font-size: 1rem; /* Prevent zoom on iOS */
   }
 } 
