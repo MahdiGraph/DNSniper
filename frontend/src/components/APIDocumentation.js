@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Book, 
-  Code, 
   Copy, 
   CheckCircle, 
   ExternalLink,
@@ -750,7 +749,7 @@ function APIDocumentation() {
       expanded[section.id] = true;
     });
     setExpandedSections(expanded);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="api-documentation">
@@ -945,4 +944,4 @@ function CodeBlock({ id, title, code, copyToClipboard, copiedCode }) {
   );
 }
 
-export default APIDocumentation; 
+export default APIDocumentation;

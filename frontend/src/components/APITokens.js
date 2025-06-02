@@ -9,13 +9,11 @@ import {
   Clock,
   AlertTriangle,
   CheckCircle,
-  Eye,
-  EyeOff,
   RefreshCw,
   Book,
   ExternalLink
 } from 'lucide-react';
-import { showSuccess, showError, showConfirm } from '../utils/customAlert';
+import { showConfirm } from '../utils/customAlert';
 
 function APITokens() {
   const [tokens, setTokens] = useState([]);

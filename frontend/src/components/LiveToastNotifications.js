@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Globe, 
   Network, 
@@ -19,18 +19,7 @@ function LiveToastNotifications() {
   const [wsConnected, setWsConnected] = useState(false);
   const wsRef = useRef(null);
 
-  useEffect(() => {
-    connectToLiveEvents();
-    
-    // Cleanup on unmount
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-  }, []);
-
-  const connectToLiveEvents = () => {
+  const connectToLiveEvents = useCallback(() => {
     const token = localStorage.getItem('authToken');
     if (!token) return;
 
@@ -118,7 +107,18 @@ function LiveToastNotifications() {
       console.error('Failed to create WebSocket connection:', error);
       setWsConnected(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    connectToLiveEvents();
+    
+    // Cleanup on unmount
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [connectToLiveEvents]);
 
   const getToastIcon = (event) => {
     switch (event.type) {

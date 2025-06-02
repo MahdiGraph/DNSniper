@@ -59,15 +59,6 @@ class Domain(Base):
         """Check if this is an auto-update entry"""
         return self.source_type == SourceType.auto_update
 
-    def update_cdn_status(self, db: Session):
-        """Update CDN status based on number of resolved IPs"""
-        from models import IP
-        ip_count = db.query(IP).filter(IP.domain_id == self.id).count()
-        
-        # Flag as CDN if more than 3 IPs
-        self.is_cdn = ip_count > 3
-        db.commit()
-
     @classmethod
     def get_expired_auto_updates(cls, db: Session):
         """Get all expired auto-update entries"""

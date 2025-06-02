@@ -146,7 +146,7 @@ function Logs() {
     console.log('Initial load - fetching logs and stats');
     fetchLogs(1);
     fetchStats();
-  }, []); // Only run once on mount
+  }, [fetchLogs, fetchStats]); // Only run once on mount
 
   // Fetch when filters change (but not search query)
   useEffect(() => {
@@ -155,7 +155,7 @@ function Logs() {
       fetchLogs(1);
       fetchStats();
     }
-  }, [filters]); // Only depend on filters, not the functions
+  }, [filters, searchQuery, fetchLogs, fetchStats]); // Only depend on filters, not the functions
 
   // Handle search with debounce
   useEffect(() => {
@@ -171,7 +171,7 @@ function Logs() {
       console.log('Search cleared - fetching regular logs');
       fetchLogs(1);
     }
-  }, [searchQuery]);
+  }, [searchQuery, fetchLogs, searchLogs]);
 
   // Auto-refresh functionality
   useEffect(() => {
@@ -188,7 +188,7 @@ function Logs() {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [autoRefresh, searchQuery, pagination.page, pagination.per_page]);
+  }, [autoRefresh, searchQuery, pagination.page, pagination.per_page, fetchLogs, fetchStats, searchLogs]);
 
   const handlePageChange = (newPage) => {
     if (searchQuery.trim()) {

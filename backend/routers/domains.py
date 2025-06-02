@@ -172,7 +172,21 @@ async def get_domains(
     per_page: int = Query(50, ge=1, le=1000, description="Items per page")
 ):
     """Get domains with optional filtering and pagination"""
-    query = db.query(Domain)
+    from models import Setting
+    
+    # Get max_ips_per_domain setting for CDN calculation
+    max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
+    
+    # Build query with IP count using subquery to avoid N+1 problem
+    ip_count_subquery = db.query(
+        IP.domain_id,
+        func.count(IP.id).label('ip_count')
+    ).group_by(IP.domain_id).subquery()
+    
+    query = db.query(
+        Domain,
+        func.coalesce(ip_count_subquery.c.ip_count, 0).label('ip_count')
+    ).outerjoin(ip_count_subquery, Domain.id == ip_count_subquery.c.domain_id)
     
     # Apply filters
     if list_type:
@@ -199,20 +213,23 @@ async def get_domains(
     offset = (page - 1) * per_page
     pages = (total + per_page - 1) // per_page  # Ceiling division
     
-    # Get domains with pagination
-    domains = query.offset(offset).limit(per_page).all()
+    # Get domains with pagination and IP counts
+    domain_results = query.offset(offset).limit(per_page).all()
     
-    # Add IP count for each domain
+    # Build result with calculated CDN status
     result = []
-    for domain in domains:
-        ip_count = db.query(IP).filter(IP.domain_id == domain.id).count()
+    for domain, ip_count in domain_results:
+        # Use stored CDN status (set correctly during resolution)
+        # No longer auto-correct based on current IP count as this overrides
+        # the correct CDN logic that considers total resolved IPs, not just stored IPs
+        
         domain_dict = {
             "id": domain.id,
             "domain_name": domain.domain_name,
             "list_type": domain.list_type.value,
             "source_type": domain.source_type.value,
             "source_url": domain.source_url,
-            "is_cdn": domain.is_cdn,
+            "is_cdn": domain.is_cdn,  # Use stored value set during resolution
             "expired_at": domain.expired_at,
             "expires_in": calculate_time_remaining(domain.expired_at),
             "created_at": domain.created_at,
@@ -221,6 +238,8 @@ async def get_domains(
             "ip_count": ip_count
         }
         result.append(domain_dict)
+    
+    # No longer committing CDN status "corrections" that override correct values
     
     return {
         "domains": result,
@@ -233,11 +252,18 @@ async def get_domains(
 @router.get("/{domain_id}", response_model=DomainResponse)
 async def get_domain(domain_id: int, db: Session = Depends(get_db)):
     """Get a specific domain by ID"""
+    from models import Setting
+    
     domain = db.query(Domain).filter(Domain.id == domain_id).first()
     if not domain:
         raise HTTPException(status_code=404, detail="Domain not found")
     
+    # Get current IP count for display
     ip_count = db.query(IP).filter(IP.domain_id == domain.id).count()
+    
+    # Use stored CDN status (set correctly during resolution)
+    # No longer auto-correct based on current IP count as this overrides
+    # the correct CDN logic that considers total resolved IPs, not just stored IPs
     
     return {
         "id": domain.id,
@@ -245,7 +271,7 @@ async def get_domain(domain_id: int, db: Session = Depends(get_db)):
         "list_type": domain.list_type.value,
         "source_type": domain.source_type.value,
         "source_url": domain.source_url,
-        "is_cdn": domain.is_cdn,
+        "is_cdn": domain.is_cdn,  # Use stored value set during resolution
         "expired_at": domain.expired_at,
         "expires_in": calculate_time_remaining(domain.expired_at),
         "created_at": domain.created_at,
@@ -295,6 +321,11 @@ async def create_domain(domain_data: DomainCreate, db: Session = Depends(get_db)
     
     ip_count = 0  # No IPs resolved yet
     
+    # Calculate CDN status (will be False for new domains with 0 IPs)
+    from models import Setting
+    max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
+    is_cdn = ip_count > max_ips_per_domain  # False for new domains
+    
     # Prepare response data
     response_data = {
         "id": domain.id,
@@ -302,7 +333,7 @@ async def create_domain(domain_data: DomainCreate, db: Session = Depends(get_db)
         "list_type": domain.list_type.value,
         "source_type": domain.source_type.value,
         "source_url": domain.source_url,
-        "is_cdn": domain.is_cdn,
+        "is_cdn": is_cdn,  # Use calculated value
         "expired_at": domain.expired_at,
         "expires_in": calculate_time_remaining(domain.expired_at),
         "created_at": domain.created_at,
@@ -362,7 +393,12 @@ async def update_domain(domain_id: int, domain_data: DomainUpdate, db: Session =
         mode='manual'
     )
     
+    # Get current IP count for display
     ip_count = db.query(IP).filter(IP.domain_id == domain.id).count()
+    
+    # Use stored CDN status (set correctly during resolution)
+    # No longer auto-correct based on current IP count as this overrides
+    # the correct CDN logic that considers total resolved IPs, not just stored IPs
     
     # Prepare response data
     response_data = {
@@ -371,7 +407,7 @@ async def update_domain(domain_id: int, domain_data: DomainUpdate, db: Session =
         "list_type": domain.list_type.value,
         "source_type": domain.source_type.value,
         "source_url": domain.source_url,
-        "is_cdn": domain.is_cdn,
+        "is_cdn": domain.is_cdn,  # Use stored value set during resolution
         "expired_at": domain.expired_at,
         "expires_in": calculate_time_remaining(domain.expired_at),
         "created_at": domain.created_at,
@@ -465,81 +501,142 @@ async def resolve_domain(domain_id: int, db: Session = Depends(get_db)):
     dns_service = DNSService()
     resolution = dns_service.resolve_domain(domain.domain_name)
     
-    # Update IP mappings with FIFO
+    # Get settings and current state
     from models import Setting
-    max_ips = Setting.get_setting(db, "max_ips_per_domain", 5)
-    # firewall_service = FirewallService()
+    max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
+    
+    # Get existing IPs for this domain
+    existing_ips = db.query(IP).filter(IP.domain_id == domain.id).all()
+    existing_ip_addresses = {ip.ip_address for ip in existing_ips}
+    
+    # Create set of all IPs (stored + resolved) to get true total count
+    all_ips = set(existing_ip_addresses)
+    all_ips.update(resolution['ipv4'])
+    all_ips.update(resolution['ipv6'])
+    total_unique_ips = len(all_ips)
+    
+    # CDN flagging based on total unique IPs
+    domain.is_cdn = total_unique_ips > max_ips_per_domain
+    
+    # Collect new IPs that don't already exist
+    new_ips = []
     
     # Add new IPv4 addresses
     for ip_str in resolution['ipv4']:
-        # Check if IP already exists for this domain
-        existing = db.query(IP).filter(
-            IP.domain_id == domain.id,
-            IP.ip_address == ip_str
-        ).first()
-        
-        if not existing:
-            ip = IP(
-                ip_address=ip_str,
-                ip_version=4,
-                list_type=domain.list_type,
-                source_type=SourceType.manual,
-                domain_id=domain.id,
-                expired_at=None
-            )
-            db.add(ip)
-            # Firewall add handled by hook
-            # firewall_service.add_ip_to_ipset(ip_str, domain.list_type.value, 4)
+        if ip_str not in existing_ip_addresses:
+            new_ips.append({
+                'ip_address': ip_str,
+                'ip_version': 4
+            })
     
-    # Add new IPv6 addresses  
+    # Add new IPv6 addresses
     for ip_str in resolution['ipv6']:
-        existing = db.query(IP).filter(
-            IP.domain_id == domain.id,
-            IP.ip_address == ip_str
-        ).first()
+        if ip_str not in existing_ip_addresses:
+            new_ips.append({
+                'ip_address': ip_str,
+                'ip_version': 6
+            })
+    
+    if new_ips:
+        current_count = len(existing_ips)
+        new_count = len(new_ips)
+        total_after_adding = current_count + new_count
         
-        if not existing:
-            ip = IP(
-                ip_address=ip_str,
-                ip_version=6,
-                list_type=domain.list_type,
-                source_type=SourceType.manual,
-                domain_id=domain.id,
-                expired_at=None
-            )
-            db.add(ip)
-            # Firewall add handled by hook
-            # firewall_service.add_ip_to_ipset(ip_str, domain.list_type.value, 6)
+        if total_after_adding <= max_ips_per_domain:
+            # We can add all new IPs without exceeding the limit
+            for ip_data in new_ips:
+                ip = IP(
+                    ip_address=ip_data['ip_address'],
+                    ip_version=ip_data['ip_version'],
+                    list_type=domain.list_type,
+                    source_type=SourceType.manual,
+                    domain_id=domain.id,
+                    expired_at=None
+                )
+                db.add(ip)
+            
+        else:
+            # We exceed the limit - apply FIFO removal and add what we can
+            if current_count == 0:
+                # New domain - just take the first max_ips_per_domain IPs
+                ips_to_add = new_ips[:max_ips_per_domain]
+                
+                for ip_data in ips_to_add:
+                    ip = IP(
+                        ip_address=ip_data['ip_address'],
+                        ip_version=ip_data['ip_version'],
+                        list_type=domain.list_type,
+                        source_type=SourceType.manual,
+                        domain_id=domain.id,
+                        expired_at=None
+                    )
+                    db.add(ip)
+                
+            else:
+                # Existing domain - apply FIFO removal
+                ips_to_remove_count = total_after_adding - max_ips_per_domain
+                
+                # Remove the oldest existing IPs (FIFO)
+                oldest_ips = sorted(existing_ips, key=lambda x: x.created_at)[:ips_to_remove_count]
+                for ip in oldest_ips:
+                    db.delete(ip)  # This will trigger firewall hooks
+                
+                # Calculate remaining capacity after removal
+                remaining_capacity = max_ips_per_domain - (current_count - len(oldest_ips))
+                ips_to_add = new_ips[:remaining_capacity]
+                
+                for ip_data in ips_to_add:
+                    ip = IP(
+                        ip_address=ip_data['ip_address'],
+                        ip_version=ip_data['ip_version'],
+                        list_type=domain.list_type,
+                        source_type=SourceType.manual,
+                        domain_id=domain.id,
+                        expired_at=None
+                    )
+                    db.add(ip)
+        
+        domain.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        
+        # Log the action
+        final_ip_count = db.query(IP).filter(IP.domain_id == domain.id).count()
+        Log.create_rule_log(
+            db, ActionType.update, RuleType.domain,
+            f"Manually resolved domain: {domain.domain_name} (total unique IPs: {total_unique_ips}, stored: {final_ip_count}, CDN: {domain.is_cdn})",
+            domain_name=domain.domain_name,
+            mode='manual'
+        )
+        
+        # Broadcast live event for domain resolution
+        event_data = {
+            "id": domain.id,
+            "domain_name": domain.domain_name,
+            "list_type": domain.list_type.value,
+            "source_type": domain.source_type.value,
+            "ip_count": final_ip_count,
+            "is_cdn": domain.is_cdn,
+            "resolution": resolution
+        }
+        await live_events.broadcast_domain_event("resolved", event_data)
     
-    db.commit()
-    
-    # Apply FIFO limit
-    IP.cleanup_old_ips_for_domain(db, domain.id, max_ips)
-    
-    # Update CDN status
-    domain.update_cdn_status(db)
-    
-    # Log the action
-    Log.create_rule_log(
-        db, ActionType.update, RuleType.domain,
-        f"Manually resolved domain: {domain.domain_name}",
-        domain_name=domain.domain_name,
-        mode='manual'
-    )
-    
-    # Broadcast live event for domain resolution
-    ip_count = db.query(IP).filter(IP.domain_id == domain.id).count()
-    event_data = {
-        "id": domain.id,
-        "domain_name": domain.domain_name,
-        "list_type": domain.list_type.value,
-        "source_type": domain.source_type.value,
-        "ip_count": ip_count,
-        "resolution": resolution
-    }
-    await live_events.broadcast_domain_event("resolved", event_data)
+    else:
+        # No new IPs but still update CDN status and timestamp
+        domain.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        
+        # Log when no new IPs are found
+        current_count = len(existing_ips)
+        Log.create_rule_log(
+            db, ActionType.update, RuleType.domain,
+            f"Manual resolution of domain {domain.domain_name}: no new IPs found (total unique IPs: {total_unique_ips}, stored: {current_count}, CDN: {domain.is_cdn})",
+            domain_name=domain.domain_name,
+            mode='manual'
+        )
     
     return {
         "message": f"Domain {domain.domain_name} resolved successfully",
-        "resolution": resolution
+        "resolution": resolution,
+        "ip_count": db.query(IP).filter(IP.domain_id == domain.id).count(),
+        "is_cdn": domain.is_cdn
     } 

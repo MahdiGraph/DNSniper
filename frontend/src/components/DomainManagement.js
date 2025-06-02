@@ -61,7 +61,7 @@ function DomainManagement() {
 
   useEffect(() => {
     fetchDomains(1);
-  }, [search, filter]); // Reset to page 1 when search or filter changes
+  }, [search, filter, fetchDomains]); // Reset to page 1 when search or filter changes
 
   const handlePageChange = (newPage) => {
     fetchDomains(newPage, pagination.per_page);
@@ -104,7 +104,10 @@ function DomainManagement() {
   return (
     <div className="domain-management">
       <div className="page-header">
-        <h1>Domain Management</h1>
+        <h1>
+          <Globe size={24} />
+          Domain Management
+        </h1>
         <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
           <Plus size={16} />
           Add Domain
@@ -190,7 +193,11 @@ function DomainManagement() {
                         </span>
                       </td>
                       <td>{domain.ip_count}</td>
-                      <td>{domain.is_cdn ? '✓' : '✗'}</td>
+                      <td>
+                        <span className={`badge ${domain.is_cdn ? 'badge-cdn' : 'badge-no-cdn'}`}>
+                          {domain.is_cdn ? 'Potential CDN' : 'Direct'}
+                        </span>
+                      </td>
                       <td>{new Date(domain.created_at).toLocaleDateString()}</td>
                       <td>
                         {domain.expires_in ? (

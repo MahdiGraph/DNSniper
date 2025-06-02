@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Shield, Lock, Eye, EyeOff, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Shield, Lock, Eye, EyeOff, CheckCircle } from 'lucide-react';
 import { showSuccess, showError, showWarning } from '../utils/customAlert';
 
 function SecurityPage({ user, setUser }) {
@@ -109,7 +109,7 @@ function SecurityPage({ user, setUser }) {
 
     setPasswordSaving(true);
     try {
-      const response = await axios.post('/api/auth/change-password', {
+      await axios.post('/api/auth/change-password', {
         current_password: passwordForm.current_password,
         new_password: passwordForm.new_password,
         confirm_password: passwordForm.confirm_password
@@ -185,7 +185,10 @@ function SecurityPage({ user, setUser }) {
   return (
     <div className="settings">
       <div className="page-header">
-        <h1>Security</h1>
+        <h1>
+          <Shield size={24} />
+          Security
+        </h1>
       </div>
 
       {/* Welcome Modal for Default Password Users */}

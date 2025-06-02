@@ -309,6 +309,170 @@ async def update_settings_bulk(
         logger.error(f"Failed to update settings: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to update settings: {str(e)}")
 
+@router.get("/web-server")
+async def get_web_server_config():
+    """Get current web server configuration"""
+    from pathlib import Path
+    import json
+    
+    def load_config():
+        """Load configuration from config.json with defaults"""
+        config_path = Path(__file__).parent.parent / "config.json"
+        
+        # Default configuration
+        default_config = {
+            "web_server": {
+                "host": "0.0.0.0",
+                "port": 8000
+            },
+            "frontend": {
+                "static_path": "../frontend/build"
+            }
+        }
+        
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    user_config = json.load(f)
+                    
+                    # Deep merge with defaults
+                    config = default_config.copy()
+                    if "web_server" in user_config:
+                        config["web_server"].update(user_config["web_server"])
+                    if "frontend" in user_config:
+                        config["frontend"].update(user_config["frontend"])
+                    
+                    return config
+            except Exception:
+                return default_config
+        else:
+            return default_config
+    
+    config = load_config()
+    return {
+        "host": config["web_server"]["host"],
+        "port": config["web_server"]["port"]
+    }
+
+@router.put("/web-server")
+async def update_web_server_config(
+    web_server_config: dict,
+    db: Session = Depends(get_db)
+):
+    """Update web server configuration and restart the application"""
+    from pathlib import Path
+    import json
+    import os
+    import signal
+    from models.logs import ActionType
+    from models import Log
+    
+    try:
+        # Validate input
+        if "host" not in web_server_config or "port" not in web_server_config:
+            raise HTTPException(status_code=400, detail="Both host and port are required")
+        
+        host = web_server_config["host"]
+        port = web_server_config["port"]
+        
+        # Validate host (basic validation)
+        if not host or not isinstance(host, str):
+            raise HTTPException(status_code=400, detail="Invalid host address")
+        
+        # Validate port
+        try:
+            port = int(port)
+            if port < 1 or port > 65535:
+                raise ValueError("Port out of range")
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Port must be a valid integer between 1 and 65535")
+        
+        # Load current config
+        def load_config():
+            config_path = Path(__file__).parent.parent / "config.json"
+            default_config = {
+                "web_server": {"host": "0.0.0.0", "port": 8000},
+                "frontend": {"static_path": "../frontend/build"}
+            }
+            
+            if config_path.exists():
+                try:
+                    with open(config_path, 'r') as f:
+                        user_config = json.load(f)
+                        config = default_config.copy()
+                        if "web_server" in user_config:
+                            config["web_server"].update(user_config["web_server"])
+                        if "frontend" in user_config:
+                            config["frontend"].update(user_config["frontend"])
+                        return config
+                except Exception:
+                    return default_config
+            else:
+                return default_config
+        
+        config_path = Path(__file__).parent.parent / "config.json"
+        current_config = load_config()
+        
+        # Update the configuration
+        current_config["web_server"]["host"] = host
+        current_config["web_server"]["port"] = port
+        
+        # Save to config.json
+        try:
+            with open(config_path, 'w') as f:
+                json.dump(current_config, f, indent=2)
+            
+            # Log the configuration change
+            Log.create_rule_log(
+                db, 
+                ActionType.update, 
+                None, 
+                f"Web server configuration updated: host={host}, port={port}", 
+                mode="manual"
+            )
+            
+            # Return success and trigger shutdown
+            response_data = {
+                "message": "Web server configuration updated successfully. Server will restart.",
+                "new_config": {
+                    "host": host,
+                    "port": port
+                },
+                "restart_required": True
+            }
+            
+            # Schedule graceful shutdown after returning response
+            async def graceful_shutdown_delayed():
+                import asyncio
+                await asyncio.sleep(2)
+                try:
+                    # Log the shutdown
+                    Log.create_rule_log(
+                        db, 
+                        ActionType.update, 
+                        None, 
+                        "Shutting down server for configuration change. Expecting systemd restart.", 
+                        mode="manual"
+                    )
+                    # Send SIGTERM to self for graceful shutdown
+                    os.kill(os.getpid(), signal.SIGTERM)
+                except Exception as e:
+                    print(f"Error during graceful shutdown: {e}")
+                    os._exit(1)
+            
+            asyncio.create_task(graceful_shutdown_delayed())
+            
+            return response_data
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to save configuration: {str(e)}")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        Log.create_error_log(db, f"Failed to update web server config: {e}", context="web_server_config", mode="manual")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 @router.get("/{key}")
 async def get_setting(key: str, db: Session = Depends(get_db)):
     """Get a specific setting by key"""
@@ -624,4 +788,4 @@ async def restart_server_with_ssl(db: Session):
         await asyncio.sleep(2)
         os._exit(0)
     except Exception as e:
-        logger.error(f"Failed to exit for SSL restart: {e}") 
+        logger.error(f"Failed to exit for SSL restart: {e}")

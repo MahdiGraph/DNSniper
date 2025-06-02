@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { Settings, Shield, RefreshCw, Trash2, Plus, Globe, Play, Pause, TestTube, CheckCircle, AlertTriangle, Database } from 'lucide-react';
+import { Settings, Shield, RefreshCw, Trash2, Plus, Globe, Play, Pause, TestTube, Database, Server, AlertTriangle } from 'lucide-react';
 import {
   showSuccess,
   showError,
@@ -15,29 +15,52 @@ function SettingsPage() {
   const [settings, setSettings] = useState({});
   const [originalSettings, setOriginalSettings] = useState({});
   const [autoUpdateSources, setAutoUpdateSources] = useState([]);
+  const [webServerSettings, setWebServerSettings] = useState({ host: '', port: 8000, static_path: '' });
+  const [originalWebServerSettings, setOriginalWebServerSettings] = useState({ host: '', port: 8000, static_path: '' });
+  const [webServerChanges, setWebServerChanges] = useState(false);
+  const [savingWebServer, setSavingWebServer] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showAddSourceModal, setShowAddSourceModal] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
-  const [success, setSuccess] = useState('');
-  const [error, setError] = useState('');
 
   // Helper function to get auth token from localStorage
   const getToken = () => {
     return localStorage.getItem('authToken');
   };
 
+  const fetchWebServerSettings = useCallback(async () => {
+    try {
+      const response = await axios.get('/api/settings/web-server', {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      const settingsData = response.data || { host: '', port: 8000, static_path: '' };
+      setWebServerSettings(settingsData);
+      setOriginalWebServerSettings(settingsData);
+    } catch (error) {
+      console.error('Failed to fetch web server settings:', error);
+      await showError('Fetch Failed', `Failed to fetch web server settings: ${error.response?.data?.detail || error.message}`);
+    }
+  }, []);
+
   useEffect(() => {
     fetchSettings();
     fetchFirewallStatus();
     fetchAutoUpdateSources();
-  }, []);
+    fetchWebServerSettings();
+  }, [fetchWebServerSettings]);
 
   useEffect(() => {
     // Check if settings have changed
     const changed = JSON.stringify(settings) !== JSON.stringify(originalSettings);
     setHasChanges(changed);
   }, [settings, originalSettings]);
+
+  useEffect(() => {
+    // Check if web server settings have changed
+    const changed = JSON.stringify(webServerSettings) !== JSON.stringify(originalWebServerSettings);
+    setWebServerChanges(changed);
+  }, [webServerSettings, originalWebServerSettings]);
 
   useEffect(() => {
     if (settings.enable_ssl === undefined) {
@@ -82,6 +105,39 @@ function SettingsPage() {
     }
   };
 
+  const updateWebServerSettings = async () => {
+    if (!webServerChanges) return;
+    setSavingWebServer(true);
+    
+    try {
+      const response = await axios.put('/api/settings/web-server', webServerSettings, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      });
+      
+      if (response.data.restart_required) {
+        await showSuccess(
+          'Settings Updated Successfully!', 
+          `${response.data.message}\n\nThe server will restart automatically. Please wait a moment and refresh the page.`
+        );
+        // Optionally reload the page after a delay
+        setTimeout(() => {
+          window.location.reload();
+        }, 3000);
+      } else {
+        await showSuccess('Success', 'Web server settings updated successfully!');
+        setOriginalWebServerSettings(webServerSettings);
+        setWebServerChanges(false);
+      }
+    } catch (error) {
+      await showError(
+        'Update Failed',
+        `Failed to update web server settings: ${error.response?.data?.detail || error.message}`
+      );
+    } finally {
+      setSavingWebServer(false);
+    }
+  };
+
   const clearFirewallRules = async () => {
     const result = await showDeleteConfirm(
       'Clear Firewall Rules',
@@ -91,7 +147,7 @@ function SettingsPage() {
     
     if (result.isConfirmed) {
       try {
-        const response = await axios.delete('/api/settings/firewall/clear', {
+        await axios.delete('/api/settings/firewall/clear', {
           headers: { Authorization: `Bearer ${getToken()}` }
         });
         await showSuccess('Success', 'Firewall rules cleared successfully');
@@ -113,7 +169,7 @@ function SettingsPage() {
     
     if (result.isConfirmed) {
       try {
-        const response = await axios.post('/api/settings/firewall/rebuild', {}, {
+        await axios.post('/api/settings/firewall/rebuild', {}, {
           headers: { Authorization: `Bearer ${getToken()}` }
         });
         await showSuccess('Success', 'Firewall rules rebuilt successfully');
@@ -247,7 +303,7 @@ function SettingsPage() {
     if (!hasChanges) return;
     setSaving(true);
     try {
-      const response = await axios.put('/api/settings/bulk', {
+      await axios.put('/api/settings/bulk', {
         settings: settings
       });
       await showSuccess('Success', 'Settings updated successfully!');
@@ -282,7 +338,7 @@ function SettingsPage() {
     setHasChanges(false);
   };
 
-  const renderSettingInput = (key, value, config) => {
+  const renderSettingInput = (key, value, config, isWebServerSetting = false) => {
     // Handle textarea inputs for critical IPs settings
     if (config.type === 'textarea') {
       // Convert array to textarea format (one item per line)
@@ -295,10 +351,17 @@ function SettingsPage() {
           onChange={(e) => {
             // Convert textarea input to array and update settings state
             const arrayValue = e.target.value.split('\n').map(line => line.trim()).filter(line => line);
-            setSettings(prev => ({
-              ...prev,
-              [key]: arrayValue
-            }));
+            if (isWebServerSetting) {
+              setWebServerSettings(prev => ({
+                ...prev,
+                [key]: arrayValue
+              }));
+            } else {
+              setSettings(prev => ({
+                ...prev,
+                [key]: arrayValue
+              }));
+            }
           }}
           className="form-textarea"
         />
@@ -312,10 +375,19 @@ function SettingsPage() {
           <input
             type="checkbox"
             checked={value}
-            onChange={(e) => setSettings(prev => ({
-              ...prev,
-              [key]: e.target.checked
-            }))}
+            onChange={(e) => {
+              if (isWebServerSetting) {
+                setWebServerSettings(prev => ({
+                  ...prev,
+                  [key]: e.target.checked
+                }));
+              } else {
+                setSettings(prev => ({
+                  ...prev,
+                  [key]: e.target.checked
+                }));
+              }
+            }}
           />
           <span className="setting-value">{value ? 'Enabled' : 'Disabled'}</span>
         </div>
@@ -323,7 +395,7 @@ function SettingsPage() {
     }
 
     // Handle numeric settings with number input
-    if (typeof value === 'number') {
+    if (typeof value === 'number' || config.min !== undefined) {
       return (
         <div className="number-input-wrapper">
           <input
@@ -332,10 +404,20 @@ function SettingsPage() {
             max={config.max}
             step={config.step || 1}
             value={value}
-            onChange={(e) => setSettings(prev => ({
-              ...prev,
-              [key]: parseFloat(e.target.value)
-            }))}
+            onChange={(e) => {
+              const numValue = parseFloat(e.target.value);
+              if (isWebServerSetting) {
+                setWebServerSettings(prev => ({
+                  ...prev,
+                  [key]: numValue
+                }));
+              } else {
+                setSettings(prev => ({
+                  ...prev,
+                  [key]: numValue
+                }));
+              }
+            }}
           />
           {config.unit && <span className="input-unit">{config.unit}</span>}
         </div>
@@ -346,11 +428,21 @@ function SettingsPage() {
     return (
       <input
         type="text"
-        value={value}
-        onChange={(e) => setSettings(prev => ({
-          ...prev,
-          [key]: e.target.value
-        }))}
+        value={value || ''}
+        placeholder={config.hint}
+        onChange={(e) => {
+          if (isWebServerSetting) {
+            setWebServerSettings(prev => ({
+              ...prev,
+              [key]: e.target.value
+            }));
+          } else {
+            setSettings(prev => ({
+              ...prev,
+              [key]: e.target.value
+            }));
+          }
+        }}
       />
     );
   };
@@ -358,22 +450,11 @@ function SettingsPage() {
   return (
     <div className="settings">
       <div className="page-header">
-        <h1>Settings</h1>
+        <h1>
+          <Settings size={24} />
+          Settings
+        </h1>
       </div>
-
-      {/* Success/Error Messages */}
-      {success && (
-        <div className="alert alert-success">
-          <CheckCircle size={16} />
-          {success}
-        </div>
-      )}
-      {error && (
-        <div className="alert alert-error">
-          <AlertTriangle size={16} />
-          {error}
-        </div>
-      )}
 
       {/* Auto-Update Sources Management */}
       <div className="settings-section">
@@ -474,6 +555,70 @@ function SettingsPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+      </div>
+
+      {/* Web Server Settings */}
+      <div className="settings-section">
+        <h2>
+          <Server size={20} />
+          Web Server Settings
+        </h2>
+        
+        {/* Warning about restart */}
+        <div className="alert alert-warning">
+          <AlertTriangle size={16} />
+          <div>
+            <strong>Important:</strong> Changing web server settings will automatically restart the application. 
+            Make sure your system is configured with systemd or another process manager to automatically restart the service.
+          </div>
+        </div>
+        
+        <div className="settings-grid">
+          {Object.entries(webServerSettings).map(([key, value]) => {
+            const settingConfig = getWebServerSettingConfig(key);
+            return (
+              <div key={key} className="form-group">
+                <label>
+                  {settingConfig.label}
+                  {settingConfig.hint && (
+                    <small className="form-hint">{settingConfig.hint}</small>
+                  )}
+                </label>
+                <div className="setting-input">
+                  {renderSettingInput(key, value, settingConfig, true)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        
+        <div className="settings-actions">
+          <button
+            className="btn btn-secondary"
+            onClick={() => {
+              setWebServerSettings(originalWebServerSettings);
+              setWebServerChanges(false);
+            }}
+            disabled={!webServerChanges || savingWebServer}
+          >
+            Reset Changes
+          </button>
+          <button
+            className="btn btn-danger"
+            onClick={updateWebServerSettings}
+            disabled={!webServerChanges || savingWebServer}
+          >
+            {savingWebServer ? 'Updating & Restarting...' : 'Update & Restart Server'}
+          </button>
+        </div>
+        
+        {Object.keys(webServerSettings).length === 0 && (
+          <div className="empty-state">
+            <Server size={48} />
+            <h3>Unable to load web server settings</h3>
+            <p>There was an issue loading the web server configuration</p>
           </div>
         )}
       </div>
@@ -830,6 +975,36 @@ function getSettingConfig(key) {
       max: 100000,
       step: 1000,
       validation: 'Must be between 1000 and 100000 entries'
+    }
+  };
+
+  return configs[key] || {
+    label: key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+    hint: '',
+    validation: ''
+  };
+}
+
+function getWebServerSettingConfig(key) {
+  const configs = {
+    host: {
+      label: 'Host',
+      hint: 'The IP address or hostname of the web server',
+      validation: 'Must be a valid IP address or hostname'
+    },
+    port: {
+      label: 'Port',
+      hint: 'The port number on which the web server listens',
+      unit: 'port',
+      min: 1,
+      max: 65535,
+      step: 1,
+      validation: 'Must be between 1 and 65535'
+    },
+    static_path: {
+      label: 'Static Path',
+      hint: 'The path to the directory containing static files',
+      validation: 'Must be a valid directory path'
     }
   };
 

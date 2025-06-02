@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import axios from 'axios';
 import { 
@@ -41,11 +41,16 @@ function App() {
   const [apiStatus, setApiStatus] = useState('checking');
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    initializeApp();
+  const checkApiStatus = useCallback(async () => {
+    try {
+      const response = await axios.get('/api/health');
+      setApiStatus(response.data.status === 'healthy' ? 'healthy' : 'unhealthy');
+    } catch (error) {
+      setApiStatus('unhealthy');
+    }
   }, []);
 
-  const initializeApp = async () => {
+  const initializeApp = useCallback(async () => {
     // Check for existing token
     const token = localStorage.getItem('authToken');
     if (token) {
@@ -66,16 +71,11 @@ function App() {
     
     await checkApiStatus();
     setLoading(false);
-  };
+  }, [checkApiStatus]);
 
-  const checkApiStatus = async () => {
-    try {
-      const response = await axios.get('/api/health');
-      setApiStatus(response.data.status === 'healthy' ? 'healthy' : 'unhealthy');
-    } catch (error) {
-      setApiStatus('unhealthy');
-    }
-  };
+  useEffect(() => {
+    initializeApp();
+  }, [initializeApp]);
 
   const handleLoginSuccess = (userData) => {
     setUser(userData);

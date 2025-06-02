@@ -1,5 +1,7 @@
 import os
 import logging
+import json
+from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -16,15 +18,49 @@ from services.auto_update_service import AutoUpdateService
 from services.firewall_log_monitor import firewall_log_monitor
 from services.live_events import live_events
 import asyncio
-import schedule
 import threading
-import time
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
-import json
 from models.logs import ActionType
-from typing import Set
 from fastapi.concurrency import run_in_threadpool
+
+# Load configuration from JSON file
+def load_config():
+    """Load configuration from config.json with defaults"""
+    config_path = Path(__file__).parent / "config.json"
+    
+    # Default configuration
+    default_config = {
+        "web_server": {
+            "host": "0.0.0.0",
+            "port": 8000
+        },
+        "frontend": {
+            "static_path": "../frontend/build"
+        }
+    }
+    
+    if config_path.exists():
+        try:
+            with open(config_path, 'r') as f:
+                user_config = json.load(f)
+                
+                # Deep merge with defaults to ensure all required keys exist
+                config = default_config.copy()
+                if "web_server" in user_config:
+                    config["web_server"].update(user_config["web_server"])
+                if "frontend" in user_config:
+                    config["frontend"].update(user_config["frontend"])
+                
+                return config
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"⚠️  Error reading config.json: {e}")
+            print("🔧 Using default configuration")
+            return default_config
+    else:
+        print("📝 No config.json found, using defaults (host: 0.0.0.0, port: 8000)")
+        return default_config
+
+config = load_config()
 
 # Configure logging
 logging.basicConfig(
@@ -37,9 +73,6 @@ logger = logging.getLogger(__name__)
 auto_update_thread = None
 auto_update_stop_event = threading.Event()
 auto_update_paused = False
-
-# Global set of connected WebSocket clients - DEPRECATED (replaced by live_events)
-# agent_ws_clients: Set[WebSocket] = set()
 
 def auto_update_scheduler():
     """Background scheduler for auto-update cycles"""
@@ -373,8 +406,12 @@ For additional support, visit the built-in API documentation at `/api-documentat
     },
     servers=[
         {
-            "url": "http://localhost:8000",
+            "url": f"http://{config['web_server']['host']}:{config['web_server']['port']}",
             "description": "Development server"
+        },
+        {
+            "url": "http://localhost:8000",
+            "description": "Local server (default)"
         }
     ],
     lifespan=lifespan,
@@ -667,7 +704,7 @@ app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 
 # Serve React frontend static files
-frontend_build_path = Path(__file__).parent.parent / "frontend" / "build"
+frontend_build_path = Path(__file__).parent / config['frontend']['static_path']
 
 if frontend_build_path.exists():
     # Mount static files
@@ -701,7 +738,7 @@ if frontend_build_path.exists():
         
         raise HTTPException(status_code=404, detail="Frontend not built")
 else:
-    logger.warning("Frontend build directory not found. Make sure to build the React app.")
+    logger.warning(f"Frontend build directory not found at: {frontend_build_path}")
     
     @app.get("/")
     async def frontend_not_built():
@@ -709,7 +746,7 @@ else:
             "message": "DNSniper API is running",
             "docs": "/docs", 
             "health": "/api/health",
-            "note": "Frontend not built. Run 'npm run build' in the frontend directory."
+            "note": f"Frontend not built. Expected at: {frontend_build_path}"
         }
 
 # Add security schemes to OpenAPI spec
@@ -848,14 +885,74 @@ async def live_events_ws(websocket: WebSocket, token: str = None):
             "client_count": live_events.get_client_count()
         })
 
-# DEPRECATED: Old WebSocket endpoint (kept for backward compatibility)
-@app.websocket("/ws/agent-logs")
-async def agent_logs_ws_deprecated(websocket: WebSocket, token: str = None):
-    """DEPRECATED: Use /ws/live-events instead"""
-    await websocket.accept()
-    await websocket.close(code=4004, reason="Endpoint deprecated. Use /ws/live-events with ?token=your_token")
-
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port) 
+    
+    # Get host and port from config
+    host = config['web_server']['host']
+    port = config['web_server']['port']
+    
+    # Check for SSL configuration in database
+    ssl_config = None
+    db_path = Path(__file__).parent / "dnsniper.db"
+    
+    if db_path.exists():
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+            
+            # Get SSL settings from database
+            ssl_settings = {}
+            cursor.execute('SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?, ?)', 
+                          ('enable_ssl', 'force_https', 'ssl_domain', 'ssl_certfile', 'ssl_keyfile'))
+            
+            for row in cursor.fetchall():
+                key, value = row
+                # Parse boolean values
+                if value.lower() == 'true':
+                    ssl_settings[key] = True
+                elif value.lower() == 'false':
+                    ssl_settings[key] = False
+                else:
+                    ssl_settings[key] = value.strip()
+            
+            conn.close()
+            
+            # Check if SSL is properly configured
+            enable_ssl = ssl_settings.get('enable_ssl', False)
+            force_https = ssl_settings.get('force_https', False)
+            ssl_domain = ssl_settings.get('ssl_domain', '')
+            ssl_certfile = ssl_settings.get('ssl_certfile', '')
+            ssl_keyfile = ssl_settings.get('ssl_keyfile', '')
+            
+            # SSL is enabled if either enable_ssl or force_https is true AND all files exist
+            if (enable_ssl or force_https) and ssl_domain and ssl_certfile and ssl_keyfile:
+                if os.path.isfile(ssl_certfile) and os.path.isfile(ssl_keyfile):
+                    ssl_config = {
+                        'ssl_certfile': ssl_certfile,
+                        'ssl_keyfile': ssl_keyfile,
+                        'ssl_domain': ssl_domain
+                    }
+                    print(f"🔒 SSL/HTTPS enabled for domain: {ssl_domain}")
+                else:
+                    print(f"⚠️  SSL configured but certificate files not found")
+            
+        except Exception as e:
+            print(f"⚠️  Could not read SSL settings from database: {e}")
+    
+    # Start server
+    print(f"🚀 Starting DNSniper on {host}:{port}")
+    
+    if ssl_config:
+        print(f"🔒 Starting with SSL/HTTPS support")
+        uvicorn.run(
+            app, 
+            host=host, 
+            port=port,
+            ssl_certfile=ssl_config['ssl_certfile'],
+            ssl_keyfile=ssl_config['ssl_keyfile']
+        )
+    else:
+        print(f"🌐 Starting without SSL (HTTP only)")
+        uvicorn.run(app, host=host, port=port) 

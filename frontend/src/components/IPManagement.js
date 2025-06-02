@@ -62,7 +62,7 @@ function IPManagement() {
 
   useEffect(() => {
     fetchIPs(1);
-  }, [search, filter]); // Reset to page 1 when search or filter changes
+  }, [search, filter, fetchIPs]); // Reset to page 1 when search or filter changes
 
   const handlePageChange = (newPage) => {
     fetchIPs(newPage, pagination.per_page);
@@ -105,7 +105,10 @@ function IPManagement() {
   return (
     <div className="ip-management">
       <div className="page-header">
-        <h1>IP Address Management</h1>
+        <h1>
+          <Network size={24} />
+          IP Address Management
+        </h1>
         <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
           <Plus size={16} />
           Add IP Address

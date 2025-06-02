@@ -63,7 +63,26 @@
    python3 setup.py
    ```
 
-3. **Access the application:**
+3. **Configure server settings (optional):**
+   ```bash
+   # Copy example configuration
+   cp config.json.example backend/config.json
+   
+   # Edit backend/config.json as needed
+   # Default: host=0.0.0.0, port=8000
+   ```
+
+4. **Start the application:**
+   ```bash
+   # Option 1: Use the start script (recommended)
+   ./start.sh
+   
+   # Option 2: Run directly (from backend directory)
+   cd backend
+   python3 main.py
+   ```
+
+5. **Access the application:**
    - Web Interface: http://localhost:8000
    - API Documentation: http://localhost:8000/docs
 
@@ -84,41 +103,99 @@ npm install
 npm run build
 ```
 
+#### Configuration
+```bash
+# Create configuration file
+cp config.json.example backend/config.json
+
+# Edit backend/config.json to customize host and port
+```
+
 #### Run the Application
 ```bash
+# Option 1: From project root using start script
+./start.sh
+
+# Option 2: From backend directory
 cd backend
-python main.py
+source venv/bin/activate
+python3 main.py
 ```
 
 ## ⚙️ Configuration
 
-### Environment Variables
-Create a `.env` file in the backend directory:
+### Web Server Configuration
+DNSniper uses a simple JSON configuration file. Create a `config.json` file in the `backend/` directory:
 
-```env
-# Server Configuration
-PORT=8000
-DATABASE_URL=sqlite:///./dnsniper.db
-
-# Auto-update Settings
-AUTO_UPDATE_INTERVAL=3600
-RULE_EXPIRATION=86400
-MAX_IPS_PER_DOMAIN=5
-RATE_LIMIT_DELAY=1.0
-
-# DNS Settings
-DNS_RESOLVERS=1.1.1.1,8.8.8.8
-
-# Security
-AUTOMATIC_DOMAIN_RESOLUTION=true
-AUTO_UPDATE_ENABLED=true
-
-# Logging
-LOG_LEVEL=INFO
-LOGGING_ENABLED=false
-LOG_RETENTION_DAYS=30
-MAX_LOG_ENTRIES=10000
+```json
+{
+  "web_server": {
+    "host": "0.0.0.0",
+    "port": 8000
+  },
+  "frontend": {
+    "static_path": "../frontend/build"
+  }
+}
 ```
+
+**Configuration Options:**
+- **`web_server.host`**: Server bind address (default: `0.0.0.0`)
+- **`web_server.port`**: Server port (default: `8000`)
+- **`frontend.static_path`**: Path to frontend build directory (default: `../frontend/build`)
+
+**Configuration Examples:**
+- **Localhost only** (more secure):
+  ```json
+  {
+    "web_server": {
+      "host": "127.0.0.1",
+      "port": 8000
+    },
+    "frontend": {
+      "static_path": "../frontend/build"
+    }
+  }
+  ```
+- **Custom port and frontend path**:
+  ```json
+  {
+    "web_server": {
+      "host": "0.0.0.0",
+      "port": 3000
+    },
+    "frontend": {
+      "static_path": "/var/www/dnsniper-ui"
+    }
+  }
+  ```
+- **Production HTTP port** (requires sudo):
+  ```json
+  {
+    "web_server": {
+      "host": "0.0.0.0",
+      "port": 80
+    },
+    "frontend": {
+      "static_path": "../frontend/build"
+    }
+  }
+  ```
+
+**Note:** If `config.json` doesn't exist, DNSniper will use defaults: `host=0.0.0.0`, `port=8000`, `static_path=../frontend/build`
+
+### SSL/HTTPS Configuration
+SSL settings are managed through the web interface in **Settings > System Configuration**. Once configured in the database, they will be automatically applied when starting the server.
+
+### Database Configuration
+
+All other settings are managed through the web interface and stored in the database:
+
+- **Auto-update Settings**: Intervals, expiration, rate limiting
+- **DNS Settings**: Primary/secondary resolvers  
+- **Security Settings**: Critical IP protection, automatic domain resolution
+- **Logging Settings**: Log retention, monitoring
+- **SSL/HTTPS Settings**: Certificate paths, domain configuration
 
 ### Firewall Configuration
 

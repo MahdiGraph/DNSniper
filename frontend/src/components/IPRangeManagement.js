@@ -62,7 +62,7 @@ function IPRangeManagement() {
 
   useEffect(() => {
     fetchIPRanges(1);
-  }, [search, filter]); // Reset to page 1 when search or filter changes
+  }, [search, filter, fetchIPRanges]); // Reset to page 1 when search or filter changes
 
   const handlePageChange = (newPage) => {
     fetchIPRanges(newPage, pagination.per_page);
@@ -105,7 +105,10 @@ function IPRangeManagement() {
   return (
     <div className="ip-range-management">
       <div className="page-header">
-        <h1>IP Range Management</h1>
+        <h1>
+          <Network size={24} />
+          IP Range Management
+        </h1>
         <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
           <Plus size={16} />
           Add IP Range

@@ -33,7 +33,7 @@ const AlertModal = ({
     }
   };
 
-  const handleConfirm = async () => {
+  const handleConfirm = React.useCallback(async () => {
     if (isProcessing) return;
     
     if (input && inputValidator) {
@@ -57,14 +57,14 @@ const AlertModal = ({
     } finally {
       setIsProcessing(false);
     }
-  };
+  }, [isProcessing, input, inputValidator, inputVal, required, onConfirm]);
 
-  const handleCancel = () => {
+  const handleCancel = React.useCallback(() => {
     if (isProcessing) return;
     onCancel({ isConfirmed: false, isDismissed: true });
-  };
+  }, [isProcessing, onCancel]);
 
-  const handleKeyPress = (e) => {
+  const handleKeyPress = React.useCallback((e) => {
     if (isProcessing) return;
     
     if (e.key === 'Enter' && !showCancelButton) {
@@ -72,12 +72,12 @@ const AlertModal = ({
     } else if (e.key === 'Escape') {
       handleCancel();
     }
-  };
+  }, [isProcessing, showCancelButton, handleConfirm, handleCancel]);
 
   React.useEffect(() => {
     document.addEventListener('keydown', handleKeyPress);
     return () => document.removeEventListener('keydown', handleKeyPress);
-  }, [inputVal, isProcessing]);
+  }, [handleKeyPress]);
 
   return (
     <div className="modal-overlay" onClick={handleCancel}>

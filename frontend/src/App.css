@@ -702,6 +702,16 @@ code, pre {
   color: var(--warning-color);
 }
 
+.badge-cdn {
+  background: #fef3c7;
+  color: #d97706;
+}
+
+.badge-no-cdn {
+  background: #ecfdf5;
+  color: var(--success-color);
+}
+
 /* Buttons */
 .btn {
   display: inline-flex;

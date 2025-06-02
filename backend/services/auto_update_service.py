@@ -224,22 +224,44 @@ class AutoUpdateService:
                         # Resolve domain
                         resolution = dns_service.resolve_domain(domain.domain_name)
                         
+                        # Collect all new IPs (both IPv4 and IPv6)
+                        new_ips = []
+                        
                         # Process IPv4 addresses with critical IP protection
                         for ip_str in resolution['ipv4']:
                             if dns_service.is_safe_ip_for_auto_update(ip_str, critical_ipv4_list, critical_ipv6_list, db):
-                                await self._add_or_update_domain_ip(
-                                    domain, ip_str, 4, max_ips_per_domain, db
-                                )
+                                new_ips.append({
+                                    'ip_address': ip_str,
+                                    'ip_version': 4
+                                })
                         
                         # Process IPv6 addresses with critical IP protection
                         for ip_str in resolution['ipv6']:
                             if dns_service.is_safe_ip_for_auto_update(ip_str, critical_ipv4_list, critical_ipv6_list, db):
-                                await self._add_or_update_domain_ip(
-                                    domain, ip_str, 6, max_ips_per_domain, db
-                                )
+                                new_ips.append({
+                                    'ip_address': ip_str,
+                                    'ip_version': 6
+                                })
                         
-                        # Update CDN status
-                        domain.update_cdn_status(db)
+                        # Process all IPs as a batch with proper FIFO and CDN logic
+                        if new_ips:
+                            await self._process_domain_ips_batch(
+                                domain, new_ips, max_ips_per_domain, db
+                            )
+                        else:
+                            # No new IPs, just update timestamp and CDN status if needed
+                            current_ips = db.query(IP).filter(IP.domain_id == domain.id).all()
+                            existing_ip_addresses = {ip.ip_address for ip in current_ips}
+                            
+                            # Create set of all IPs (stored + resolved) to get true total count
+                            all_ips = set(existing_ip_addresses)
+                            all_ips.update(resolution['ipv4'])
+                            all_ips.update(resolution['ipv6'])
+                            total_unique_ips = len(all_ips)
+                            
+                            # CDN flagging based on total unique IPs
+                            domain.is_cdn = total_unique_ips > max_ips_per_domain
+                            domain.updated_at = datetime.now(timezone.utc)
                         
                     except Exception as e:
                         # Log error but continue with other domains
@@ -458,25 +480,44 @@ class AutoUpdateService:
                 dns_service = DNSService(dns_resolver_primary, dns_resolver_secondary)
                 resolution = dns_service.resolve_domain(entry)
                 
+                # Collect all new IPs (both IPv4 and IPv6) for batch processing
+                new_ips = []
+                
                 # Process IPv4 addresses with critical IP protection
                 for ip_str in resolution['ipv4']:
                     if dns_service.is_safe_ip_for_auto_update(ip_str, critical_ipv4_list, critical_ipv6_list, db):
-                        await self._add_or_update_domain_ip(
-                            domain, ip_str, 4, max_ips_per_domain, db, expiration_time
-                        )
-                    else:
-                        # Skip critical IPs
-                        pass
+                        new_ips.append({
+                            'ip_address': ip_str,
+                            'ip_version': 4
+                        })
                 
                 # Process IPv6 addresses with critical IP protection
                 for ip_str in resolution['ipv6']:
                     if dns_service.is_safe_ip_for_auto_update(ip_str, critical_ipv4_list, critical_ipv6_list, db):
-                        await self._add_or_update_domain_ip(
-                            domain, ip_str, 6, max_ips_per_domain, db, expiration_time
-                        )
-                    else:
-                        # Skip critical IPs
-                        pass
+                        new_ips.append({
+                            'ip_address': ip_str,
+                            'ip_version': 6
+                        })
+                
+                # Process all IPs as a batch with proper FIFO and CDN logic
+                if new_ips:
+                    await self._process_domain_ips_batch(
+                        domain, new_ips, max_ips_per_domain, db, expiration_time
+                    )
+                else:
+                    # No new IPs, just update timestamp and CDN status if needed
+                    current_ips = db.query(IP).filter(IP.domain_id == domain.id).all()
+                    existing_ip_addresses = {ip.ip_address for ip in current_ips}
+                    
+                    # Create set of all IPs (stored + resolved) to get true total count
+                    all_ips = set(existing_ip_addresses)
+                    all_ips.update(resolution['ipv4'])
+                    all_ips.update(resolution['ipv6'])
+                    total_unique_ips = len(all_ips)
+                    
+                    # CDN flagging based on total unique IPs
+                    domain.is_cdn = total_unique_ips > max_ips_per_domain
+                    domain.updated_at = datetime.now(timezone.utc)
 
     def _is_critical_ip_range(self, ip_range_str: str, critical_ipv4_list: List[str], critical_ipv6_list: List[str]) -> bool:
         """Check if IP range overlaps with critical IPs or critical IP ranges (includes dynamic detection)"""
@@ -661,45 +702,145 @@ class AutoUpdateService:
             Log.cleanup_old_logs(log_db)
             log_db.close()
 
-    async def _add_or_update_domain_ip(self, domain: Domain, ip_address: str, 
-                                      ip_version: int, max_ips_per_domain: int, db: Session,
-                                      expiration_time: datetime = None):
-        """Add or update IP for a domain with FIFO management"""
+    async def _process_domain_ips_batch(self, domain: Domain, new_ips: list, max_ips_per_domain: int, 
+                                       db: Session, expiration_time: datetime = None):
+        """
+        Process a batch of new IPs for a domain with proper FIFO management and CDN flagging.
+        """
         try:
-            # Check if this IP already exists for this domain
-            existing = db.query(IP).filter(
-                IP.domain_id == domain.id,
-                IP.ip_address == ip_address
-            ).first()
+            # Get current IPs for this domain
+            current_ips = db.query(IP).filter(
+                IP.domain_id == domain.id
+            ).order_by(IP.created_at.asc()).all()
             
-            if existing:
-                # Update existing IP
-                if domain.source_type == SourceType.auto_update and expiration_time:
-                    existing.expired_at = expiration_time
-                existing.updated_at = datetime.now(timezone.utc)
-            else:
-                # Create new IP
-                ip = IP(
-                    ip_address=ip_address,
-                    ip_version=ip_version,
-                    list_type=domain.list_type,
-                    source_type=domain.source_type,
-                    source_url=domain.source_url,
-                    domain_id=domain.id,
-                    expired_at=expiration_time if domain.source_type == SourceType.auto_update else None
-                )
-                db.add(ip)
+            current_count = len(current_ips)
+            
+            # Filter out IPs that already exist
+            existing_ip_addresses = {ip.ip_address for ip in current_ips}
+            truly_new_ips = [ip_data for ip_data in new_ips if ip_data['ip_address'] not in existing_ip_addresses]
+            
+            # Create set of all IPs (stored + new) to get true total count
+            all_ips = set(existing_ip_addresses)
+            for ip_data in new_ips:
+                all_ips.add(ip_data['ip_address'])
+            total_unique_ips = len(all_ips)
+            
+            # CDN flagging based on total unique IPs
+            domain.is_cdn = total_unique_ips > max_ips_per_domain
+            
+            if not truly_new_ips:
+                # No new IPs to add, just update CDN status and timestamp
+                domain.updated_at = datetime.now(timezone.utc)
+                return
+            
+            new_count = len(truly_new_ips)
+            total_after_adding = current_count + new_count
+            
+            if total_after_adding <= max_ips_per_domain:
+                # We can add all new IPs without exceeding the limit
+                for ip_data in truly_new_ips:
+                    ip = IP(
+                        ip_address=ip_data['ip_address'],
+                        ip_version=ip_data['ip_version'],
+                        list_type=domain.list_type,
+                        source_type=domain.source_type,
+                        source_url=domain.source_url,
+                        domain_id=domain.id,
+                        expired_at=expiration_time if domain.source_type == SourceType.auto_update else None
+                    )
+                    db.add(ip)
+                
                 db.flush()
                 
-                # Apply FIFO limit
-                IP.cleanup_old_ips_for_domain(db, domain.id, max_ips_per_domain)
+                # Log the addition
+                log_db = SessionLocal()
+                Log.create_rule_log(
+                    log_db, ActionType.add_rule, RuleType.ip,
+                    f"Added {new_count} new IPs for domain {domain.domain_name} (total unique IPs: {total_unique_ips}, stored: {total_after_adding}, CDN: {domain.is_cdn})",
+                    mode="auto_update"
+                )
+                Log.cleanup_old_logs(log_db)
+                log_db.close()
                 
+            else:
+                # We exceed the limit - apply FIFO removal and add what we can
+                if current_count == 0:
+                    # New domain - just take the first max_ips_per_domain IPs
+                    ips_to_add = truly_new_ips[:max_ips_per_domain]
+                    
+                    for ip_data in ips_to_add:
+                        ip = IP(
+                            ip_address=ip_data['ip_address'],
+                            ip_version=ip_data['ip_version'],
+                            list_type=domain.list_type,
+                            source_type=domain.source_type,
+                            source_url=domain.source_url,
+                            domain_id=domain.id,
+                            expired_at=expiration_time if domain.source_type == SourceType.auto_update else None
+                        )
+                        db.add(ip)
+                    
+                    db.flush()
+                    
+                    # Log the addition
+                    log_db = SessionLocal()
+                    Log.create_rule_log(
+                        log_db, ActionType.add_rule, RuleType.ip,
+                        f"Added {len(ips_to_add)} IPs (out of {new_count} resolved) for new domain {domain.domain_name}. Total unique IPs: {total_unique_ips}, CDN: {domain.is_cdn}",
+                        mode="auto_update"
+                    )
+                    Log.cleanup_old_logs(log_db)
+                    log_db.close()
+                    
+                else:
+                    # Existing domain - apply FIFO removal
+                    ips_to_remove_count = total_after_adding - max_ips_per_domain
+                    
+                    # Remove the oldest IPs (FIFO)
+                    ips_to_remove = current_ips[:ips_to_remove_count]
+                    
+                    for ip in ips_to_remove:
+                        db.delete(ip)  # This will trigger the firewall hooks
+                    
+                    # Calculate how many new IPs we can actually add
+                    remaining_capacity = max_ips_per_domain - (current_count - len(ips_to_remove))
+                    ips_to_add = truly_new_ips[:remaining_capacity]
+                    
+                    # Add only the IPs that fit within the limit
+                    for ip_data in ips_to_add:
+                        ip = IP(
+                            ip_address=ip_data['ip_address'],
+                            ip_version=ip_data['ip_version'],
+                            list_type=domain.list_type,
+                            source_type=domain.source_type,
+                            source_url=domain.source_url,
+                            domain_id=domain.id,
+                            expired_at=expiration_time if domain.source_type == SourceType.auto_update else None
+                        )
+                        db.add(ip)
+                    
+                    db.flush()
+                    
+                    # Log the FIFO operation
+                    log_db = SessionLocal()
+                    Log.create_rule_log(
+                        log_db, ActionType.update, RuleType.ip,
+                        f"Applied FIFO for domain {domain.domain_name}: removed {ips_to_remove_count} old IPs, added {len(ips_to_add)} new IPs (out of {new_count} resolved). Total unique IPs: {total_unique_ips}, CDN: {domain.is_cdn}",
+                        mode="auto_update"
+                    )
+                    Log.cleanup_old_logs(log_db)
+                    log_db.close()
+            
+            # Update domain's updated_at timestamp
+            domain.updated_at = datetime.now(timezone.utc)
+            
         except Exception as e:
             # Log error via database
             log_db = SessionLocal()
-            Log.create_error_log(log_db, f"Failed to add/update domain IP {ip_address} for {domain.domain_name}: {e}", context="AutoUpdateService._add_or_update_domain_ip", mode="auto_update")
+            Log.create_error_log(log_db, f"Failed to process domain IPs batch for {domain.domain_name}: {e}", context="AutoUpdateService._process_domain_ips_batch", mode="auto_update")
             Log.cleanup_old_logs(log_db)
             log_db.close()
+            raise
 
     async def cleanup_old_logs(self):
         """Clean up old log entries"""
