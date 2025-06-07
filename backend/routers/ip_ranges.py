@@ -60,9 +60,26 @@ class IPRangeCreate(BaseModel):
     list_type: str  # "blacklist" or "whitelist"
     notes: Optional[str] = None
 
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "ip_range": "1.2.3.0/24",
+                "list_type": "blacklist",
+                "notes": "Malicious IP range from threat intelligence"
+            }
+        }
+
 class IPRangeUpdate(BaseModel):
     list_type: Optional[str] = None
     notes: Optional[str] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "list_type": "whitelist",
+                "notes": "Updated notes for this IP range"
+            }
+        }
 
 class IPRangeResponse(BaseModel):
     id: int
@@ -79,6 +96,21 @@ class IPRangeResponse(BaseModel):
 
     class Config:
         from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "id": 1,
+                "ip_range": "1.2.3.0/24",
+                "ip_version": 4,
+                "list_type": "blacklist",
+                "source_type": "manual",
+                "source_url": None,
+                "expired_at": None,
+                "expires_in": None,
+                "created_at": "2024-01-01T12:00:00Z",
+                "updated_at": "2024-01-01T12:00:00Z",
+                "notes": "Malicious IP range"
+            }
+        }
 
 class PaginatedIPRangesResponse(BaseModel):
     ip_ranges: List[IPRangeResponse]
@@ -87,17 +119,78 @@ class PaginatedIPRangesResponse(BaseModel):
     total: int
     pages: int
 
-@router.get("/", response_model=PaginatedIPRangesResponse)
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "ip_ranges": [
+                    {
+                        "id": 1,
+                        "ip_range": "1.2.3.0/24",
+                        "ip_version": 4,
+                        "list_type": "blacklist",
+                        "source_type": "manual",
+                        "source_url": None,
+                        "expired_at": None,
+                        "expires_in": None,
+                        "created_at": "2024-01-01T12:00:00Z",
+                        "updated_at": "2024-01-01T12:00:00Z",
+                        "notes": "Malicious IP range"
+                    }
+                ],
+                "page": 1,
+                "per_page": 50,
+                "total": 25,
+                "pages": 1
+            }
+        }
+
+@router.get("/", 
+    response_model=PaginatedIPRangesResponse,
+    summary="List IP ranges",
+    description="Get all IP ranges (CIDR blocks) with optional filtering by list type, source type, IP version, and search term. Supports pagination.",
+    responses={
+        200: {
+            "description": "Paginated list of IP ranges matching the criteria",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "ip_ranges": [
+                            {
+                                "id": 1,
+                                "ip_range": "1.2.3.0/24",
+                                "ip_version": 4,
+                                "list_type": "blacklist",
+                                "source_type": "manual",
+                                "source_url": None,
+                                "expired_at": None,
+                                "expires_in": None,
+                                "created_at": "2024-01-01T12:00:00Z",
+                                "updated_at": "2024-01-01T12:00:00Z",
+                                "notes": "Malicious IP range"
+                            }
+                        ],
+                        "page": 1,
+                        "per_page": 50,
+                        "total": 25,
+                        "pages": 1
+                    }
+                }
+            }
+        },
+        401: {"description": "Authentication required"},
+        400: {"description": "Invalid filter parameters"}
+    }
+)
 async def get_ip_ranges(
     db: Session = Depends(get_db),
-    list_type: Optional[str] = Query(None),
-    source_type: Optional[str] = Query(None),
-    ip_version: Optional[int] = Query(None),
+    list_type: Optional[str] = Query(None, description="Filter by list type (blacklist or whitelist)"),
+    source_type: Optional[str] = Query(None, description="Filter by source type (manual or auto_update)"),
+    ip_version: Optional[int] = Query(None, description="Filter by IP version (4 for IPv4, 6 for IPv6)"),
     search: Optional[str] = Query(None, description="Search IP ranges (partial match)"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     per_page: int = Query(50, ge=1, le=1000, description="Items per page")
 ):
-    """Get IP ranges with optional filtering and search"""
+    """Get IP ranges with optional filtering and pagination"""
     query = db.query(IPRange)
     
     if list_type:
@@ -153,7 +246,35 @@ async def get_ip_ranges(
         "pages": pages
     }
 
-@router.get("/{ip_range_id}", response_model=IPRangeResponse)
+@router.get("/{ip_range_id}", 
+    response_model=IPRangeResponse,
+    summary="Get IP range",
+    description="Get details of a specific IP range by ID",
+    responses={
+        200: {
+            "description": "IP range details",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": 1,
+                        "ip_range": "1.2.3.0/24",
+                        "ip_version": 4,
+                        "list_type": "blacklist",
+                        "source_type": "manual",
+                        "source_url": None,
+                        "expired_at": None,
+                        "expires_in": None,
+                        "created_at": "2024-01-01T12:00:00Z",
+                        "updated_at": "2024-01-01T12:00:00Z",
+                        "notes": "Malicious IP range"
+                    }
+                }
+            }
+        },
+        401: {"description": "Authentication required"},
+        404: {"description": "IP range not found"}
+    }
+)
 async def get_ip_range(ip_range_id: int, db: Session = Depends(get_db)):
     """Get a specific IP range by ID"""
     ip_range = db.query(IPRange).filter(IPRange.id == ip_range_id).first()
@@ -174,7 +295,35 @@ async def get_ip_range(ip_range_id: int, db: Session = Depends(get_db)):
         "notes": ip_range.notes
     }
 
-@router.post("/", response_model=IPRangeResponse)
+@router.post("/", 
+    response_model=IPRangeResponse,
+    summary="Create IP range",
+    description="Add a new IP range (CIDR block) to the blacklist or whitelist. The IP range will be validated for proper CIDR format and safety (no private/loopback ranges).",
+    responses={
+        200: {
+            "description": "IP range created successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": 1,
+                        "ip_range": "1.2.3.0/24",
+                        "ip_version": 4,
+                        "list_type": "blacklist",
+                        "source_type": "manual",
+                        "source_url": None,
+                        "expired_at": None,
+                        "expires_in": None,
+                        "created_at": "2024-01-01T12:00:00Z",
+                        "updated_at": "2024-01-01T12:00:00Z",
+                        "notes": "Malicious IP range"
+                    }
+                }
+            }
+        },
+        400: {"description": "Invalid IP range format, unsafe range, or range already exists"},
+        401: {"description": "Authentication required"}
+    }
+)
 async def create_ip_range(ip_range_data: IPRangeCreate, db: Session = Depends(get_db)):
     """Create a new manual IP range entry"""
     
@@ -242,7 +391,36 @@ async def create_ip_range(ip_range_data: IPRangeCreate, db: Session = Depends(ge
     
     return response_data
 
-@router.put("/{ip_range_id}", response_model=IPRangeResponse)
+@router.put("/{ip_range_id}", 
+    response_model=IPRangeResponse,
+    summary="Update IP range",
+    description="Update an IP range's properties. Only manual IP ranges can be updated.",
+    responses={
+        200: {
+            "description": "IP range updated successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": 1,
+                        "ip_range": "1.2.3.0/24",
+                        "ip_version": 4,
+                        "list_type": "whitelist",
+                        "source_type": "manual",
+                        "source_url": None,
+                        "expired_at": None,
+                        "expires_in": None,
+                        "created_at": "2024-01-01T12:00:00Z",
+                        "updated_at": "2024-01-01T13:00:00Z",
+                        "notes": "Updated notes"
+                    }
+                }
+            }
+        },
+        400: {"description": "Invalid list_type or cannot update auto-update IP ranges"},
+        401: {"description": "Authentication required"},
+        404: {"description": "IP range not found"}
+    }
+)
 async def update_ip_range(ip_range_id: int, ip_range_data: IPRangeUpdate, db: Session = Depends(get_db)):
     """Update an IP range (manual entries only)"""
     ip_range = db.query(IPRange).filter(IPRange.id == ip_range_id).first()
@@ -294,7 +472,24 @@ async def update_ip_range(ip_range_id: int, ip_range_data: IPRangeUpdate, db: Se
     
     return response_data
 
-@router.delete("/{ip_range_id}")
+@router.delete("/{ip_range_id}",
+    summary="Delete IP range",
+    description="Remove an IP range from the database. Both manual and auto-update IP ranges can be deleted.",
+    responses={
+        200: {
+            "description": "IP range deleted successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "IP range 1.2.3.0/24 deleted successfully"
+                    }
+                }
+            }
+        },
+        401: {"description": "Authentication required"},
+        404: {"description": "IP range not found"}
+    }
+)
 async def delete_ip_range(ip_range_id: int, db: Session = Depends(get_db)):
     """Delete an IP range (allows deletion of both manual and auto-update entries)"""
     ip_range = db.query(IPRange).filter(IPRange.id == ip_range_id).first()

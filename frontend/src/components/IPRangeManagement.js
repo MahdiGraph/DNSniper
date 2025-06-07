@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { Plus, Search, Trash2, Network, RefreshCw } from 'lucide-react';
 import { showError, showDeleteConfirm } from '../utils/customAlert';
+import { useTooltipHandlers } from '../utils/tooltip';
 import Pagination from './Pagination';
 
 function IPRangeManagement() {
@@ -16,6 +17,8 @@ function IPRangeManagement() {
     total: 0,
     pages: 0
   });
+
+  const tooltipHandlers = useTooltipHandlers();
 
   const fetchIPRanges = useCallback(async (page = 1, perPage = pagination.per_page) => {
     try {
@@ -189,7 +192,13 @@ function IPRangeManagement() {
                 <tbody>
                   {ipRanges.map((ipRange) => (
                     <tr key={ipRange.id}>
-                      <td className="ip-range">{ipRange.ip_range}</td>
+                      <td 
+                        className={`ip-range ${ipRange.notes ? 'has-tooltip' : ''}`}
+                        data-tooltip={ipRange.notes || ''}
+                        {...(ipRange.notes ? tooltipHandlers : {})}
+                      >
+                        {ipRange.ip_range}
+                      </td>
                       <td>
                         <span className={`badge badge-ipv${ipRange.ip_version}`}>
                           IPv{ipRange.ip_version}

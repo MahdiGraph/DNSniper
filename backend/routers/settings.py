@@ -6,6 +6,7 @@ import os
 import logging
 import json
 import asyncio
+import signal
 
 from database import get_db
 from models import Setting
@@ -13,6 +14,7 @@ from services.firewall_service import FirewallService
 from services.firewall_log_monitor import firewall_log_monitor
 from services.dns_service import DNSService
 from services.live_events import live_events
+from services.scheduler_manager import scheduler_manager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -30,10 +32,43 @@ class BulkSettingsUpdate(BaseModel):
 def validate_setting_value(key: str, value):
     """Validate setting values according to constraints"""
     
+    # Type conversion and validation
+    def convert_to_number(val, setting_name):
+        """Convert value to number (int or float)"""
+        if isinstance(val, (int, float)):
+            return val
+        if isinstance(val, str):
+            val = val.strip()
+            # Try int first, then float
+            try:
+                if '.' in val:
+                    return float(val)
+                else:
+                    return int(val)
+            except ValueError:
+                raise ValueError(f"Value for {setting_name} must be a valid number")
+        raise ValueError(f"Value for {setting_name} must be a number")
+    
+    def convert_to_boolean(val, setting_name):
+        """Convert value to boolean"""
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            val = val.lower().strip()
+            if val in ('true', '1', 'yes', 'on'):
+                return True
+            elif val in ('false', '0', 'no', 'off'):
+                return False
+            else:
+                raise ValueError(f"Value for {setting_name} must be a boolean (true/false)")
+        if isinstance(val, (int, float)):
+            return bool(val)
+        raise ValueError(f"Value for {setting_name} must be a boolean")
+    
     # Numeric validation rules
     numeric_constraints = {
         'auto_update_interval': {'min': 300, 'max': 86400},
-        'rule_expiration': {'min': 3600, 'max': 604800},
+        'rule_expiration': {'min': 600, 'max': 604800},
         'max_ips_per_domain': {'min': 1, 'max': 50},
         'rate_limit_delay': {'min': 0.1, 'max': 10.0},
         'log_retention_days': {'min': 1, 'max': 365},
@@ -41,26 +76,30 @@ def validate_setting_value(key: str, value):
     }
     
     if key in numeric_constraints:
-        if not isinstance(value, (int, float)):
-            raise ValueError(f"Value for {key} must be a number")
-        
+        converted_value = convert_to_number(value, key)
         constraints = numeric_constraints[key]
-        if value < constraints['min'] or value > constraints['max']:
+        if converted_value < constraints['min'] or converted_value > constraints['max']:
             raise ValueError(
                 f"Value for {key} must be between {constraints['min']} and {constraints['max']}"
             )
+        return converted_value  # Return the converted value
     
     # DNS resolver validation
     if key in ['dns_resolver_primary', 'dns_resolver_secondary']:
         import re
+        if not isinstance(value, str):
+            value = str(value)
+        value = value.strip()
         ipv4_pattern = r'^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$'
-        if not isinstance(value, str) or not re.match(ipv4_pattern, value):
+        if not re.match(ipv4_pattern, value):
             raise ValueError(f"{key.replace('_', ' ').title()} must be a valid IPv4 address string")
+        return value
     
-    # Boolean validation
+    # Boolean validation with conversion
     boolean_settings = ['logging_enabled', 'automatic_domain_resolution', 'auto_update_enabled']
-    if key in boolean_settings and not isinstance(value, bool):
-        raise ValueError(f"Value for {key} must be a boolean")
+    if key in boolean_settings:
+        converted_value = convert_to_boolean(value, key)
+        return converted_value  # Return the converted value
     
     # Critical IPs validation
     if key == 'critical_ipv4_ips_ranges':
@@ -80,6 +119,7 @@ def validate_setting_value(key: str, value):
                     ipaddress.IPv4Network(item, strict=False)
                 except ValueError:
                     raise ValueError(f"Invalid IPv4 address or CIDR range in critical IPv4 list: {item}")
+        return value
     
     if key == 'critical_ipv6_ips_ranges':
         if not isinstance(value, list):
@@ -98,30 +138,38 @@ def validate_setting_value(key: str, value):
                     ipaddress.IPv6Network(item, strict=False)
                 except ValueError:
                     raise ValueError(f"Invalid IPv6 address or CIDR range in critical IPv6 list: {item}")
+        return value
     
     # SSL settings validation
     if key == 'force_https':
-        if not isinstance(value, bool):
-            raise ValueError(f"{key.replace('_', ' ').title()} must be a boolean")
+        converted_value = convert_to_boolean(value, key)
+        return converted_value
     
     if key in ['ssl_domain', 'ssl_certfile', 'ssl_keyfile']:
         if not isinstance(value, str):
-            raise ValueError(f"{key.replace('_', ' ').title()} must be a string")
+            value = str(value)
+        value = value.strip()
+        return value
     
     # SSL file validation
     if key == 'ssl_certfile' and value:
+        value = value.strip()
         if not os.path.isfile(value):
             raise ValueError(f"SSL certificate file does not exist: {value}")
         if not value.endswith(('.pem', '.crt', '.cert')):
             raise ValueError("SSL certificate file must be a .pem, .crt, or .cert file")
+        return value
     
     if key == 'ssl_keyfile' and value:
+        value = value.strip()
         if not os.path.isfile(value):
             raise ValueError(f"SSL private key file does not exist: {value}")
         if not value.endswith(('.pem', '.key')):
             raise ValueError("SSL private key file must be a .pem or .key file")
+        return value
     
-    return True
+    # Return the original value if no specific validation is needed
+    return value
 
 def validate_ssl_configuration(db: Session, new_settings: dict = None):
     """Validate SSL configuration when SSL is enabled."""
@@ -205,9 +253,9 @@ async def update_ssl_settings(
     for key in ssl_keys:
         if key in ssl_update and ssl_update[key] != current_settings.get(key):
             try:
-                validate_setting_value(key, ssl_update[key])
-                Setting.set_setting(db, key, ssl_update[key])
-                updated_settings[key] = ssl_update[key]
+                converted_value = validate_setting_value(key, ssl_update[key])
+                Setting.set_setting(db, key, converted_value)
+                updated_settings[key] = converted_value
                 changed = True
             except ValueError as e:
                 validation_errors[key] = str(e)
@@ -261,6 +309,7 @@ async def update_settings_bulk(
         updated_settings = {}
         validation_errors = {}
         logging_enabled_changed = False
+        scheduler_settings_changed = False
         
         # Only update non-SSL settings
         ssl_keys = {'force_https', 'ssl_domain', 'ssl_certfile', 'ssl_keyfile'}
@@ -268,14 +317,19 @@ async def update_settings_bulk(
             if key in ssl_keys:
                 continue
             try:
-                validate_setting_value(key, value)
-                Setting.set_setting(db, key, value)
-                updated_settings[key] = value
-                logger.info(f"Setting {key} updated to: {value}")
+                # Validate and convert the value
+                converted_value = validate_setting_value(key, value)
+                Setting.set_setting(db, key, converted_value)
+                updated_settings[key] = converted_value
+                logger.info(f"Setting {key} updated to: {converted_value}")
                 
                 # Track if logging_enabled was changed
                 if key == "logging_enabled":
                     logging_enabled_changed = True
+                
+                # Track if scheduler-related settings were changed
+                if key in ["auto_update_enabled", "auto_update_interval"]:
+                    scheduler_settings_changed = True
                     
             except ValueError as e:
                 validation_errors[key] = str(e)
@@ -289,6 +343,11 @@ async def update_settings_bulk(
         # Restart firewall log monitoring if logging_enabled was changed
         if logging_enabled_changed:
             firewall_log_monitor.restart_if_needed()
+        
+        # Notify scheduler if auto-update settings changed
+        if scheduler_settings_changed:
+            scheduler_manager.notify_settings_changed()
+            logger.info("Notified scheduler of settings changes")
             
         # Broadcast live event for bulk settings update
         if updated_settings:
@@ -296,12 +355,14 @@ async def update_settings_bulk(
                 "category": "bulk",
                 "updated_settings": updated_settings,
                 "count": len(updated_settings),
-                "logging_restarted": logging_enabled_changed
+                "logging_restarted": logging_enabled_changed,
+                "scheduler_notified": scheduler_settings_changed
             })
             
         return {
             "message": f"Successfully updated {len(updated_settings)} settings",
-            "updated_settings": updated_settings
+            "updated_settings": updated_settings,
+            "scheduler_notified": scheduler_settings_changed
         }
     except HTTPException:
         raise
@@ -444,7 +505,7 @@ async def update_web_server_config(
             # Schedule graceful shutdown after returning response
             async def graceful_shutdown_delayed():
                 import asyncio
-                await asyncio.sleep(2)
+                await asyncio.sleep(0.5)
                 try:
                     # Log the shutdown
                     Log.create_rule_log(
@@ -494,22 +555,25 @@ async def update_setting(
 ):
     """Update a specific setting"""
     try:
-        # Validate the setting value
-        validate_setting_value(key, setting_update.value)
+        # Validate and convert the setting value
+        converted_value = validate_setting_value(key, setting_update.value)
         
         # Check if this is an SSL setting
         ssl_keys = {'force_https', 'ssl_domain', 'ssl_certfile', 'ssl_keyfile'}
         is_ssl_setting = key in ssl_keys
         
+        # Check if this is a scheduler-related setting
+        is_scheduler_setting = key in ["auto_update_enabled", "auto_update_interval"]
+        
         # If updating SSL setting, validate complete SSL configuration
         if is_ssl_setting:
-            validate_ssl_configuration(db, {key: setting_update.value})
+            validate_ssl_configuration(db, {key: converted_value})
         
-        # Update the setting
-        Setting.set_setting(db, key, setting_update.value)
+        # Update the setting with the converted value
+        Setting.set_setting(db, key, converted_value)
         
         # Log the action
-        logger.info(f"Setting {key} updated to: {setting_update.value}")
+        logger.info(f"Setting {key} updated to: {converted_value}")
         
         # Restart firewall log monitoring if logging_enabled was changed
         logging_restarted = False
@@ -517,9 +581,17 @@ async def update_setting(
             firewall_log_monitor.restart_if_needed()
             logging_restarted = True
         
+        # Notify scheduler if auto-update settings changed
+        scheduler_notified = False
+        if is_scheduler_setting:
+            scheduler_manager.notify_settings_changed()
+            scheduler_notified = True
+            logger.info(f"Notified scheduler of {key} change to: {converted_value}")
+        
         response_data = {
             "message": f"Setting {key} updated successfully", 
-            "value": setting_update.value
+            "value": converted_value,
+            "scheduler_notified": scheduler_notified
         }
         
         # If SSL setting changed, trigger server restart
@@ -536,10 +608,12 @@ async def update_setting(
         await live_events.broadcast_settings_event("updated", {
             "category": "individual",
             "key": key,
-            "value": setting_update.value,
+            "value": converted_value,
             "is_ssl_setting": is_ssl_setting,
+            "is_scheduler_setting": is_scheduler_setting,
             "ssl_restart_required": ssl_restart_required,
-            "logging_restarted": logging_restarted
+            "logging_restarted": logging_restarted,
+            "scheduler_notified": scheduler_notified
         })
         
         return response_data
@@ -785,7 +859,7 @@ async def restart_server_with_ssl(db: Session):
         import logging
         logger.info("Web server is being reset due to SSL configuration change. Please ensure a process manager restarts the service.")
         print("[DNSniper] Web server is being reset due to SSL configuration change. Please ensure a process manager restarts the service.")
-        await asyncio.sleep(2)
+        await asyncio.sleep(0.5)
         os._exit(0)
     except Exception as e:
         logger.error(f"Failed to exit for SSL restart: {e}")

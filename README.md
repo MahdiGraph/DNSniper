@@ -334,6 +334,19 @@ We welcome contributions! Please see our contributing guidelines:
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+## 💝 Support the Project
+
+If you find DNSniper helpful, consider supporting its development:
+
+- ⭐ **Star this repository** to show your support
+- 🐛 **Report bugs** and suggest improvements
+- 📖 **Contribute** to the documentation
+- 💰 **Donate** to help maintain and improve DNSniper
+
+**Donation Options:**
+- Email: immahdigraph@gmail.com (for donation methods)
+- Your support helps keep this project free and open source!
+
 ## 🆘 Support
 
 - **Documentation**: Check the `/docs` endpoint when running

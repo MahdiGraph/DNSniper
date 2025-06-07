@@ -1,1357 +1,1466 @@
 {
-	"info": {
-		"_postman_id": "dnsniper-api-tests",
-		"name": "DNSniper API Tests",
-		"description": "Comprehensive tests for all DNSniper API endpoints",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-	},
-	"auth": {
-		"type": "bearer",
-		"bearer": [
-			{
-				"key": "token",
-				"value": "{{api_token}}",
-				"type": "string"
-			}
-		]
-	},
-	"event": [
-		{
-			"listen": "prerequest",
-			"script": {
-				"exec": [
-					"// Set base URL if not already set",
-					"if (!pm.environment.get('base_url')) {",
-					"    pm.environment.set('base_url', 'http://localhost:8000');",
-					"}",
-					"",
-					"// Set API token if not already set",
-					"if (!pm.environment.get('api_token')) {",
-					"    pm.environment.set('api_token', 'dnsniper_-zX1Y51b0nzWKrq4ZvW1k1hi1Eqmd3d0nM8k9bDTrrk');",
-					"}"
-				]
-			}
-		}
-	],
-	"variable": [
-		{
-			"key": "base_url",
-			"value": "http://localhost:8000",
-			"type": "string"
-		},
-		{
-			"key": "api_token",
-			"value": "dnsniper_-zX1Y51b0nzWKrq4ZvW1k1hi1Eqmd3d0nM8k9bDTrrk",
-			"type": "string"
-		}
-	],
-	"item": [
-		{
-			"name": "Health Check",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Health check returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Health check has correct structure', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('status');",
-							"    pm.expect(response).to.have.property('timestamp');",
-							"    pm.expect(response).to.have.property('database');",
-							"    pm.expect(response).to.have.property('stats');",
-							"    pm.expect(response.status).to.eql('healthy');",
-							"    pm.expect(response.database).to.eql('connected');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"auth": {
-					"type": "noauth"
-				},
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/health",
-					"host": ["{{base_url}}"],
-					"path": ["api", "health"]
-				}
-			}
-		},
-		{
-			"name": "Dashboard Stats",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Dashboard returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Dashboard has correct structure', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('totals');",
-							"    pm.expect(response).to.have.property('lists');",
-							"    pm.expect(response).to.have.property('sources');",
-							"    pm.expect(response).to.have.property('auto_update');",
-							"    pm.expect(response).to.have.property('firewall');",
-							"    pm.expect(response).to.have.property('activity');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/dashboard",
-					"host": ["{{base_url}}"],
-					"path": ["api", "dashboard"]
-				}
-			}
-		},
-		{
-			"name": "Get All Settings",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Settings returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Settings has required properties', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('auto_update_enabled');",
-							"    pm.expect(response).to.have.property('auto_update_interval');",
-							"    pm.expect(response).to.have.property('rule_expiration');",
-							"    pm.expect(response).to.have.property('max_ips_per_domain');",
-							"    pm.expect(response).to.have.property('dns_resolver_primary');",
-							"    pm.expect(response).to.have.property('dns_resolver_secondary');",
-							"    pm.expect(response).to.have.property('automatic_domain_resolution');",
-							"    pm.expect(response).to.have.property('critical_ipv4_ips_ranges');",
-							"    pm.expect(response).to.have.property('critical_ipv6_ips_ranges');",
-							"});",
-							"",
-							"pm.test('Critical IP settings are arrays', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response.critical_ipv4_ips_ranges).to.be.an('array');",
-							"    pm.expect(response.critical_ipv6_ips_ranges).to.be.an('array');",
-							"    // Should have default values",
-							"    pm.expect(response.critical_ipv4_ips_ranges.length).to.be.greaterThan(0);",
-							"    pm.expect(response.critical_ipv6_ips_ranges.length).to.be.greaterThan(0);",
-							"});",
-							"",
-							"pm.test('DNS resolver settings are valid', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response.dns_resolver_primary).to.be.a('string');",
-							"    pm.expect(response.dns_resolver_secondary).to.be.a('string');",
-							"    // Should be valid IP format (basic check)",
-							"    pm.expect(response.dns_resolver_primary).to.match(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/);",
-							"    pm.expect(response.dns_resolver_secondary).to.match(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/);",
-							"});",
-							"",
-							"pm.test('Automatic domain resolution setting is boolean', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response.automatic_domain_resolution).to.be.a('boolean');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/settings/",
-					"host": ["{{base_url}}"],
-					"path": ["api", "settings", ""]
-				}
-			}
-		},
-		{
-			"name": "Test Critical IP Settings",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get critical IP settings returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('IPv4 critical settings exist and are valid', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('critical_ipv4_ips_ranges');",
-							"    pm.expect(response.critical_ipv4_ips_ranges).to.be.an('array');",
-							"    pm.expect(response.critical_ipv4_ips_ranges.length).to.be.greaterThan(0);",
-							"    // Should contain localhost",
-							"    pm.expect(response.critical_ipv4_ips_ranges).to.include('127.0.0.1');",
-							"    // Should contain private networks",
-							"    pm.expect(response.critical_ipv4_ips_ranges).to.include('192.168.0.0/16');",
-							"});",
-							"",
-							"pm.test('IPv6 critical settings exist and are valid', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('critical_ipv6_ips_ranges');",
-							"    pm.expect(response.critical_ipv6_ips_ranges).to.be.an('array');",
-							"    pm.expect(response.critical_ipv6_ips_ranges.length).to.be.greaterThan(0);",
-							"    // Should contain IPv6 localhost",
-							"    pm.expect(response.critical_ipv6_ips_ranges).to.include('::1');",
-							"    // Should contain IPv6 local networks",
-							"    pm.expect(response.critical_ipv6_ips_ranges).to.include('fc00::/7');",
-							"});",
-							"",
-							"pm.test('Auto-update protection settings are configured', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('automatic_domain_resolution');",
-							"    pm.expect(response.automatic_domain_resolution).to.be.a('boolean');",
-							"    // Should have DNS resolvers configured for protection",
-							"    pm.expect(response).to.have.property('dns_resolver_primary');",
-							"    pm.expect(response).to.have.property('dns_resolver_secondary');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/settings/",
-					"host": ["{{base_url}}"],
-					"path": ["api", "settings", ""]
-				}
-			}
-		},
-		{
-			"name": "Get Firewall Status",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Firewall status returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Firewall status has structure', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.be.an('object');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/settings/firewall/status",
-					"host": ["{{base_url}}"],
-					"path": ["api", "settings", "firewall", "status"]
-				}
-			}
-		},
-		{
-			"name": "Get SSL Status",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('SSL status returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('SSL status has structure', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('enable_ssl');",
-							"    pm.expect(response).to.have.property('force_https');",
-							"    pm.expect(response).to.have.property('status');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/settings/ssl/status",
-					"host": ["{{base_url}}"],
-					"path": ["api", "settings", "ssl", "status"]
-				}
-			}
-		},
-		{
-			"name": "Get All Domains",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get domains returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Response is an array', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.be.an('array');",
-							"});",
-							"",
-							"pm.test('Domain objects have correct structure', function () {",
-							"    const response = pm.response.json();",
-							"    if (response.length > 0) {",
-							"        const domain = response[0];",
-							"        pm.expect(domain).to.have.property('id');",
-							"        pm.expect(domain).to.have.property('domain_name');",
-							"        pm.expect(domain).to.have.property('list_type');",
-							"        pm.expect(domain).to.have.property('source_type');",
-							"        pm.expect(domain).to.have.property('is_cdn');",
-							"        pm.expect(domain).to.have.property('ip_count');",
-							"    }",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/domains/?limit=10",
-					"host": ["{{base_url}}"],
-					"path": ["api", "domains", ""],
-					"query": [
-						{
-							"key": "limit",
-							"value": "10"
-						}
-					]
-				}
-			}
-		},
-		{
-			"name": "Create Test Domain",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Create domain returns 200 or 201', function () {",
-							"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
-							"});",
-							"",
-							"pm.test('Created domain has correct properties', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('id');",
-							"    pm.expect(response).to.have.property('domain_name');",
-							"    pm.expect(response.domain_name).to.eql('test-malware.example.com');",
-							"    pm.expect(response.list_type).to.eql('blacklist');",
-							"    pm.expect(response.source_type).to.eql('manual');",
-							"    ",
-							"    // Store domain ID for cleanup",
-							"    pm.environment.set('test_domain_id', response.id);",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"domain_name\": \"test-malware.example.com\",\n    \"list_type\": \"blacklist\",\n    \"notes\": \"Test domain for API testing\"\n}"
-				},
-				"url": {
-					"raw": "{{base_url}}/api/domains/",
-					"host": ["{{base_url}}"],
-					"path": ["api", "domains", ""]
-				}
-			}
-		},
-		{
-			"name": "Get Specific Domain",
-			"event": [
-				{
-					"listen": "prerequest",
-					"script": {
-						"exec": [
-							"// Skip if no test domain ID",
-							"if (!pm.environment.get('test_domain_id')) {",
-							"    pm.execution.skipRequest();",
-							"}"
-						]
-					}
-				},
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get specific domain returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Domain has correct structure', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('id');",
-							"    pm.expect(response).to.have.property('domain_name');",
-							"    pm.expect(response.domain_name).to.eql('test-malware.example.com');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/domains/{{test_domain_id}}",
-					"host": ["{{base_url}}"],
-					"path": ["api", "domains", "{{test_domain_id}}"]
-				}
-			}
-		},
-		{
-			"name": "Update Test Domain",
-			"event": [
-				{
-					"listen": "prerequest",
-					"script": {
-						"exec": [
-							"// Skip if no test domain ID",
-							"if (!pm.environment.get('test_domain_id')) {",
-							"    pm.execution.skipRequest();",
-							"}"
-						]
-					}
-				},
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Update domain returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Domain updated correctly', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response.notes).to.eql('Updated test domain for API testing');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "PUT",
-				"header": [
-					{
-						"key": "Content-Type",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"notes\": \"Updated test domain for API testing\"\n}"
-				},
-				"url": {
-					"raw": "{{base_url}}/api/domains/{{test_domain_id}}",
-					"host": ["{{base_url}}"],
-					"path": ["api", "domains", "{{test_domain_id}}"]
-				}
-			}
-		},
-		{
-			"name": "Get Domain IPs",
-			"event": [
-				{
-					"listen": "prerequest",
-					"script": {
-						"exec": [
-							"// Skip if no test domain ID",
-							"if (!pm.environment.get('test_domain_id')) {",
-							"    pm.execution.skipRequest();",
-							"}"
-						]
-					}
-				},
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get domain IPs returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Response is an array', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.be.an('array');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/domains/{{test_domain_id}}/ips",
-					"host": ["{{base_url}}"],
-					"path": ["api", "domains", "{{test_domain_id}}", "ips"]
-				}
-			}
-		},
-		{
-			"name": "Get All IPs",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get IPs returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Response is an array', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.be.an('array');",
-							"});",
-							"",
-							"pm.test('IP objects have correct structure', function () {",
-							"    const response = pm.response.json();",
-							"    if (response.length > 0) {",
-							"        const ip = response[0];",
-							"        pm.expect(ip).to.have.property('id');",
-							"        pm.expect(ip).to.have.property('ip_address');",
-							"        pm.expect(ip).to.have.property('ip_version');",
-							"        pm.expect(ip).to.have.property('list_type');",
-							"        pm.expect(ip).to.have.property('source_type');",
-							"    }",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/ips/?limit=10",
-					"host": ["{{base_url}}"],
-					"path": ["api", "ips", ""],
-					"query": [
-						{
-							"key": "limit",
-							"value": "10"
-						}
-					]
-				}
-			}
-		},
-		{
-			"name": "Create Test IP",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Create IP returns 200 or 201', function () {",
-							"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
-							"});",
-							"",
-							"pm.test('Created IP has correct properties', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('id');",
-							"    pm.expect(response).to.have.property('ip_address');",
-							"    pm.expect(response.ip_address).to.eql('192.0.2.100');",
-							"    pm.expect(response.list_type).to.eql('blacklist');",
-							"    pm.expect(response.source_type).to.eql('manual');",
-							"    pm.expect(response.ip_version).to.eql(4);",
-							"    ",
-							"    // Store IP ID for cleanup",
-							"    pm.environment.set('test_ip_id', response.id);",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"ip_address\": \"192.0.2.100\",\n    \"list_type\": \"blacklist\",\n    \"notes\": \"Test IP for API testing\"\n}"
-				},
-				"url": {
-					"raw": "{{base_url}}/api/ips/",
-					"host": ["{{base_url}}"],
-					"path": ["api", "ips", ""]
-				}
-			}
-		},
-		{
-			"name": "Get All IP Ranges",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get IP ranges returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Response is an array', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.be.an('array');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/ip-ranges/?limit=10",
-					"host": ["{{base_url}}"],
-					"path": ["api", "ip-ranges", ""],
-					"query": [
-						{
-							"key": "limit",
-							"value": "10"
-						}
-					]
-				}
-			}
-		},
-		{
-			"name": "Create Test IP Range",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Create IP range returns 200 or 201', function () {",
-							"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
-							"});",
-							"",
-							"pm.test('Created IP range has correct properties', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('id');",
-							"    pm.expect(response).to.have.property('ip_range');",
-							"    pm.expect(response.ip_range).to.eql('8.8.8.0/28');",
-							"    pm.expect(response.list_type).to.eql('blacklist');",
-							"    pm.expect(response.source_type).to.eql('manual');",
-							"    ",
-							"    // Store IP range ID for cleanup",
-							"    pm.environment.set('test_ip_range_id', response.id);",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"ip_range\": \"8.8.8.0/28\",\n    \"list_type\": \"blacklist\",\n    \"notes\": \"Test IP range for API testing\"\n}"
-				},
-				"url": {
-					"raw": "{{base_url}}/api/ip-ranges/",
-					"host": ["{{base_url}}"],
-					"path": ["api", "ip-ranges", ""]
-				}
-			}
-		},
-		{
-			"name": "Get Auto-Update Sources",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get auto-update sources returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Response is an array', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.be.an('array');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/auto-update-sources/",
-					"host": ["{{base_url}}"],
-					"path": ["api", "auto-update-sources", ""]
-				}
-			}
-		},
-		{
-			"name": "Get Auto-Update Status",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get auto-update status returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Status has correct structure', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('enabled');",
-							"    pm.expect(response).to.have.property('is_running');",
-							"    pm.expect(response).to.have.property('active_sources');",
-							"    pm.expect(response).to.have.property('total_sources');",
-							"    pm.expect(response).to.have.property('interval');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/auto-update-sources/status",
-					"host": ["{{base_url}}"],
-					"path": ["api", "auto-update-sources", "status"]
-				}
-			}
-		},
-		{
-			"name": "Create Test Auto-Update Source",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Create auto-update source returns 200 or 201', function () {",
-							"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
-							"});",
-							"",
-							"pm.test('Created source has correct properties', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('id');",
-							"    pm.expect(response).to.have.property('name');",
-							"    pm.expect(response.name).to.eql('Test Source');",
-							"    pm.expect(response.url).to.eql('https://httpbin.org/status/200');",
-							"    pm.expect(response.is_active).to.eql(false);",
-							"    pm.expect(response.list_type).to.eql('blacklist');",
-							"    ",
-							"    // Store source ID for cleanup",
-							"    pm.environment.set('test_source_id', response.id);",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"name\": \"Test Source\",\n    \"url\": \"https://httpbin.org/status/200\",\n    \"is_active\": false,\n    \"list_type\": \"blacklist\"\n}"
-				},
-				"url": {
-					"raw": "{{base_url}}/api/auto-update-sources/",
-					"host": ["{{base_url}}"],
-					"path": ["api", "auto-update-sources", ""]
-				}
-			}
-		},
-		{
-			"name": "Test Auto-Update Source",
-			"event": [
-				{
-					"listen": "prerequest",
-					"script": {
-						"exec": [
-							"// Skip if no test source ID",
-							"if (!pm.environment.get('test_source_id')) {",
-							"    pm.execution.skipRequest();",
-							"}"
-						]
-					}
-				},
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Test source returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Test result has correct structure', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('source');",
-							"    pm.expect(response).to.have.property('test_result');",
-							"    pm.expect(response.test_result).to.have.property('status');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/auto-update-sources/test/{{test_source_id}}",
-					"host": ["{{base_url}}"],
-					"path": ["api", "auto-update-sources", "test", "{{test_source_id}}"]
-				}
-			}
-		},
-		{
-			"name": "Get Auto-Update Stats",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"// Test for both scenarios: fixed API (200) and unfixed API (500)",
-							"pm.test('Auto-update stats endpoint responds correctly', function () {",
-							"    // Accept either 200 (fixed) or 500 (unfixed) until server restart",
-							"    pm.expect(pm.response.code).to.be.oneOf([200, 500]);",
-							"});",
-							"",
-							"if (pm.response.code === 200) {",
-							"    pm.test('Stats have correct structure (fixed API)', function () {",
-							"        const response = pm.response.json();",
-							"        pm.expect(response).to.have.property('total_sources');",
-							"        pm.expect(response).to.have.property('active_sources');",
-							"        pm.expect(response).to.have.property('inactive_sources');",
-							"    });",
-							"} else if (pm.response.code === 500) {",
-							"    pm.test('Known API bug present (needs server restart)', function () {",
-							"        const response = pm.response.json();",
-							"        pm.expect(response).to.have.property('detail');",
-							"        pm.expect(response.detail).to.include('Session');",
-							"    });",
-							"}"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/auto-update-sources/stats/summary",
-					"host": ["{{base_url}}"],
-					"path": ["api", "auto-update-sources", "stats", "summary"]
-				}
-			}
-		},
-		{
-			"name": "Get Logs",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get logs returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Response is an array', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.be.an('array');",
-							"});",
-							"",
-							"pm.test('Log objects have correct structure', function () {",
-							"    const response = pm.response.json();",
-							"    if (response.length > 0) {",
-							"        const log = response[0];",
-							"        pm.expect(log).to.have.property('id');",
-							"        pm.expect(log).to.have.property('message');",
-							"        pm.expect(log).to.have.property('created_at');",
-							"    }",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/logs/?limit=10",
-					"host": ["{{base_url}}"],
-					"path": ["api", "logs", ""],
-					"query": [
-						{
-							"key": "limit",
-							"value": "10"
-						}
-					]
-				}
-			}
-		},
-		{
-			"name": "Get Log Statistics",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get log stats returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Stats have correct structure', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('total_logs');",
-							"    pm.expect(response).to.have.property('logs_by_action');",
-							"    pm.expect(response).to.have.property('logs_by_rule_type');",
-							"    pm.expect(response).to.have.property('recent_logs_24h');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/logs/stats",
-					"host": ["{{base_url}}"],
-					"path": ["api", "logs", "stats"]
-				}
-			}
-		},
-		{
-			"name": "Get Recent Logs",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Get recent logs returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Response is an array', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.be.an('array');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/logs/recent?limit=5",
-					"host": ["{{base_url}}"],
-					"path": ["api", "logs", "recent"],
-					"query": [
-						{
-							"key": "limit",
-							"value": "5"
-						}
-					]
-				}
-			}
-		},
-		{
-			"name": "Search Logs",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Search logs returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Response is an array', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.be.an('array');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/logs/search?query_text=test&limit=5",
-					"host": ["{{base_url}}"],
-					"path": ["api", "logs", "search"],
-					"query": [
-						{
-							"key": "query_text",
-							"value": "test"
-						},
-						{
-							"key": "limit",
-							"value": "5"
-						}
-					]
-				}
-			}
-		},
-		{
-			"name": "Filter Domains by List Type",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Filter domains returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('All returned domains are blacklist', function () {",
-							"    const response = pm.response.json();",
-							"    response.forEach(domain => {",
-							"        pm.expect(domain.list_type).to.eql('blacklist');",
-							"    });",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/domains/?list_type=blacklist&limit=5",
-					"host": ["{{base_url}}"],
-					"path": ["api", "domains", ""],
-					"query": [
-						{
-							"key": "list_type",
-							"value": "blacklist"
-						},
-						{
-							"key": "limit",
-							"value": "5"
-						}
-					]
-				}
-			}
-		},
-		{
-			"name": "Filter IPs by Source Type",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Filter IPs returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('All returned IPs are manual', function () {",
-							"    const response = pm.response.json();",
-							"    response.forEach(ip => {",
-							"        pm.expect(ip.source_type).to.eql('manual');",
-							"    });",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "GET",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/ips/?source_type=manual&limit=5",
-					"host": ["{{base_url}}"],
-					"path": ["api", "ips", ""],
-					"query": [
-						{
-							"key": "source_type",
-							"value": "manual"
-						},
-						{
-							"key": "limit",
-							"value": "5"
-						}
-					]
-				}
-			}
-		},
-		{
-			"name": "Test Invalid Domain Creation",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Invalid domain returns 400', function () {",
-							"    pm.response.to.have.status(400);",
-							"});",
-							"",
-							"pm.test('Error message is present', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('detail');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"domain_name\": \"\",\n    \"list_type\": \"invalid_type\"\n}"
-				},
-				"url": {
-					"raw": "{{base_url}}/api/domains/",
-					"host": ["{{base_url}}"],
-					"path": ["api", "domains", ""]
-				}
-			}
-		},
-		{
-			"name": "Test Invalid IP Creation",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Invalid IP returns 400', function () {",
-							"    pm.response.to.have.status(400);",
-							"});",
-							"",
-							"pm.test('Error message is present', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('detail');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "POST",
-				"header": [
-					{
-						"key": "Content-Type",
-						"value": "application/json"
-					}
-				],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"ip_address\": \"invalid.ip.address\",\n    \"list_type\": \"blacklist\"\n}"
-				},
-				"url": {
-					"raw": "{{base_url}}/api/ips/",
-					"host": ["{{base_url}}"],
-					"path": ["api", "ips", ""]
-				}
-			}
-		},
-		{
-			"name": "Cleanup - Delete Test Domain",
-			"event": [
-				{
-					"listen": "prerequest",
-					"script": {
-						"exec": [
-							"// Skip if no test domain ID",
-							"if (!pm.environment.get('test_domain_id')) {",
-							"    pm.execution.skipRequest();",
-							"}"
-						]
-					}
-				},
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Delete domain returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Success message is present', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('message');",
-							"    pm.expect(response.message).to.include('deleted successfully');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "DELETE",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/domains/{{test_domain_id}}",
-					"host": ["{{base_url}}"],
-					"path": ["api", "domains", "{{test_domain_id}}"]
-				}
-			}
-		},
-		{
-			"name": "Cleanup - Delete Test IP",
-			"event": [
-				{
-					"listen": "prerequest",
-					"script": {
-						"exec": [
-							"// Skip if no test IP ID",
-							"if (!pm.environment.get('test_ip_id')) {",
-							"    pm.execution.skipRequest();",
-							"}"
-						]
-					}
-				},
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Delete IP returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Success message is present', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('message');",
-							"    pm.expect(response.message).to.include('deleted successfully');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "DELETE",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/ips/{{test_ip_id}}",
-					"host": ["{{base_url}}"],
-					"path": ["api", "ips", "{{test_ip_id}}"]
-				}
-			}
-		},
-		{
-			"name": "Cleanup - Delete Test IP Range",
-			"event": [
-				{
-					"listen": "prerequest",
-					"script": {
-						"exec": [
-							"// Skip if no test IP range ID",
-							"if (!pm.environment.get('test_ip_range_id')) {",
-							"    pm.execution.skipRequest();",
-							"}"
-						]
-					}
-				},
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Delete IP range returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Success message is present', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('message');",
-							"    pm.expect(response.message).to.include('deleted successfully');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "DELETE",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/ip-ranges/{{test_ip_range_id}}",
-					"host": ["{{base_url}}"],
-					"path": ["api", "ip-ranges", "{{test_ip_range_id}}"]
-				}
-			}
-		},
-		{
-			"name": "Cleanup - Delete Test Auto-Update Source",
-			"event": [
-				{
-					"listen": "prerequest",
-					"script": {
-						"exec": [
-							"// Skip if no test source ID",
-							"if (!pm.environment.get('test_source_id')) {",
-							"    pm.execution.skipRequest();",
-							"}"
-						]
-					}
-				},
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Delete source returns 200', function () {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							"",
-							"pm.test('Success message is present', function () {",
-							"    const response = pm.response.json();",
-							"    pm.expect(response).to.have.property('message');",
-							"    pm.expect(response.message).to.include('deleted successfully');",
-							"});"
-						]
-					}
-				}
-			],
-			"request": {
-				"method": "DELETE",
-				"header": [],
-				"url": {
-					"raw": "{{base_url}}/api/auto-update-sources/{{test_source_id}}",
-					"host": ["{{base_url}}"],
-					"path": ["api", "auto-update-sources", "{{test_source_id}}"]
-				}
-			}
-		}
-	]
-} 
+  "info": {
+    "_postman_id": "dnsniper-api-tests-v2",
+    "name": "DNSniper API Tests v2.0",
+    "description": "Comprehensive tests for DNSniper API - Updated for latest version with authentication, live events, and enhanced features",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{api_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "exec": [
+          "// Set base URL if not already set",
+          "if (!pm.environment.get('base_url')) {",
+          "    pm.environment.set('base_url', 'http://localhost:8585');",
+          "}",
+          "",
+          "// Set API token if not already set",
+          "if (!pm.environment.get('api_token')) {",
+          "    pm.environment.set('api_token', 'dnsniper_LnrnBmTRF2WFWlNx3L-07yYW7HKU9DwR_CIFFkFBbjA');",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8585",
+      "type": "string"
+    },
+    {
+      "key": "api_token",
+      "value": "dnsniper_LnrnBmTRF2WFWlNx3L-07yYW7HKU9DwR_CIFFkFBbjA",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "\ud83d\udd10 Authentication",
+      "item": [
+        {
+          "name": "Login Test",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"changeme\"\n}"
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Login returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Login response has token', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('token');",
+                  "    pm.expect(response).to.have.property('message');",
+                  "    pm.expect(response.message).to.eql('Login successful');",
+                  "    // Store session token for other tests",
+                  "    pm.environment.set('session_token', response.token);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get User Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{session_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/auth/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auth",
+                "me"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Skip if no session token from login",
+                  "if (!pm.environment.get('session_token')) {",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Get profile returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Profile has user data', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('id');",
+                  "    pm.expect(response).to.have.property('username');",
+                  "    pm.expect(response).to.have.property('is_default_password');",
+                  "    pm.expect(response.username).to.eql('admin');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "\ud83c\udfe5 Health & System",
+      "item": [
+        {
+          "name": "Health Check (Now Requires Auth)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "health"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Health check returns 200 with auth', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Health check has correct structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('status');",
+                  "    pm.expect(response).to.have.property('timestamp');",
+                  "    pm.expect(response).to.have.property('database');",
+                  "    pm.expect(response).to.have.property('stats');",
+                  "    pm.expect(response.status).to.eql('healthy');",
+                  "    pm.expect(response.database).to.eql('connected');",
+                  "});",
+                  "",
+                  "pm.test('Stats include current counts', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.stats).to.have.property('domains');",
+                  "    pm.expect(response.stats).to.have.property('ips');",
+                  "    pm.expect(response.stats).to.have.property('ip_ranges');",
+                  "    pm.expect(response.stats.domains).to.be.a('number');",
+                  "    pm.expect(response.stats.ips).to.be.a('number');",
+                  "    pm.expect(response.stats.ip_ranges).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Dashboard Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/dashboard",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "dashboard"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Dashboard returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Dashboard has complete structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('totals');",
+                  "    pm.expect(response).to.have.property('lists');",
+                  "    pm.expect(response).to.have.property('sources');",
+                  "    pm.expect(response).to.have.property('auto_update');",
+                  "    pm.expect(response).to.have.property('firewall');",
+                  "    pm.expect(response).to.have.property('activity');",
+                  "});",
+                  "",
+                  "pm.test('Auto-update status is included', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.auto_update).to.have.property('enabled');",
+                  "    pm.expect(response.auto_update).to.have.property('is_running');",
+                  "    pm.expect(response.auto_update).to.have.property('total_sources');",
+                  "    pm.expect(response.auto_update).to.have.property('active_sources');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "\u2699\ufe0f Settings Management",
+      "item": [
+        {
+          "name": "Get All Settings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/settings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "settings",
+                ""
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Settings returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Settings has all required properties', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('auto_update_enabled');",
+                  "    pm.expect(response).to.have.property('auto_update_interval');",
+                  "    pm.expect(response).to.have.property('rule_expiration');",
+                  "    pm.expect(response).to.have.property('max_ips_per_domain');",
+                  "    pm.expect(response).to.have.property('dns_resolver_primary');",
+                  "    pm.expect(response).to.have.property('dns_resolver_secondary');",
+                  "    pm.expect(response).to.have.property('automatic_domain_resolution');",
+                  "    pm.expect(response).to.have.property('critical_ipv4_ips_ranges');",
+                  "    pm.expect(response).to.have.property('critical_ipv6_ips_ranges');",
+                  "});",
+                  "",
+                  "pm.test('Rule expiration supports 10 minute minimum', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.rule_expiration).to.be.a('number');",
+                  "    pm.expect(response.rule_expiration).to.be.at.least(600); // 10 minutes minimum",
+                  "});",
+                  "",
+                  "pm.test('Max IPs per domain is 10 by default', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.max_ips_per_domain).to.be.a('number');",
+                  "    pm.expect(response.max_ips_per_domain).to.eql(10);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Individual Setting",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/settings/rule_expiration",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "settings",
+                "rule_expiration"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"value\": 1800\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Setting update returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Setting updated successfully', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('message');",
+                  "    pm.expect(response).to.have.property('value');",
+                  "    pm.expect(response.value).to.eql(1800);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Firewall Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/settings/firewall/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "settings",
+                "firewall",
+                "status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Firewall status returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Firewall status has structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.be.an('object');",
+                  "    // Should have some status information",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get SSL Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/settings/ssl/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "settings",
+                "ssl",
+                "status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('SSL status returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('SSL status has structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('enable_ssl');",
+                  "    pm.expect(response).to.have.property('force_https');",
+                  "    pm.expect(response).to.have.property('status');",
+                  "    pm.expect(response).to.have.property('configuration_complete');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "\ud83c\udf10 Domain Management",
+      "item": [
+        {
+          "name": "Get All Domains (Paginated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/domains/?page=1&per_page=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "domains",
+                "?page=1&per_page=10"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Get domains returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has pagination structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('domains');",
+                  "    pm.expect(response).to.have.property('page');",
+                  "    pm.expect(response).to.have.property('per_page');",
+                  "    pm.expect(response).to.have.property('total');",
+                  "    pm.expect(response).to.have.property('pages');",
+                  "    pm.expect(response.domains).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('Domain objects have correct structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    if (response.domains.length > 0) {",
+                  "        const domain = response.domains[0];",
+                  "        pm.expect(domain).to.have.property('id');",
+                  "        pm.expect(domain).to.have.property('domain_name');",
+                  "        pm.expect(domain).to.have.property('list_type');",
+                  "        pm.expect(domain).to.have.property('source_type');",
+                  "        pm.expect(domain).to.have.property('is_cdn');",
+                  "        pm.expect(domain).to.have.property('ip_count');",
+                  "        pm.expect(domain).to.have.property('notes');",
+                  "        pm.expect(domain).to.have.property('expires_in');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Test Domain",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/domains/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "domains",
+                ""
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"domain_name\": \"test-malware.example.com\",\n  \"list_type\": \"blacklist\",\n  \"notes\": \"Test domain for API testing - automated\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create domain returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Created domain has correct properties', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('id');",
+                  "    pm.expect(response).to.have.property('domain_name');",
+                  "    pm.expect(response.domain_name).to.eql('test-malware.example.com');",
+                  "    pm.expect(response.list_type).to.eql('blacklist');",
+                  "    pm.expect(response.source_type).to.eql('manual');",
+                  "    ",
+                  "    // Store domain ID for other tests",
+                  "    pm.environment.set('test_domain_id', response.id);",
+                  "});",
+                  "",
+                  "pm.test('Domain starts with zero IPs', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.ip_count).to.eql(0);",
+                  "    pm.expect(response.is_cdn).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Test Domain",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/domains/{{test_domain_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "domains",
+                "{{test_domain_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Updated test domain - API testing\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.environment.get('test_domain_id')) {",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Update domain returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Domain updated correctly', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.notes).to.eql('Updated test domain - API testing');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Specific Domain",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/domains/{{test_domain_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "domains",
+                "{{test_domain_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.environment.get('test_domain_id')) {",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Get specific domain returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Domain has correct structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('id');",
+                  "    pm.expect(response).to.have.property('domain_name');",
+                  "    pm.expect(response.domain_name).to.eql('test-malware.example.com');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Test Domain",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/domains/{{test_domain_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "domains",
+                "{{test_domain_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.environment.get('test_domain_id')) {",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Delete domain returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Delete response has message', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('message');",
+                  "    pm.expect(response.message).to.include('deleted');",
+                  "});",
+                  "",
+                  "// Clean up environment variable",
+                  "pm.environment.unset('test_domain_id');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "\ud83d\udd22 IP Management",
+      "item": [
+        {
+          "name": "Get All IPs (Paginated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ips/?page=1&per_page=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ips",
+                "?page=1&per_page=10"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Get IPs returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has pagination structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('ips');",
+                  "    pm.expect(response).to.have.property('page');",
+                  "    pm.expect(response).to.have.property('per_page');",
+                  "    pm.expect(response).to.have.property('total');",
+                  "    pm.expect(response).to.have.property('pages');",
+                  "    pm.expect(response.ips).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('IP objects have correct structure with domain names', function () {",
+                  "    const response = pm.response.json();",
+                  "    if (response.ips.length > 0) {",
+                  "        const ip = response.ips[0];",
+                  "        pm.expect(ip).to.have.property('id');",
+                  "        pm.expect(ip).to.have.property('ip_address');",
+                  "        pm.expect(ip).to.have.property('ip_version');",
+                  "        pm.expect(ip).to.have.property('list_type');",
+                  "        pm.expect(ip).to.have.property('source_type');",
+                  "        pm.expect(ip).to.have.property('domain_name'); // Updated feature",
+                  "        pm.expect(ip).to.have.property('notes');",
+                  "        pm.expect(ip).to.have.property('expires_in');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Test IP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/ips/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ips",
+                ""
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ip_address\": \"203.0.113.100\",\n  \"list_type\": \"blacklist\",\n  \"notes\": \"Test IP for API testing\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create IP returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Created IP has correct properties', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('id');",
+                  "    pm.expect(response).to.have.property('ip_address');",
+                  "    pm.expect(response.ip_address).to.eql('203.0.113.100');",
+                  "    pm.expect(response.list_type).to.eql('blacklist');",
+                  "    pm.expect(response.source_type).to.eql('manual');",
+                  "    pm.expect(response.ip_version).to.eql(4);",
+                  "    ",
+                  "    // Store IP ID for cleanup",
+                  "    pm.environment.set('test_ip_id', response.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Test IP",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ips/{{test_ip_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ips",
+                "{{test_ip_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.environment.get('test_ip_id')) {",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Delete IP returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Delete response has message', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('message');",
+                  "    pm.expect(response.message).to.include('deleted');",
+                  "});",
+                  "",
+                  "// Clean up environment variable",
+                  "pm.environment.unset('test_ip_id');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "\ud83d\udd04 Auto-Update Sources",
+      "item": [
+        {
+          "name": "Get Auto-Update Sources",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/auto-update-sources/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auto-update-sources",
+                ""
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Get auto-update sources returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response is an array', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('Source objects have correct structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    if (response.length > 0) {",
+                  "        const source = response[0];",
+                  "        pm.expect(source).to.have.property('id');",
+                  "        pm.expect(source).to.have.property('name');",
+                  "        pm.expect(source).to.have.property('url');",
+                  "        pm.expect(source).to.have.property('is_active');",
+                  "        pm.expect(source).to.have.property('list_type');",
+                  "        pm.expect(source).to.have.property('update_count');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Auto-Update Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/auto-update-sources/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "auto-update-sources",
+                "status"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Auto-update status returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Status has scheduler information', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('is_running');",
+                  "    pm.expect(response).to.have.property('enabled');",
+                  "    pm.expect(response).to.have.property('can_trigger');",
+                  "    pm.expect(response).to.have.property('active_sources');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "\ud83d\udcdd Logging System",
+      "item": [
+        {
+          "name": "Get Recent Logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/recent?limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "recent?limit=10"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Get recent logs returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response is an array', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('Log objects have correct structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    if (response.length > 0) {",
+                  "        const log = response[0];",
+                  "        pm.expect(log).to.have.property('id');",
+                  "        pm.expect(log).to.have.property('action');",
+                  "        pm.expect(log).to.have.property('message');",
+                  "        pm.expect(log).to.have.property('created_at');",
+                  "        pm.expect(log).to.have.property('mode');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Log Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/stats",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "stats"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Get log stats returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Stats have correct structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('total_logs');",
+                  "    pm.expect(response).to.have.property('recent_logs_24h');",
+                  "    pm.expect(response).to.have.property('logs_by_action');",
+                  "    pm.expect(response).to.have.property('logs_by_rule_type');",
+                  "    pm.expect(response).to.have.property('recent_blocks');",
+                  "    pm.expect(response).to.have.property('recent_allows');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "\ud83d\udd22 IP Range Management",
+      "item": [
+        {
+          "name": "Get All IP Ranges (Paginated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ip-ranges/?page=1&per_page=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ip-ranges",
+                "?page=1&per_page=10"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Get IP ranges returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has pagination structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('ip_ranges');",
+                  "    pm.expect(response).to.have.property('page');",
+                  "    pm.expect(response).to.have.property('per_page');",
+                  "    pm.expect(response).to.have.property('total');",
+                  "    pm.expect(response).to.have.property('pages');",
+                  "    pm.expect(response.ip_ranges).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('IP range objects have correct structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    if (response.ip_ranges.length > 0) {",
+                  "        const ipRange = response.ip_ranges[0];",
+                  "        pm.expect(ipRange).to.have.property('id');",
+                  "        pm.expect(ipRange).to.have.property('ip_range');",
+                  "        pm.expect(ipRange).to.have.property('ip_version');",
+                  "        pm.expect(ipRange).to.have.property('list_type');",
+                  "        pm.expect(ipRange).to.have.property('source_type');",
+                  "        pm.expect(ipRange).to.have.property('notes');",
+                  "        pm.expect(ipRange).to.have.property('expires_in');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create Test IP Range",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/ip-ranges/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ip-ranges",
+                ""
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ip_range\": \"1.2.3.0/24\",\n  \"list_type\": \"blacklist\",\n  \"notes\": \"Test IP range for API testing\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create IP range returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Created IP range has correct properties', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('id');",
+                  "    pm.expect(response).to.have.property('ip_range');",
+                  "    pm.expect(response.ip_range).to.eql('1.2.3.0/24');",
+                  "    pm.expect(response.list_type).to.eql('blacklist');",
+                  "    pm.expect(response.source_type).to.eql('manual');",
+                  "    pm.expect(response.ip_version).to.eql(4);",
+                  "    ",
+                  "    // Store IP range ID for other tests",
+                  "    pm.environment.set('test_ip_range_id', response.id);",
+                  "});",
+                  "",
+                  "pm.test('IP range has proper CIDR format validation', function () {",
+                  "    const response = pm.response.json();",
+                  "    // Should be a valid CIDR notation",
+                  "    pm.expect(response.ip_range).to.match(/^\\d+\\.\\d+\\.\\d+\\.\\d+\\/\\d+$/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Specific IP Range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ip-ranges/{{test_ip_range_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ip-ranges",
+                "{{test_ip_range_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.environment.get('test_ip_range_id')) {",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Get specific IP range returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('IP range has correct structure', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('id');",
+                  "    pm.expect(response).to.have.property('ip_range');",
+                  "    pm.expect(response.ip_range).to.eql('1.2.3.0/24');",
+                  "    pm.expect(response.ip_version).to.eql(4);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update Test IP Range",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/ip-ranges/{{test_ip_range_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ip-ranges",
+                "{{test_ip_range_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Updated test IP range - API testing\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.environment.get('test_ip_range_id')) {",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Update IP range returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('IP range updated correctly', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response.notes).to.eql('Updated test IP range - API testing');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create IPv6 Test IP Range",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/ip-ranges/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ip-ranges",
+                ""
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ip_range\": \"2600:1900::/32\",\n  \"list_type\": \"whitelist\",\n  \"notes\": \"Test IPv6 range for API testing\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create IPv6 IP range returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Created IPv6 IP range has correct properties', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('id');",
+                  "    pm.expect(response).to.have.property('ip_range');",
+                  "    pm.expect(response.ip_range).to.eql('2600:1900::/32');",
+                  "    pm.expect(response.list_type).to.eql('whitelist');",
+                  "    pm.expect(response.source_type).to.eql('manual');",
+                  "    pm.expect(response.ip_version).to.eql(6);",
+                  "    ",
+                  "    // Store IPv6 IP range ID for cleanup",
+                  "    pm.environment.set('test_ipv6_range_id', response.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Test IP Range Filtering",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ip-ranges/?list_type=blacklist&ip_version=4&page=1&per_page=5",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ip-ranges",
+                "?list_type=blacklist&ip_version=4&page=1&per_page=5"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Filtered IP ranges returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Filtering works correctly', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('ip_ranges');",
+                  "    // Check that all returned ranges match the filter",
+                  "    response.ip_ranges.forEach(function(ipRange) {",
+                  "        pm.expect(ipRange.list_type).to.eql('blacklist');",
+                  "        pm.expect(ipRange.ip_version).to.eql(4);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Test IPv6 IP Range",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ip-ranges/{{test_ipv6_range_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ip-ranges",
+                "{{test_ipv6_range_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.environment.get('test_ipv6_range_id')) {",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Delete IPv6 IP range returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Delete response has message', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('message');",
+                  "    pm.expect(response.message).to.include('deleted');",
+                  "});",
+                  "",
+                  "// Clean up environment variable",
+                  "pm.environment.unset('test_ipv6_range_id');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete Test IP Range",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/ip-ranges/{{test_ip_range_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "ip-ranges",
+                "{{test_ip_range_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "if (!pm.environment.get('test_ip_range_id')) {",
+                  "    pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Delete IP range returns 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Delete response has message', function () {",
+                  "    const response = pm.response.json();",
+                  "    pm.expect(response).to.have.property('message');",
+                  "    pm.expect(response.message).to.include('deleted');",
+                  "});",
+                  "",
+                  "// Clean up environment variable",
+                  "pm.environment.unset('test_ip_range_id');"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

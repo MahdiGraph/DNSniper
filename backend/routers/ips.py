@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from datetime import datetime, timezone
 
 from database import get_db
-from models import IP, Log
+from models import IP, Log, Domain
 from models.domains import ListType, SourceType
 from models.logs import ActionType, RuleType
 from services.live_events import live_events
@@ -71,6 +71,7 @@ class IPResponse(BaseModel):
     source_type: str
     source_url: Optional[str]
     domain_id: Optional[int]
+    domain_name: Optional[str]
     expired_at: Optional[datetime]
     expires_in: Optional[str]
     created_at: datetime
@@ -98,7 +99,8 @@ async def get_ips(
     per_page: int = Query(50, ge=1, le=1000, description="Items per page")
 ):
     """Get IPs with optional filtering and search"""
-    query = db.query(IP)
+    # Join with domains table to get domain names
+    query = db.query(IP, Domain.domain_name).outerjoin(Domain, IP.domain_id == Domain.id)
     
     if list_type:
         try:
@@ -127,10 +129,10 @@ async def get_ips(
     offset = (page - 1) * per_page
     pages = (total + per_page - 1) // per_page  # Ceiling division
     
-    ips = query.offset(offset).limit(per_page).all()
+    ip_results = query.offset(offset).limit(per_page).all()
     
     result = []
-    for ip in ips:
+    for ip, domain_name in ip_results:
         result.append({
             "id": ip.id,
             "ip_address": ip.ip_address,
@@ -139,6 +141,7 @@ async def get_ips(
             "source_type": ip.source_type.value,
             "source_url": ip.source_url,
             "domain_id": ip.domain_id,
+            "domain_name": domain_name,
             "expired_at": ip.expired_at,
             "expires_in": calculate_time_remaining(ip.expired_at),
             "created_at": ip.created_at,
@@ -205,6 +208,7 @@ async def create_ip(ip_data: IPCreate, db: Session = Depends(get_db)):
         "source_type": ip.source_type.value,
         "source_url": ip.source_url,
         "domain_id": ip.domain_id,
+        "domain_name": None,  # Manual IPs typically don't have domain associations
         "expired_at": ip.expired_at,
         "expires_in": calculate_time_remaining(ip.expired_at),
         "created_at": ip.created_at,
@@ -259,6 +263,7 @@ async def update_ip(ip_id: int, ip_data: IPUpdate, db: Session = Depends(get_db)
         "source_type": ip.source_type.value,
         "source_url": ip.source_url,
         "domain_id": ip.domain_id,
+        "domain_name": None,  # Manual IPs typically don't have domain associations
         "expired_at": ip.expired_at,
         "expires_in": calculate_time_remaining(ip.expired_at),
         "created_at": ip.created_at,
@@ -281,6 +286,13 @@ async def delete_ip(ip_id: int, db: Session = Depends(get_db)):
     ip_address = ip.ip_address
     source_type = ip.source_type.value
     
+    # Get domain name if IP has a domain association
+    domain_name = None
+    if ip.domain_id:
+        domain = db.query(Domain).filter(Domain.id == ip.domain_id).first()
+        if domain:
+            domain_name = domain.domain_name
+    
     # Prepare event data before deletion
     event_data = {
         "id": ip.id,
@@ -288,6 +300,7 @@ async def delete_ip(ip_id: int, db: Session = Depends(get_db)):
         "ip_version": ip.ip_version,
         "list_type": ip.list_type.value,
         "source_type": ip.source_type.value,
+        "domain_name": domain_name,
         "notes": ip.notes
     }
     

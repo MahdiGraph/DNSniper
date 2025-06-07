@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { Plus, Search, Trash2, Globe, RefreshCw } from 'lucide-react';
 import { showError, showDeleteConfirm } from '../utils/customAlert';
+import { useTooltipHandlers } from '../utils/tooltip';
 import Pagination from './Pagination';
 
 function DomainManagement() {
@@ -16,6 +17,8 @@ function DomainManagement() {
     total: 0,
     pages: 0
   });
+
+  const tooltipHandlers = useTooltipHandlers();
 
   const fetchDomains = useCallback(async (page = 1, perPage = pagination.per_page) => {
     try {
@@ -181,7 +184,13 @@ function DomainManagement() {
                 <tbody>
                   {domains.map((domain) => (
                     <tr key={domain.id}>
-                      <td className="domain-name">{domain.domain_name}</td>
+                      <td 
+                        className={`domain-name ${domain.notes ? 'has-tooltip' : ''}`}
+                        data-tooltip={domain.notes || ''}
+                        {...(domain.notes ? tooltipHandlers : {})}
+                      >
+                        {domain.domain_name}
+                      </td>
                       <td>
                         <span className={`badge badge-${domain.list_type}`}>
                           {domain.list_type}

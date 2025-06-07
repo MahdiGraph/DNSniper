@@ -70,7 +70,8 @@ h3 {
 .domain-name, .ip-address {
   font-family: var(--font-mono);
   font-weight: 500;
-  letter-spacing: 0;
+  word-break: break-all;
+  max-width: 200px;
 }
 
 code, pre {
@@ -648,6 +649,111 @@ code, pre {
   max-width: 200px;
 }
 
+.ip-range {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  word-break: break-all;
+  max-width: 180px;
+}
+
+/* Enhanced Tooltip System */
+.has-tooltip {
+  position: relative;
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--primary-color);
+  text-underline-offset: 3px;
+}
+
+.has-tooltip:hover {
+  text-decoration-color: var(--primary-dark);
+}
+
+/* Tooltip container - positioned with fixed for viewport control */
+.tooltip {
+  position: fixed;
+  z-index: 9999;
+  background: var(--surface);
+  color: var(--text-primary);
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-width: 320px;
+  min-width: 180px;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  border: 1px solid var(--border);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.tooltip.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Tooltip arrow */
+.tooltip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-bottom-color: var(--surface);
+  z-index: 10000;
+}
+
+.tooltip::after {
+  content: '';
+  position: absolute;
+  top: -7px;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-bottom-color: var(--border);
+  z-index: 9999;
+}
+
+/* Tooltip positioned above (when tooltip is below element) */
+.tooltip.tooltip-top::before {
+  top: auto;
+  bottom: -6px;
+  border-top-color: var(--surface);
+  border-bottom-color: transparent;
+}
+
+.tooltip.tooltip-top::after {
+  top: auto;
+  bottom: -7px;
+  border-top-color: var(--border);
+  border-bottom-color: transparent;
+}
+
+/* Responsive tooltip adjustments */
+@media (max-width: 768px) {
+  .tooltip {
+    max-width: 280px;
+    min-width: 160px;
+    padding: 0.625rem 0.875rem;
+    font-size: 0.8rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .tooltip {
+    max-width: 240px;
+    min-width: 140px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+  }
+}
+
 .url-cell a {
   display: block;
   max-width: 150px;
@@ -1007,6 +1113,10 @@ code, pre {
   align-items: center;
   gap: 0.5rem;
   margin-top: 0.25rem;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
 }
 
 .form-group .checkbox-wrapper input[type="checkbox"] {
@@ -1023,6 +1133,10 @@ code, pre {
   font-size: 0.875rem;
   cursor: pointer;
   flex: 1;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
 }
 
 /* Alternative: For direct label + checkbox pattern */
@@ -1033,6 +1147,10 @@ code, pre {
   font-weight: 400;
   cursor: pointer;
   margin-bottom: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
 }
 
 .form-group label.checkbox-direct input[type="checkbox"] {
@@ -1051,6 +1169,10 @@ code, pre {
   cursor: pointer;
   margin-bottom: 0 !important;
   font-weight: 400 !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
 }
 
 .checkbox-label input[type="checkbox"] {

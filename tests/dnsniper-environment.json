@@ -4,12 +4,12 @@
     "values": [
         {
             "key": "base_url",
-            "value": "http://localhost:8000",
+            "value": "http://localhost:8585",
             "enabled": true
         },
         {
             "key": "api_token",
-            "value": "dnsniper_-zX1Y51b0nzWKrq4ZvW1k1hi1Eqmd3d0nM8k9bDTrrk",
+            "value": "dnsniper_LnrnBmTRF2WFWlNx3L-07yYW7HKU9DwR_CIFFkFBbjA",
             "enabled": true
         }
     ],

@@ -127,6 +127,7 @@ function LiveToastNotifications() {
       case 'ip_range': return <Network size={16} />;
       case 'auto_update_source': return <Database size={16} />;
       case 'auto_update_cycle': return <RefreshCw size={16} />;
+      case 'scheduler': return <Clock size={16} />;
       case 'settings': return <Settings size={16} />;
       case 'firewall': return <Shield size={16} />;
       case 'auth': return <CheckCircle size={16} />;
@@ -150,6 +151,10 @@ function LiveToastNotifications() {
   const formatToastMessage = (event) => {
     if (event.type === 'auto_update_cycle') {
       return event.data?.message || 'Auto-update cycle event';
+    }
+    
+    if (event.type === 'scheduler') {
+      return event.data?.message || 'Scheduler event';
     }
     
     if (event.type === 'domain') {

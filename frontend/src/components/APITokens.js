@@ -176,10 +176,20 @@ function APITokens() {
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="btn btn-secondary"
-                title="OpenAPI Specification"
+                title="OpenAPI Specification (Swagger UI)"
               >
                 <ExternalLink size={16} />
-                OpenAPI Spec
+                Swagger UI
+              </a>
+              <a 
+                href="/redoc" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="btn btn-secondary"
+                title="API Documentation (ReDoc)"
+              >
+                <ExternalLink size={16} />
+                ReDoc
               </a>
             </div>
           </div>

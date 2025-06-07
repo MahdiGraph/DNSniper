@@ -175,7 +175,7 @@ async def get_domains(
     from models import Setting
     
     # Get max_ips_per_domain setting for CDN calculation
-    max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
+    max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 10)
     
     # Build query with IP count using subquery to avoid N+1 problem
     ip_count_subquery = db.query(
@@ -323,7 +323,7 @@ async def create_domain(domain_data: DomainCreate, db: Session = Depends(get_db)
     
     # Calculate CDN status (will be False for new domains with 0 IPs)
     from models import Setting
-    max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
+    max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 10)
     is_cdn = ip_count > max_ips_per_domain  # False for new domains
     
     # Prepare response data
@@ -503,7 +503,7 @@ async def resolve_domain(domain_id: int, db: Session = Depends(get_db)):
     
     # Get settings and current state
     from models import Setting
-    max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
+    max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 10)
     
     # Get existing IPs for this domain
     existing_ips = db.query(IP).filter(IP.domain_id == domain.id).all()

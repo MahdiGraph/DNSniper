@@ -13,8 +13,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Default values
-BASE_URL="http://localhost:8000"
-API_TOKEN="dnsniper_-zX1Y51b0nzWKrq4ZvW1k1hi1Eqmd3d0nM8k9bDTrrk"
+BASE_URL="http://localhost:8585"
+API_TOKEN="dnsniper_LnrnBmTRF2WFWlNx3L-07yYW7HKU9DwR_CIFFkFBbjA"
 OUTPUT_DIR="test-results"
 VERBOSE=false
 
@@ -48,8 +48,8 @@ check_newman() {
 check_api() {
     print_info "Checking if DNSniper API is accessible at $BASE_URL..."
     
-    # Test health endpoint without authentication
-    if curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/api/health" | grep -q "200"; then
+    # Test docs endpoint which is publicly accessible
+    if curl -s -o /dev/null -w "%{http_code}" "$BASE_URL/docs" | grep -q "200"; then
         print_success "API is accessible"
     else
         print_error "API is not accessible at $BASE_URL. Please make sure DNSniper is running."
@@ -145,7 +145,7 @@ show_usage() {
     echo ""
     echo "Examples:"
     echo "  $0                                    # Run with default settings"
-    echo "  $0 -u http://your-server:8000        # Run against different server"
+    echo "  $0 -u http://your-server:8585        # Run against different server"
     echo "  $0 -v                                # Run with verbose output"
     echo "  $0 -o custom-results                 # Save results to custom directory"
 }

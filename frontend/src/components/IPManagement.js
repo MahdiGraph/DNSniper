@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { Plus, Search, Trash2, Network, RefreshCw } from 'lucide-react';
 import { showError, showDeleteConfirm } from '../utils/customAlert';
+import { useTooltipHandlers } from '../utils/tooltip';
 import Pagination from './Pagination';
 
 function IPManagement() {
@@ -16,6 +17,8 @@ function IPManagement() {
     total: 0,
     pages: 0
   });
+
+  const tooltipHandlers = useTooltipHandlers();
 
   const fetchIPs = useCallback(async (page = 1, perPage = pagination.per_page) => {
     try {
@@ -190,7 +193,13 @@ function IPManagement() {
                 <tbody>
                   {ips.map((ip) => (
                     <tr key={ip.id}>
-                      <td className="ip-address">{ip.ip_address}</td>
+                      <td 
+                        className={`ip-address ${ip.notes ? 'has-tooltip' : ''}`}
+                        data-tooltip={ip.notes || ''}
+                        {...(ip.notes ? tooltipHandlers : {})}
+                      >
+                        {ip.ip_address}
+                      </td>
                       <td>
                         <span className={`badge badge-ipv${ip.ip_version}`}>
                           IPv{ip.ip_version}
@@ -206,7 +215,7 @@ function IPManagement() {
                           {ip.source_type}
                         </span>
                       </td>
-                      <td>{ip.domain_id ? `Domain #${ip.domain_id}` : '-'}</td>
+                      <td>{ip.domain_name || '-'}</td>
                       <td>{new Date(ip.created_at).toLocaleDateString()}</td>
                       <td>
                         {ip.expires_in ? (

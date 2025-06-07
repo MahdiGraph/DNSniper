@@ -115,14 +115,21 @@ function SettingsPage() {
       });
       
       if (response.data.restart_required) {
+        // Construct the new URL based on the updated settings
+        const newHost = webServerSettings.host === '0.0.0.0' ? window.location.hostname : webServerSettings.host;
+        const newPort = webServerSettings.port;
+        const protocol = window.location.protocol; // Keep current protocol (http/https)
+        const newUrl = `${protocol}//${newHost}:${newPort}${window.location.pathname}${window.location.search}${window.location.hash}`;
+        
         await showSuccess(
           'Settings Updated Successfully!', 
-          `${response.data.message}\n\nThe server will restart automatically. Please wait a moment and refresh the page.`
+          `${response.data.message}\n\nRedirecting to the new server location: ${newHost}:${newPort}\n\nIf the redirect fails, manually navigate to: ${newUrl}`
         );
-        // Optionally reload the page after a delay
+        
+        // Wait a moment for the server to restart, then redirect to the new URL
         setTimeout(() => {
-          window.location.reload();
-        }, 3000);
+          window.location.href = newUrl;
+        }, 6000);
       } else {
         await showSuccess('Success', 'Web server settings updated successfully!');
         setOriginalWebServerSettings(webServerSettings);
@@ -371,7 +378,7 @@ function SettingsPage() {
     // Handle boolean settings with checkbox
     if (typeof value === 'boolean') {
       return (
-        <div className="checkbox-wrapper">
+        <label className="checkbox-wrapper" style={{ cursor: 'pointer' }}>
           <input
             type="checkbox"
             checked={value}
@@ -390,7 +397,7 @@ function SettingsPage() {
             }}
           />
           <span className="setting-value">{value ? 'Enabled' : 'Disabled'}</span>
-        </div>
+        </label>
       );
     }
 
@@ -686,7 +693,7 @@ function SettingsPage() {
               >
                 <Database size={16} />
                 Clear All Database Data
-              </button>
+              </button> 
             </div>
 
             {/* Detailed IPSet Status */}

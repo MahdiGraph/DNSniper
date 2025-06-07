@@ -123,17 +123,23 @@ async def get_auto_update_status(
     """Get auto-update agent status"""
     try:
         from services.auto_update_service import AutoUpdateService
+        from services.scheduler_manager import scheduler_manager
         auto_update_service = AutoUpdateService(db)
-        
+        # Get enhanced status with thread information
         status = auto_update_service.get_status()
         active_sources = AutoUpdateSource.get_active_sources(db)
-        
+        # Get scheduler status from the scheduler manager
+        scheduler_info = scheduler_manager.get_status()
         return {
-            "enabled": Setting.get_setting(db, "auto_update_enabled", True),
-            "is_running": status.get("is_running", False),
-            "active_sources": len(active_sources),
+            "enabled": status["enabled"],
+            "is_running": status["is_running"],
+            "active_sources": status["active_sources"],
             "total_sources": db.query(AutoUpdateSource).count(),
-            "interval": Setting.get_setting(db, "auto_update_interval", 3600)
+            "interval": Setting.get_setting(db, "auto_update_interval", 3600),
+            "start_time": status["start_time"],
+            "thread_id": status["thread_id"],
+            "can_trigger": not status["is_running"],  # Can only trigger if not already running
+            "scheduler": scheduler_info
         }
     except Exception as e:
         logger.error(f"Failed to get auto-update status: {e}")
@@ -470,29 +476,67 @@ async def trigger_auto_update(
     try:
         from services.auto_update_service import AutoUpdateService
         
-        def run_auto_update_in_thread():
-            """Run auto-update in a separate thread"""
-            try:
-                # Create a new database session for the thread
-                from database import SessionLocal
-                thread_db = SessionLocal()
-                try:
-                    auto_update_service = AutoUpdateService(thread_db)
-                    # Run the async function in the thread
-                    import asyncio
-                    asyncio.run(auto_update_service.run_auto_update_cycle())
-                finally:
-                    thread_db.close()
-            except Exception as e:
-                logger.error(f"Auto-update thread failed: {e}")
+        # Use the new thread management system
+        result = AutoUpdateService.start_auto_update_cycle_thread()
         
-        # Start auto-update in background thread
-        thread = threading.Thread(target=run_auto_update_in_thread, daemon=True)
-        thread.start()
-        
-        return {"message": "Auto-update cycle started in background"}
+        # Log the trigger attempt
+        if result["status"] == "started":
+            Log.create_rule_log(
+                db, ActionType.update, None, 
+                "Auto-update cycle triggered manually", 
+                mode="auto_update"
+            )
+            Log.cleanup_old_logs(db)
+            db.commit()
+            
+            return {
+                "message": result["message"],
+                "status": result["status"],
+                "thread_id": result["thread_id"],
+                "start_time": result["start_time"]
+            }
+        elif result["status"] == "already_running":
+            return {
+                "message": result["message"],
+                "status": result["status"],
+                "thread_id": result["thread_id"],
+                "start_time": result["start_time"]
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result["message"])
+            
     except Exception as e:
         logger.error(f"Failed to trigger auto-update: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/stop-update")
+async def stop_auto_update(
+    db: Session = Depends(get_db)
+):
+    """Stop the currently running auto-update cycle"""
+    try:
+        from services.auto_update_service import AutoUpdateService
+        
+        result = AutoUpdateService.stop_auto_update_cycle()
+        
+        # Log the stop attempt
+        if result["status"] in ["stopped", "not_running", "already_stopped"]:
+            Log.create_rule_log(
+                db, ActionType.update, None, 
+                f"Auto-update stop requested: {result['message']}", 
+                mode="auto_update"
+            )
+            Log.cleanup_old_logs(db)
+            db.commit()
+        
+        return {
+            "message": result["message"],
+            "status": result["status"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to stop auto-update: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -549,4 +593,49 @@ async def get_auto_update_stats(db: Session = Depends(get_db)):
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get auto-update stats: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Failed to get auto-update stats: {str(e)}")
+
+
+@router.get("/scheduler/debug")
+async def get_scheduler_debug_info(
+    db: Session = Depends(get_db)
+):
+    """Get detailed scheduler debug information"""
+    try:
+        from services.auto_update_service import AutoUpdateService
+        from services.scheduler_manager import scheduler_manager
+        
+        # Get current settings
+        enabled = Setting.get_setting(db, "auto_update_enabled", True)
+        interval = Setting.get_setting(db, "auto_update_interval", 3600)
+        
+        # Get scheduler status
+        scheduler_status = scheduler_manager.get_status()
+        
+        # Get auto-update service status
+        auto_update_status = AutoUpdateService.get_auto_update_status()
+        
+        return {
+            "scheduler": {
+                "thread_alive": scheduler_status["thread_alive"],
+                "thread_id": scheduler_manager.scheduler_thread.ident if scheduler_manager.scheduler_thread else None,
+                "last_agent_run_time": scheduler_manager.last_agent_run_time,
+                "type": "scheduler_manager_with_instant_updates",
+                "features": ["instant_settings_updates", "live_events", "thread_safe"]
+            },
+            "settings": {
+                "enabled": enabled,
+                "interval_seconds": interval,
+                "interval_human": f"{interval // 3600}h {(interval % 3600) // 60}m {interval % 60}s" if interval >= 3600 else f"{interval // 60}m {interval % 60}s" if interval >= 60 else f"{interval}s"
+            },
+            "auto_update_service": {
+                "is_running": auto_update_status["is_running"],
+                "start_time": auto_update_status["start_time"],
+                "thread_id": auto_update_status["thread_id"]
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get scheduler debug info: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 

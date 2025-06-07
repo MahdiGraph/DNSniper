@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { FileText, Filter, Search, Download, RefreshCw, Eye } from 'lucide-react';
-import { showError } from '../utils/customAlert';
+import { FileText, Filter, Search, Download, RefreshCw, Eye, Trash2 } from 'lucide-react';
+import { showError, showDeleteConfirm, showSuccess } from '../utils/customAlert';
 import Pagination from './Pagination';
 
 function Logs() {
   const [logs, setLogs] = useState([]);
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [cleaningUp, setCleaningUp] = useState(false);
   const [filters, setFilters] = useState({
     action: '',
     rule_type: '',
@@ -238,6 +239,39 @@ function Logs() {
     }
   };
 
+  const cleanupLogs = async () => {
+    // Show confirmation dialog
+    const result = await showDeleteConfirm(
+      'Clear All Logs',
+      'Are you sure you want to clear ALL logs?\n\nThis will permanently delete ALL log entries from the system.\n\nThis action cannot be undone!'
+    );
+
+    if (!result.isConfirmed) return;
+
+    try {
+      setCleaningUp(true);
+      // Call with keep_count=0 to delete all logs
+      const response = await axios.delete('/api/logs/cleanup?keep_count=0');
+      
+      // Show success message
+      await showSuccess(
+        'Logs Cleared Successfully',
+        `Successfully cleared all logs!\n${response.data.message}`
+      );
+      
+      // Refresh logs and stats after cleanup
+      await fetchLogs(1);
+      await fetchStats();
+    } catch (error) {
+      await showError(
+        'Clear Failed',
+        `Failed to clear all logs: ${error.response?.data?.detail || error.message}`
+      );
+    } finally {
+      setCleaningUp(false);
+    }
+  };
+
   const handleRefresh = () => {
     console.log('Manual refresh triggered');
     setSearchQuery(''); // Clear search when manually refreshing
@@ -341,6 +375,14 @@ function Logs() {
           <button className="btn btn-success" onClick={exportLogs}>
             <Download size={16} />
             Export Logs
+          </button>
+          <button 
+            className="btn btn-danger" 
+            onClick={cleanupLogs}
+            disabled={cleaningUp}
+          >
+            <Trash2 size={16} />
+            {cleaningUp ? 'Clearing...' : 'Clear All Logs'}
           </button>
         </div>
       </div>

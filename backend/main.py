@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import time
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
@@ -17,6 +18,7 @@ from services.firewall_service import FirewallService
 from services.auto_update_service import AutoUpdateService
 from services.firewall_log_monitor import firewall_log_monitor
 from services.live_events import live_events
+from services.scheduler_manager import scheduler_manager
 import asyncio
 import threading
 from datetime import datetime, timezone, timedelta
@@ -69,103 +71,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global scheduler control
-auto_update_thread = None
-auto_update_stop_event = threading.Event()
-auto_update_paused = False
+# Initialize SchedulerManager 
+from services.scheduler_manager import scheduler_manager
 
-def auto_update_scheduler():
-    """Background scheduler for auto-update cycles"""
-    global auto_update_paused
-    
-    # Create database session for startup logging
-    db = SessionLocal()
-    try:
-        Log.create_rule_log(db, ActionType.update, None, "Auto-update scheduler started", mode="auto_update")
-        Log.cleanup_old_logs(db)
-        db.commit()
-    except Exception as e:
-        db.rollback()
-    finally:
-        db.close()
-    
-    while not auto_update_stop_event.is_set():
-        db = None
-        try:
-            # Create database session for this thread
-            db = SessionLocal()
-            
-            # Check if auto-update is enabled
-            enabled = Setting.get_setting(db, "auto_update_enabled", True)
-            interval = Setting.get_setting(db, "auto_update_interval", 3600)  # Default 1 hour
-            
-            if enabled and not auto_update_paused:
-                # Log the start of auto-update cycle
-                Log.create_rule_log(db, ActionType.update, None, "Running scheduled auto-update cycle", mode="auto_update")
-                Log.cleanup_old_logs(db)
-                db.commit()
-                
-                # Close the session before starting auto-update service to avoid conflicts
-                db.close()
-                db = None
-                
-                # Don't pass the existing db session to AutoUpdateService, it will create its own
-                auto_update_service = AutoUpdateService(None)  # Will create its own sessions
-                
-                # Run async function in thread context
-                import asyncio
-                try:
-                    # Create new event loop for this thread
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(auto_update_service.run_auto_update_cycle())
-                finally:
-                    loop.close()
-            else:
-                # Log that auto-update was skipped
-                Log.create_rule_log(db, ActionType.update, None, f"Auto-update skipped - enabled: {enabled}, paused: {auto_update_paused}", mode="auto_update")
-                Log.cleanup_old_logs(db)
-                db.commit()
-            
-            # Wait for the interval or until stop event
-            auto_update_stop_event.wait(interval)
-            
-        except Exception as e:
-            # Handle session rollback if needed
-            if db:
-                try:
-                    db.rollback()
-                except:
-                    pass
-                finally:
-                    db.close()
-                    db = None
-            
-            # Use new database session for error logging
-            error_db = SessionLocal()
-            try:
-                Log.create_error_log(error_db, f"Auto-update scheduler error: {e}", context="auto_update_scheduler", mode="auto_update")
-                Log.cleanup_old_logs(error_db)
-                error_db.commit()
-            except Exception:
-                error_db.rollback()
-            finally:
-                error_db.close()
-            
-            # Wait 60 seconds before retrying on error
-            auto_update_stop_event.wait(60)
-        finally:
-            # Ensure session is closed
-            if db:
-                try:
-                    db.close()
-                except:
-                    pass
+def get_scheduler_status():
+    """Get the current scheduler status."""
+    return scheduler_manager.get_status()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     try:
+        # Clean up SQLite WAL and SHM files before database initialization
+        # These files can cause issues if left from previous runs
+        db_path = Path(__file__).parent / "dnsniper.db"
+        wal_file = db_path.with_suffix('.db-wal')
+        shm_file = db_path.with_suffix('.db-shm')
+        
+        for file_path in [wal_file, shm_file]:
+            if file_path.exists():
+                try:
+                    file_path.unlink()
+                    logger.info(f"🧹 Removed SQLite temporary file: {file_path.name}")
+                except Exception as e:
+                    logger.warning(f"⚠️  Could not remove SQLite temporary file: {file_path.name}: {e}")
+        
         # Create database tables
         Base.metadata.create_all(bind=engine)
         # Initialize default settings
@@ -176,7 +106,7 @@ async def lifespan(app: FastAPI):
                 "auto_update_enabled": True,
                 "auto_update_interval": 3600,  # 1 hour in seconds
                 "rule_expiration": 86400,  # 24 hours in seconds
-                "max_ips_per_domain": 5,
+                "max_ips_per_domain": 10,
                 "dns_resolver_primary": "1.1.1.1",
                 "dns_resolver_secondary": "8.8.8.8",
                 "automatic_domain_resolution": True,
@@ -315,14 +245,6 @@ async def lifespan(app: FastAPI):
             Log.create_error_log(db, f"Failed to initialize firewall: {e}", context="lifespan", mode="manual")
             Log.cleanup_old_logs(db)
             db.close()
-        # Start auto-update scheduler in background
-        global auto_update_thread
-        auto_update_thread = threading.Thread(target=auto_update_scheduler, daemon=True)
-        auto_update_thread.start()
-        db = SessionLocal()
-        Log.create_rule_log(db, ActionType.update, None, "Auto-update scheduler started in background", mode="manual")
-        Log.cleanup_old_logs(db)
-        db.close()
         
         # Start firewall log monitoring if logging is enabled
         db = SessionLocal()
@@ -335,6 +257,9 @@ async def lifespan(app: FastAPI):
         Log.cleanup_old_logs(db)
         db.close()
         
+        # Start simple background scheduler
+        scheduler_manager.start_scheduler()
+        
         yield
     except Exception as e:
         logger.error(f"Application startup failed: {e}")
@@ -343,22 +268,17 @@ async def lifespan(app: FastAPI):
         Log.cleanup_old_logs(db)
         db.close()
         raise
-    # Cleanup
-    db = SessionLocal()
-    Log.create_rule_log(db, ActionType.update, None, "Shutting down DNSniper application...", mode="manual")
-    Log.cleanup_old_logs(db)
-    db.close()
-    
-    # Stop firewall log monitoring
-    firewall_log_monitor.stop_monitoring()
-    
-    auto_update_stop_event.set()
-    if auto_update_thread:
-        auto_update_thread.join(timeout=10)
-    db = SessionLocal()
-    Log.create_rule_log(db, ActionType.update, None, "Auto-update scheduler stopped", mode="manual")
-    Log.cleanup_old_logs(db)
-    db.close()
+    finally:
+        # Stop simple scheduler
+        scheduler_manager.stop_scheduler()
+        # Cleanup
+        db = SessionLocal()
+        Log.create_rule_log(db, ActionType.update, None, "Shutting down DNSniper application...", mode="manual")
+        Log.cleanup_old_logs(db)
+        db.close()
+        
+        # Stop firewall log monitoring
+        firewall_log_monitor.stop_monitoring()
 
 
 # Create FastAPI app
@@ -458,7 +378,6 @@ async def auth_middleware(request: Request, call_next):
     # Skip auth for certain routes
     excluded_paths = [
         "/api/auth/login",
-        "/api/health",
         "/docs",
         "/openapi.json",
         "/redoc"
@@ -515,7 +434,40 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 # Health check endpoint - placed BEFORE API routers (no auth required)
-@app.get("/api/health")
+@app.get("/api/health",
+    summary="Health Check",
+    description="Check system health and database connectivity. This endpoint does not require authentication and provides basic system status information.",
+    tags=["System Health"],
+    responses={
+        200: {
+            "description": "System is healthy and operational",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "healthy",
+                        "timestamp": "2024-01-01T12:00:00Z",
+                        "database": "connected",
+                        "stats": {
+                            "domains": 1250,
+                            "ips": 2340,
+                            "ip_ranges": 45
+                        }
+                    }
+                }
+            }
+        },
+        503: {
+            "description": "Service unavailable - system unhealthy",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Service unavailable"
+                    }
+                }
+            }
+        }
+    }
+)
 async def health_check(db: Session = Depends(get_db)):
     """Health check endpoint"""
     try:
@@ -541,9 +493,88 @@ async def health_check(db: Session = Depends(get_db)):
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=503, detail="Service unavailable")
 
-
 # Dashboard API endpoint
-@app.get("/api/dashboard")
+@app.get("/api/dashboard",
+    summary="Dashboard Statistics",
+    description="Get comprehensive system statistics including counts of domains, IPs, IP ranges, and system status. Requires authentication.",
+    tags=["Dashboard"],
+    responses={
+        200: {
+            "description": "Dashboard statistics retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "totals": {
+                            "domains": 1250,
+                            "ips": 2340,
+                            "ip_ranges": 45,
+                            "auto_update_sources": 3
+                        },
+                        "lists": {
+                            "blacklist": {
+                                "domains": 1200,
+                                "ips": 2200,
+                                "ip_ranges": 40
+                            },
+                            "whitelist": {
+                                "domains": 50,
+                                "ips": 140,
+                                "ip_ranges": 5
+                            }
+                        },
+                        "sources": {
+                            "manual": {
+                                "domains": 250,
+                                "ips": 340,
+                                "ip_ranges": 15
+                            },
+                            "auto_update": {
+                                "domains": 1000,
+                                "ips": 2000,
+                                "ip_ranges": 30
+                            }
+                        },
+                        "auto_update": {
+                            "total_sources": 3,
+                            "active_sources": 2,
+                            "is_running": True,
+                            "enabled": True
+                        },
+                        "firewall": {
+                            "chains_exist": {
+                                "ipv4": True,
+                                "ipv6": True
+                            }
+                        },
+                        "activity": {
+                            "recent_logs_24h": 156
+                        }
+                    }
+                }
+            }
+        },
+        401: {
+            "description": "Authentication required",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Authentication required"
+                    }
+                }
+            }
+        },
+        500: {
+            "description": "Internal server error",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Failed to get dashboard stats"
+                    }
+                }
+            }
+        }
+    }
+)
 async def get_dashboard_stats(db: Session = Depends(get_db)):
     """Get dashboard statistics"""
     try:
@@ -614,7 +645,7 @@ async def get_dashboard_stats(db: Session = Depends(get_db)):
             "auto_update": {
                 "total_sources": total_sources,
                 "active_sources": active_sources,
-                "is_running": auto_update_thread.is_alive(),
+                "is_running": AutoUpdateService.is_auto_update_running(),
                 "enabled": Setting.get_setting(db, "auto_update_enabled", True)
             },
             "firewall": firewall_status,
@@ -770,46 +801,180 @@ def custom_openapi():
             "type": "http",
             "scheme": "bearer",
             "bearerFormat": "Token",
-            "description": "DNSniper API Token or Session Token. Get your API token from the DNSniper web interface."
+            "description": "DNSniper API Token or Session Token. Get your API token from the DNSniper web interface at /api-tokens."
         }
     }
     
-    # Add example schemas
+    # Add comprehensive example schemas
     openapi_schema["components"]["examples"] = {
         "DomainCreateExample": {
             "summary": "Create a malware domain",
+            "description": "Example of adding a known malware domain to the blacklist",
             "value": {
                 "domain_name": "malware.example.com",
                 "list_type": "blacklist",
-                "notes": "Known malware domain from threat intelligence"
+                "notes": "Known malware domain from threat intelligence feed"
+            }
+        },
+        "DomainWhitelistExample": {
+            "summary": "Whitelist a trusted domain",
+            "description": "Example of adding a trusted domain to the whitelist",
+            "value": {
+                "domain_name": "cdn.trusted-site.com",
+                "list_type": "whitelist",
+                "notes": "Trusted CDN domain - never block"
             }
         },
         "IPCreateExample": {
-            "summary": "Add malicious IP",
+            "summary": "Block malicious IP",
+            "description": "Example of adding a malicious IP address to the blacklist",
             "value": {
-                "ip_address": "192.0.2.100",
+                "ip_address": "203.0.113.100",
                 "list_type": "blacklist",
                 "notes": "Known command and control server"
             }
         },
+        "IPWhitelistExample": {
+            "summary": "Whitelist trusted IP",
+            "description": "Example of adding a trusted IP to the whitelist",
+            "value": {
+                "ip_address": "8.8.8.8",
+                "list_type": "whitelist",
+                "notes": "Google DNS server - always allow"
+            }
+        },
         "IPRangeCreateExample": {
             "summary": "Block IP range",
+            "description": "Example of blocking an entire IP range (CIDR block)",
             "value": {
-                "ip_range": "198.51.100.0/24",
+                "ip_range": "1.2.3.0/24",
                 "list_type": "blacklist",
-                "notes": "Malicious IP range"
+                "notes": "Malicious IP range from threat intelligence"
+            }
+        },
+        "IPRangeIPv6Example": {
+            "summary": "Block IPv6 range",
+            "description": "Example of blocking an IPv6 range",
+            "value": {
+                "ip_range": "2600:1900::/32",
+                "list_type": "blacklist",
+                "notes": "Suspicious IPv6 range"
             }
         },
         "AutoUpdateSourceExample": {
             "summary": "Configure threat feed",
+            "description": "Example of setting up an external threat intelligence feed",
             "value": {
                 "name": "Malware Domain List",
                 "url": "https://example.com/threat-feed.txt",
                 "is_active": True,
-                "list_type": "blacklist"
+                "list_type": "blacklist",
+                "notes": "Daily updated malware domain feed"
+            }
+        },
+        "SettingsUpdateExample": {
+            "summary": "Update rule expiration",
+            "description": "Example of updating the rule expiration setting",
+            "value": {
+                "value": 86400
             }
         }
     }
+    
+    # Add common response schemas
+    openapi_schema["components"]["schemas"].update({
+        "ErrorResponse": {
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "string",
+                    "description": "Error message describing what went wrong"
+                }
+            },
+            "example": {
+                "detail": "Domain already exists"
+            }
+        },
+        "SuccessMessage": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "Success message"
+                }
+            },
+            "example": {
+                "message": "Operation completed successfully"
+            }
+        },
+        "HealthCheck": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string"},
+                "timestamp": {"type": "string", "format": "date-time"},
+                "database": {"type": "string"},
+                "stats": {
+                    "type": "object",
+                    "properties": {
+                        "domains": {"type": "integer"},
+                        "ips": {"type": "integer"},
+                        "ip_ranges": {"type": "integer"}
+                    }
+                }
+            },
+            "example": {
+                "status": "healthy",
+                "timestamp": "2024-01-01T12:00:00Z",
+                "database": "connected",
+                "stats": {
+                    "domains": 1250,
+                    "ips": 2340,
+                    "ip_ranges": 45
+                }
+            }
+        }
+    })
+    
+    # Add security requirement to all endpoints except excluded ones
+    excluded_paths = ["/api/auth/login", "/api/health", "/docs", "/openapi.json", "/redoc"]
+    
+    for path, path_item in openapi_schema["paths"].items():
+        if not any(path.startswith(excluded) for excluded in excluded_paths):
+            for method in path_item:
+                if method in ["get", "post", "put", "delete", "patch"]:
+                    path_item[method]["security"] = [{"BearerAuth": []}]
+    
+    # Add tags with descriptions
+    openapi_schema["tags"] = [
+        {
+            "name": "authentication",
+            "description": "Authentication and API token management endpoints"
+        },
+        {
+            "name": "domains",
+            "description": "Domain blacklist/whitelist management"
+        },
+        {
+            "name": "ips",
+            "description": "IP address blacklist/whitelist management"
+        },
+        {
+            "name": "ip-ranges",
+            "description": "IP range (CIDR block) blacklist/whitelist management"
+        },
+        {
+            "name": "auto-update-sources",
+            "description": "External threat intelligence feed configuration"
+        },
+        {
+            "name": "settings",
+            "description": "System configuration and settings management"
+        },
+        {
+            "name": "logs",
+            "description": "Activity logs and audit trail"
+        }
+    ]
     
     app.openapi_schema = openapi_schema
     return app.openapi_schema

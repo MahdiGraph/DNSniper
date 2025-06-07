@@ -2,6 +2,7 @@ import asyncio
 import aiohttp
 import re
 import ipaddress
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import List, Set, Optional
 from sqlalchemy.orm import Session
@@ -14,6 +15,11 @@ from services.live_events import live_events
 import time
 from database import SessionLocal
 
+# Global lock and state management for auto-update operations
+_auto_update_lock = threading.Lock()
+_auto_update_running = False
+_current_auto_update_thread = None
+_auto_update_start_time = None
 
 class AutoUpdateService:
     """Service for handling auto-update functionality"""
@@ -22,7 +28,151 @@ class AutoUpdateService:
         self.db = db  # Can be None, will create sessions as needed
         self.dns_service = DNSService()
         self.firewall_service = FirewallService()
-        self.is_running = False
+
+    @classmethod
+    def is_auto_update_running(cls) -> bool:
+        """Check if auto-update is currently running (thread-safe)"""
+        global _auto_update_running
+        with _auto_update_lock:
+            return _auto_update_running
+
+    @classmethod
+    def get_auto_update_status(cls) -> dict:
+        """Get current auto-update status (thread-safe)"""
+        global _auto_update_running, _current_auto_update_thread, _auto_update_start_time
+        with _auto_update_lock:
+            return {
+                "is_running": _auto_update_running,
+                "thread_alive": _current_auto_update_thread is not None and _current_auto_update_thread.is_alive(),
+                "start_time": _auto_update_start_time.isoformat() if _auto_update_start_time else None,
+                "thread_id": _current_auto_update_thread.ident if _current_auto_update_thread else None
+            }
+
+    @classmethod
+    def start_auto_update_cycle_thread(cls) -> dict:
+        """Start auto-update cycle in a new thread with proper lock management"""
+        global _auto_update_lock, _auto_update_running, _current_auto_update_thread, _auto_update_start_time
+        
+        with _auto_update_lock:
+            # Check if already running
+            if _auto_update_running:
+                if _current_auto_update_thread and _current_auto_update_thread.is_alive():
+                    return {
+                        "status": "already_running",
+                        "message": "Auto-update cycle is already running",
+                        "thread_id": _current_auto_update_thread.ident,
+                        "start_time": _auto_update_start_time.isoformat() if _auto_update_start_time else None
+                    }
+                else:
+                    # Thread died but flag still set - reset state
+                    _auto_update_running = False
+                    _current_auto_update_thread = None
+                    _auto_update_start_time = None
+            
+            # Clean up any dead threads
+            if _current_auto_update_thread and not _current_auto_update_thread.is_alive():
+                _current_auto_update_thread = None
+                _auto_update_running = False
+                _auto_update_start_time = None
+            
+            # Set start time and running state BEFORE starting thread
+            _auto_update_start_time = datetime.now(timezone.utc)
+            _auto_update_running = True
+            
+            # Start new thread
+            def run_auto_update_wrapper():
+                """Wrapper function to run auto-update with proper state management"""
+                loop = None
+                try:
+                    # Create service instance and run cycle
+                    service = AutoUpdateService()
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(service.run_auto_update_cycle())
+                    
+                except Exception as e:
+                    # Log error
+                    db = SessionLocal()
+                    try:
+                        Log.create_error_log(db, f"Auto-update thread failed: {e}", context="AutoUpdateService.start_auto_update_cycle_thread", mode="auto_update")
+                        Log.cleanup_old_logs(db)
+                        db.commit()
+                    finally:
+                        db.close()
+                    
+                finally:
+                    # Always reset state and clean up event loop when thread finishes
+                    if loop and not loop.is_closed():
+                        try:
+                            loop.close()
+                        except Exception as e:
+                            # Log cleanup error but don't raise
+                            db = SessionLocal()
+                            try:
+                                Log.create_error_log(db, f"Failed to close event loop: {e}", context="AutoUpdateService.run_auto_update_wrapper", mode="auto_update")
+                                Log.cleanup_old_logs(db)
+                                db.commit()
+                            finally:
+                                db.close()
+                    
+                    with _auto_update_lock:
+                        global _auto_update_running, _auto_update_start_time
+                        _auto_update_running = False
+                        _auto_update_start_time = None
+            
+            # Create and start thread
+            _current_auto_update_thread = threading.Thread(
+                target=run_auto_update_wrapper,
+                name="AutoUpdateCycle",
+                daemon=True
+            )
+            _current_auto_update_thread.start()
+            
+            return {
+                "status": "started",
+                "message": "Auto-update cycle started successfully",
+                "thread_id": _current_auto_update_thread.ident,
+                "start_time": _auto_update_start_time.isoformat()
+            }
+
+    @classmethod 
+    def stop_auto_update_cycle(cls, timeout: int = 30) -> dict:
+        """Stop the current auto-update cycle (if running)"""
+        global _auto_update_lock, _auto_update_running, _current_auto_update_thread
+        
+        with _auto_update_lock:
+            if not _auto_update_running or not _current_auto_update_thread:
+                return {
+                    "status": "not_running",
+                    "message": "No auto-update cycle is currently running"
+                }
+            
+            if not _current_auto_update_thread.is_alive():
+                return {
+                    "status": "already_stopped", 
+                    "message": "Auto-update thread is not alive"
+                }
+            
+            thread_to_stop = _current_auto_update_thread
+        
+        # Wait for thread to finish (outside of lock to prevent deadlock)
+        thread_to_stop.join(timeout=timeout)
+        
+        with _auto_update_lock:
+            if thread_to_stop.is_alive():
+                return {
+                    "status": "timeout",
+                    "message": f"Auto-update thread did not stop within {timeout} seconds"
+                }
+            else:
+                # Reset state
+                _auto_update_running = False
+                _current_auto_update_thread = None
+                return {
+                    "status": "stopped",
+                    "message": "Auto-update cycle stopped successfully"
+                }
 
     def _get_db_session(self):
         """Get database session - use provided one or create new"""
@@ -37,10 +187,6 @@ class AutoUpdateService:
 
     async def run_auto_update_cycle(self):
         """Run a complete auto-update cycle"""
-        if self.is_running:
-            return  # Already running
-        
-        self.is_running = True
         cycle_start_time = datetime.now(timezone.utc)
         
         # Broadcast cycle start event
@@ -135,7 +281,6 @@ class AutoUpdateService:
             
             raise
         finally:
-            self.is_running = False
             self._close_db_if_needed(db)
 
     async def cleanup_expired_entries(self):
@@ -200,6 +345,27 @@ class AutoUpdateService:
             log_db.close()
             raise
 
+    def get_status(self) -> dict:
+        """Get auto-update service status"""
+        db = SessionLocal()
+        try:
+            enabled = Setting.get_setting(db, "auto_update_enabled", True)
+            active_sources = len(AutoUpdateSource.get_active_sources(db))
+            
+            # Get global status
+            global_status = self.get_auto_update_status()
+            
+            return {
+                "is_running": global_status["is_running"],
+                "thread_alive": global_status["thread_alive"],
+                "enabled": enabled,
+                "active_sources": active_sources,
+                "start_time": global_status["start_time"],
+                "thread_id": global_status["thread_id"]
+            }
+        finally:
+            db.close()
+
     async def resolve_manual_domains(self):
         """Resolve manual domains to keep IP mappings current"""
         db = SessionLocal()
@@ -211,7 +377,7 @@ class AutoUpdateService:
             db = self._get_db_session()
             try:
                 manual_domains = Domain.get_manual_domains(db)
-                max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
+                max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 10)
                 dns_resolver_primary = Setting.get_setting(db, "dns_resolver_primary", "1.1.1.1")
                 dns_resolver_secondary = Setting.get_setting(db, "dns_resolver_secondary", "8.8.8.8")
                 # Get critical IPs settings for protection during auto-update (separated by IP version)
@@ -391,12 +557,25 @@ class AutoUpdateService:
             db.close()
             return None
 
+    def _is_valid_domain(self, domain: str) -> bool:
+        """Validate domain name format"""
+        if not domain or len(domain) > 255:
+            return False
+        
+        # Remove wildcard prefix
+        if domain.startswith('*.'):
+            domain = domain[2:]
+        
+        # Basic domain regex
+        pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
+        return bool(re.match(pattern, domain))
+
     async def _process_list_content(self, content: str, source: AutoUpdateSource, db: Session):
         """Process blacklist/whitelist content"""
         lines = content.strip().split('\n')
         processed_count = 0
         rule_expiration = Setting.get_setting(db, "rule_expiration", 86400)
-        max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 5)
+        max_ips_per_domain = Setting.get_setting(db, "max_ips_per_domain", 10)
         expiration_time = datetime.now(timezone.utc) + timedelta(seconds=rule_expiration)
         
         for line in lines:
@@ -428,6 +607,33 @@ class AutoUpdateService:
     async def _process_list_entry(self, entry: str, source: AutoUpdateSource, 
                                  expiration_time: datetime, max_ips_per_domain: int, db: Session):
         """Process a single entry from auto-update list"""
+        
+        # Strip port numbers from entries (e.g., "malware.example.com:3953" -> "malware.example.com")
+        # Handle both IPv4:port and domain:port formats
+        if ':' in entry:
+            # Check if it might be IPv6 (has multiple colons)
+            if entry.count(':') > 1:
+                # Likely IPv6 - only strip port if it's at the end in brackets or after last colon
+                # Examples: [2001:db8::1]:80 or 2001:db8::1
+                if entry.startswith('[') and ']:' in entry:
+                    # Format: [IPv6]:port
+                    entry = entry.split(']:')[0][1:]  # Remove [brackets] and port
+                # If no brackets, assume it's pure IPv6 without port
+            else:
+                # IPv4:port or domain:port format
+                parts = entry.split(':')
+                if len(parts) == 2:
+                    # Check if the second part is a valid port number
+                    try:
+                        port = int(parts[1])
+                        if 1 <= port <= 65535:
+                            # Valid port, strip it
+                            entry = parts[0]
+                    except ValueError:
+                        # Not a valid port number, keep original entry
+                        pass
+        
+        # Continue with original processing logic
         # Determine list type from source
         list_type = ListType[source.list_type] if hasattr(source, 'list_type') else ListType.blacklist
         
@@ -445,9 +651,6 @@ class AutoUpdateService:
                     entry, ip_obj.version, list_type, 
                     SourceType.auto_update, db, source.url, expiration_time
                 )
-            else:
-                # Skip critical IPs
-                pass
             return
         except ValueError:
             pass
@@ -461,9 +664,6 @@ class AutoUpdateService:
                     str(network), network.version, list_type,
                     SourceType.auto_update, db, source.url, expiration_time
                 )
-            else:
-                # Skip critical IP ranges
-                pass
             return
         except ValueError:
             pass
@@ -504,23 +704,9 @@ class AutoUpdateService:
                     await self._process_domain_ips_batch(
                         domain, new_ips, max_ips_per_domain, db, expiration_time
                     )
-                else:
-                    # No new IPs, just update timestamp and CDN status if needed
-                    current_ips = db.query(IP).filter(IP.domain_id == domain.id).all()
-                    existing_ip_addresses = {ip.ip_address for ip in current_ips}
-                    
-                    # Create set of all IPs (stored + resolved) to get true total count
-                    all_ips = set(existing_ip_addresses)
-                    all_ips.update(resolution['ipv4'])
-                    all_ips.update(resolution['ipv6'])
-                    total_unique_ips = len(all_ips)
-                    
-                    # CDN flagging based on total unique IPs
-                    domain.is_cdn = total_unique_ips > max_ips_per_domain
-                    domain.updated_at = datetime.now(timezone.utc)
 
     def _is_critical_ip_range(self, ip_range_str: str, critical_ipv4_list: List[str], critical_ipv6_list: List[str]) -> bool:
-        """Check if IP range overlaps with critical IPs or critical IP ranges (includes dynamic detection)"""
+        """Check if IP range overlaps with critical IPs or critical IP ranges"""
         try:
             network = ipaddress.ip_network(ip_range_str, strict=False)
             
@@ -534,7 +720,7 @@ class AutoUpdateService:
             finally:
                 temp_db.close()
             
-            # Ensure critical IP lists are actually lists (they might be None or strings)
+            # Ensure critical IP lists are actually lists
             if critical_ipv4_list is None:
                 critical_ipv4_list = []
             elif isinstance(critical_ipv4_list, str):
@@ -580,19 +766,6 @@ class AutoUpdateService:
             return False
         except ValueError:
             return False
-
-    def _is_valid_domain(self, domain: str) -> bool:
-        """Validate domain name format"""
-        if not domain or len(domain) > 255:
-            return False
-        
-        # Remove wildcard prefix
-        if domain.startswith('*.'):
-            domain = domain[2:]
-        
-        # Basic domain regex
-        pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
-        return bool(re.match(pattern, domain))
 
     async def _add_or_update_domain(self, domain_name: str, list_type: ListType, 
                                    source_type: SourceType, db: Session, source_url: str = None, 
@@ -704,9 +877,7 @@ class AutoUpdateService:
 
     async def _process_domain_ips_batch(self, domain: Domain, new_ips: list, max_ips_per_domain: int, 
                                        db: Session, expiration_time: datetime = None):
-        """
-        Process a batch of new IPs for a domain with proper FIFO management and CDN flagging.
-        """
+        """Process a batch of new IPs for a domain with proper FIFO management"""
         try:
             # Get current IPs for this domain
             current_ips = db.query(IP).filter(
@@ -752,16 +923,6 @@ class AutoUpdateService:
                 
                 db.flush()
                 
-                # Log the addition
-                log_db = SessionLocal()
-                Log.create_rule_log(
-                    log_db, ActionType.add_rule, RuleType.ip,
-                    f"Added {new_count} new IPs for domain {domain.domain_name} (total unique IPs: {total_unique_ips}, stored: {total_after_adding}, CDN: {domain.is_cdn})",
-                    mode="auto_update"
-                )
-                Log.cleanup_old_logs(log_db)
-                log_db.close()
-                
             else:
                 # We exceed the limit - apply FIFO removal and add what we can
                 if current_count == 0:
@@ -781,16 +942,6 @@ class AutoUpdateService:
                         db.add(ip)
                     
                     db.flush()
-                    
-                    # Log the addition
-                    log_db = SessionLocal()
-                    Log.create_rule_log(
-                        log_db, ActionType.add_rule, RuleType.ip,
-                        f"Added {len(ips_to_add)} IPs (out of {new_count} resolved) for new domain {domain.domain_name}. Total unique IPs: {total_unique_ips}, CDN: {domain.is_cdn}",
-                        mode="auto_update"
-                    )
-                    Log.cleanup_old_logs(log_db)
-                    log_db.close()
                     
                 else:
                     # Existing domain - apply FIFO removal
@@ -820,16 +971,6 @@ class AutoUpdateService:
                         db.add(ip)
                     
                     db.flush()
-                    
-                    # Log the FIFO operation
-                    log_db = SessionLocal()
-                    Log.create_rule_log(
-                        log_db, ActionType.update, RuleType.ip,
-                        f"Applied FIFO for domain {domain.domain_name}: removed {ips_to_remove_count} old IPs, added {len(ips_to_add)} new IPs (out of {new_count} resolved). Total unique IPs: {total_unique_ips}, CDN: {domain.is_cdn}",
-                        mode="auto_update"
-                    )
-                    Log.cleanup_old_logs(log_db)
-                    log_db.close()
             
             # Update domain's updated_at timestamp
             domain.updated_at = datetime.now(timezone.utc)
@@ -866,20 +1007,4 @@ class AutoUpdateService:
             log_db = SessionLocal()
             Log.create_error_log(log_db, f"Failed to cleanup old logs: {e}", context="AutoUpdateService.cleanup_old_logs", mode="auto_update")
             Log.cleanup_old_logs(log_db)
-            log_db.close()
-
-    def get_status(self) -> dict:
-        """Get auto-update service status"""
-        db = SessionLocal()
-        try:
-            enabled = Setting.get_setting(db, "auto_update_enabled", True)
-            active_sources = len(AutoUpdateSource.get_active_sources(db))
-            return {
-                "is_running": self.is_running,
-                "enabled": enabled,
-                "active_sources": active_sources,
-                "last_update": "Not implemented",  # Would need to track this
-                "next_update": "Not implemented"   # Would need scheduler integration
-            }
-        finally:
-            db.close() 
+            log_db.close() 
