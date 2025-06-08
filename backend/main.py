@@ -254,7 +254,6 @@ async def lifespan(app: FastAPI):
             "ssl_domain": "",    # Domain name for SSL certificate (required for HTTPS)
             "ssl_certfile": "",  # Path to SSL certificate file (PEM) (required for HTTPS)
             "ssl_keyfile": "",    # Path to SSL private key file (PEM) (required for HTTPS)
-            "default_auto_update_sources": []
         }
         
         # MIGRATION: Remove old dns_resolver_ipv4/ipv6, migrate to new fields

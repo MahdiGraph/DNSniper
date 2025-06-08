@@ -13,8 +13,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Default values
-BASE_URL="http://localhost:8585"
-API_TOKEN="dnsniper_LnrnBmTRF2WFWlNx3L-07yYW7HKU9DwR_CIFFkFBbjA"
+BASE_URL="http://localhost:8000"
+API_TOKEN="dnsniper_Gd4HtGWoA4EXJBH1Dy_PjS01rWfHnArYFqVEQSo9unc"
 OUTPUT_DIR="test-results"
 VERBOSE=false
 

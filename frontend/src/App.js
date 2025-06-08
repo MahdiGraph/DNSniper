@@ -36,6 +36,8 @@ import APITokens from './components/APITokens';
 import APIDocumentation from './components/APIDocumentation';
 import NotFound from './components/NotFound';
 import LiveToastNotifications from './components/LiveToastNotifications';
+import { ThemeProvider } from './components/ThemeProvider';
+import ThemeToggle from './components/ThemeToggle';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -117,30 +119,28 @@ function App() {
     };
   }, [isAuthenticated]);
 
-  if (loading) {
-    return (
-      <div className="app-loading">
-        <Shield size={48} />
-        <h2>Loading DNSniper...</h2>
-      </div>
-    );
-  }
-
-  if (!isAuthenticated) {
-    return <Login onLoginSuccess={handleLoginSuccess} />;
-  }
-
   return (
-    <Router>
-      <AppContent 
-        user={user}
-        setUser={setUser}
-        sidebarOpen={sidebarOpen}
-        setSidebarOpen={setSidebarOpen}
-        apiStatus={apiStatus}
-        onLogout={handleLogout}
-      />
-    </Router>
+    <ThemeProvider>
+      {loading ? (
+        <div className="app-loading">
+          <Shield size={48} />
+          <h2>Loading DNSniper...</h2>
+        </div>
+      ) : !isAuthenticated ? (
+        <Login onLoginSuccess={handleLoginSuccess} />
+      ) : (
+        <Router>
+          <AppContent 
+            user={user}
+            setUser={setUser}
+            sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
+            apiStatus={apiStatus}
+            onLogout={handleLogout}
+          />
+        </Router>
+      )}
+    </ThemeProvider>
   );
 }
 
@@ -202,6 +202,7 @@ function Header({ apiStatus, onMenuClick, user, onLogout }) {
           )}
           <span>API {apiStatus}</span>
         </div>
+        <ThemeToggle />
         <div className="user-menu">
           <span className="username">Welcome, {user?.username}</span>
           <button className="logout-button" onClick={onLogout} title="Logout">

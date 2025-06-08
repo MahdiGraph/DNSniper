@@ -27,7 +27,7 @@
           "",
           "// Set API token if not already set",
           "if (!pm.environment.get('api_token')) {",
-          "    pm.environment.set('api_token', 'dnsniper_LnrnBmTRF2WFWlNx3L-07yYW7HKU9DwR_CIFFkFBbjA');",
+          "    pm.environment.set('api_token', 'dnsniper_Gd4HtGWoA4EXJBH1Dy_PjS01rWfHnArYFqVEQSo9unc');",
           "}"
         ]
       }
@@ -41,7 +41,7 @@
     },
     {
       "key": "api_token",
-      "value": "dnsniper_LnrnBmTRF2WFWlNx3L-07yYW7HKU9DwR_CIFFkFBbjA",
+      "value": "dnsniper_Gd4HtGWoA4EXJBH1Dy_PjS01rWfHnArYFqVEQSo9unc",
       "type": "string"
     }
   ],
