@@ -29,6 +29,7 @@ from rich.json import JSON
 sys.path.insert(0, str(Path(__file__).parent))
 
 from database import SessionLocal
+from version import VERSION, APP_NAME
 import controller
 
 # Initialize Rich console for beautiful output
@@ -187,29 +188,29 @@ def handle_errors(func):
 
 # Main CLI group
 @click.group()
-@click.version_option(version="1.0.0", prog_name="DNSniper CLI")
+@click.version_option(version=VERSION, prog_name=f"{APP_NAME} CLI")
 def cli():
-    """
-    🛡️  DNSniper CLI - Firewall Management Command Line Interface
+    f"""
+    🛡️  {APP_NAME} CLI - Firewall Management Command Line Interface
     
     Manage domains, IPs, IP ranges, settings, and more through the command line.
     All operations use the same business logic as the web interface.
     
-    \b
+    \\b
     Quick Examples:
-      dnsniper-cli health                    # Check system health
-      dnsniper-cli domains list              # List all domains
-      dnsniper-cli domains add bad.com --list-type blacklist
-      dnsniper-cli ips add 1.2.3.4 --list-type blacklist
-      dnsniper-cli settings list             # Show all settings
+      {APP_NAME.lower()}-cli health                    # Check system health
+      {APP_NAME.lower()}-cli domains list              # List all domains
+      {APP_NAME.lower()}-cli domains add bad.com --list-type blacklist
+      {APP_NAME.lower()}-cli ips add 1.2.3.4 --list-type blacklist
+      {APP_NAME.lower()}-cli settings list             # Show all settings
     
-    \b
+    \\b
     Common Usage Patterns:
-      dnsniper-cli domains list --list-type blacklist --search evil
-      dnsniper-cli logs list --hours 12 --action block
-      dnsniper-cli sources trigger           # Manual update
+      {APP_NAME.lower()}-cli domains list --list-type blacklist --search evil
+      {APP_NAME.lower()}-cli logs list --hours 12 --action block
+      {APP_NAME.lower()}-cli sources trigger           # Manual update
     
-    Use 'dnsniper-cli COMMAND --help' for detailed help on any command.
+    Use '{APP_NAME.lower()}-cli COMMAND --help' for detailed help on any command.
     """
     pass
 

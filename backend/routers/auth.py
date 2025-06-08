@@ -14,8 +14,12 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
-# Rate limiting storage (in production, use Redis)
-rate_limit_storage = {}
+# Rate limiting configuration - IP-based only for security
+RATE_LIMIT_CONFIG = {
+    "max_attempts_per_ip": 5,
+    "window_minutes": 15,
+    "lockout_duration_minutes": 30
+}
 
 class LoginRequest(BaseModel):
     username: str
@@ -91,34 +95,84 @@ class APITokenResponse(BaseModel):
         from_attributes = True
 
 def get_client_ip(request: Request) -> str:
-    """Get client IP address from request"""
+    """Get client IP address from request with proper proxy support"""
+    # Check X-Forwarded-For (load balancer/proxy)
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
+        # Take the first IP (client IP) from the chain
         return forwarded.split(",")[0].strip()
+    
+    # Check X-Real-IP (nginx proxy)
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+    
+    # Fallback to direct connection
     return request.client.host
 
-def check_rate_limit(ip_address: str, max_attempts: int = 5, window_minutes: int = 15) -> bool:
-    """Check if IP address is rate limited"""
-    now = datetime.utcnow()
-    window_start = now - timedelta(minutes=window_minutes)
+def check_rate_limit_db(db: Session, ip_address: str) -> dict:
+    """Check IP-based rate limiting using database with precise timing"""
+    from datetime import datetime, timedelta
     
-    # Clean old entries
-    if ip_address in rate_limit_storage:
-        rate_limit_storage[ip_address] = [
-            attempt_time for attempt_time in rate_limit_storage[ip_address]
-            if attempt_time > window_start
-        ]
-    
-    # Check current attempts
-    attempts = len(rate_limit_storage.get(ip_address, []))
-    return attempts < max_attempts
-
-def record_rate_limit_attempt(ip_address: str):
-    """Record a rate limit attempt"""
     now = datetime.utcnow()
-    if ip_address not in rate_limit_storage:
-        rate_limit_storage[ip_address] = []
-    rate_limit_storage[ip_address].append(now)
+    window_start = now - timedelta(minutes=RATE_LIMIT_CONFIG["window_minutes"])
+    
+    # Check IP-based rate limiting only
+    ip_attempts = db.query(LoginAttempt).filter(
+        LoginAttempt.ip_address == ip_address,
+        LoginAttempt.success == False,
+        LoginAttempt.created_at >= window_start
+    ).count()
+    
+    # Check for active lockout periods (double the threshold for lockout)
+    lockout_start = now - timedelta(minutes=RATE_LIMIT_CONFIG["lockout_duration_minutes"])
+    recent_lockout_attempts = db.query(LoginAttempt).filter(
+        LoginAttempt.ip_address == ip_address,
+        LoginAttempt.success == False,
+        LoginAttempt.created_at >= lockout_start
+    ).count()
+    
+    # Determine if rate limited
+    ip_limited = ip_attempts >= RATE_LIMIT_CONFIG["max_attempts_per_ip"]
+    lockout_active = recent_lockout_attempts >= (RATE_LIMIT_CONFIG["max_attempts_per_ip"] * 2)
+    
+    # Calculate precise remaining time in seconds
+    remaining_seconds = 0
+    lockout_type = None
+    
+    if lockout_active:
+        # Find the most recent failed attempt to calculate lockout end time
+        most_recent_attempt = db.query(LoginAttempt).filter(
+            LoginAttempt.ip_address == ip_address,
+            LoginAttempt.success == False,
+            LoginAttempt.created_at >= lockout_start
+        ).order_by(LoginAttempt.created_at.desc()).first()
+        
+        if most_recent_attempt:
+            lockout_end = most_recent_attempt.created_at + timedelta(minutes=RATE_LIMIT_CONFIG["lockout_duration_minutes"])
+            remaining_seconds = max(0, int((lockout_end - now).total_seconds()))
+            lockout_type = "ip_locked"
+    elif ip_limited:
+        # Find the oldest attempt in the window to calculate when it expires
+        oldest_attempt = db.query(LoginAttempt).filter(
+            LoginAttempt.ip_address == ip_address,
+            LoginAttempt.success == False,
+            LoginAttempt.created_at >= window_start
+        ).order_by(LoginAttempt.created_at.asc()).first()
+        
+        if oldest_attempt:
+            window_end = oldest_attempt.created_at + timedelta(minutes=RATE_LIMIT_CONFIG["window_minutes"])
+            remaining_seconds = max(0, int((window_end - now).total_seconds()))
+            lockout_type = "rate_limited"
+    
+    return {
+        "allowed": not (ip_limited or lockout_active),
+        "ip_attempts": ip_attempts,
+        "lockout_active": lockout_active,
+        "remaining_seconds": remaining_seconds,
+        "lockout_type": lockout_type,
+        "retry_after_minutes": RATE_LIMIT_CONFIG["lockout_duration_minutes"] if lockout_active else RATE_LIMIT_CONFIG["window_minutes"]
+    }
 
 async def get_current_user(
     request: Request,
@@ -180,49 +234,111 @@ async def login(
     response: Response,
     db: Session = Depends(get_db)
 ):
-    """Login endpoint with rate limiting"""
+    """Optimized login endpoint with instant rate limit feedback"""
     client_ip = get_client_ip(request)
+    user_agent = request.headers.get("User-Agent", "")
     
-    # Check rate limiting
-    if not check_rate_limit(client_ip):
-        logger.warning(f"Rate limit exceeded for IP {client_ip}")
+    # Enhanced rate limiting check
+    rate_limit_result = check_rate_limit_db(db, client_ip)
+    
+    if not rate_limit_result["allowed"]:
+        # Log the rate limit violation
+        logger.warning(
+            f"Rate limit exceeded for IP {client_ip}. "
+            f"IP attempts: {rate_limit_result['ip_attempts']}, "
+            f"Lockout active: {rate_limit_result['lockout_active']}, "
+            f"Remaining: {rate_limit_result['remaining_seconds']}s"
+        )
+        
+        # DO NOT record failed attempts for rate limiting - this creates a feedback loop!
+        # Only log the violation for monitoring purposes
+        
+        # Format remaining time for user-friendly message
+        remaining_seconds = rate_limit_result["remaining_seconds"]
+        if remaining_seconds > 60:
+            remaining_minutes = remaining_seconds // 60
+            remaining_secs = remaining_seconds % 60
+            time_message = f"{remaining_minutes} minute{'s' if remaining_minutes != 1 else ''}"
+            if remaining_secs > 0:
+                time_message += f" and {remaining_secs} second{'s' if remaining_secs != 1 else ''}"
+        else:
+            time_message = f"{remaining_seconds} second{'s' if remaining_seconds != 1 else ''}"
+        
+        if rate_limit_result["lockout_type"] == "ip_locked":
+            detail_message = f"IP temporarily locked due to too many failed attempts. Try again in {time_message}."
+        else:
+            detail_message = f"Too many login attempts. Try again in {time_message}."
+        
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many login attempts. Please try again later."
+            detail=detail_message,
+            headers={
+                "Retry-After": str(remaining_seconds),
+                "X-RateLimit-Remaining-Seconds": str(remaining_seconds),
+                "X-RateLimit-Type": rate_limit_result["lockout_type"] or "rate_limited"
+            }
         )
     
-    # Check database rate limiting
-    recent_failures = LoginAttempt.get_recent_failed_attempts(db, client_ip)
-    if recent_failures >= 10:  # More strict database-based rate limiting
-        logger.warning(f"Database rate limit exceeded for IP {client_ip}")
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many failed login attempts. Please try again later."
-        )
-    
-    # Authenticate user
+    # Authenticate user - NO DELAYS for performance
     user = User.get_by_username(db, login_data.username)
     
     if not user or not user.verify_password(login_data.password):
-        # Record failed attempt
-        LoginAttempt.record_attempt(db, client_ip, login_data.username, success=False)
-        record_rate_limit_attempt(client_ip)
+        # Record failed attempt with detailed info
+        LoginAttempt.record_attempt(
+            db, 
+            client_ip, 
+            login_data.username, 
+            success=False,
+            user_agent=user_agent,
+            reason="invalid_credentials"
+        )
         
-        logger.warning(f"Failed login attempt for username '{login_data.username}' from IP {client_ip}")
+        logger.warning(
+            f"Failed login attempt for username '{login_data.username}' from IP {client_ip}. "
+            f"User-Agent: {user_agent[:100]}..."
+        )
+        
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password"
         )
     
-    # Create session
-    user_agent = request.headers.get("User-Agent", "")
+    # Check if user account is active
+    if not user.is_active:
+        LoginAttempt.record_attempt(db, client_ip, login_data.username, success=False, reason="account_disabled")
+        logger.warning(f"Login attempt for disabled account '{login_data.username}' from IP {client_ip}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account is disabled"
+        )
+    
+    # Create session with enhanced security
     session = UserSession.create_session(db, user.id, client_ip, user_agent)
     
     # Record successful attempt
-    LoginAttempt.record_attempt(db, client_ip, login_data.username, success=True)
+    LoginAttempt.record_attempt(
+        db, 
+        client_ip, 
+        login_data.username, 
+        success=True,
+        user_agent=user_agent,
+        session_token=session.session_token[:8] + "..."  # Partial token for logging
+    )
+    
+    # Update user's last login
     user.update_last_login(db)
     
-    logger.info(f"Successful login for user '{user.username}' from IP {client_ip}")
+    # Log successful login with more details
+    logger.info(
+        f"Successful login for user '{user.username}' from IP {client_ip}. "
+        f"Session: {session.session_token[:8]}..., "
+        f"Default password: {user.is_default_password}"
+    )
+    
+    # Security response headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
     
     return {
         "message": "Login successful",
@@ -233,7 +349,8 @@ async def login(
             "is_default_password": user.is_default_password,
             "last_login": user.last_login,
             "created_at": user.created_at
-        }
+        },
+        "security_notice": "Please change default credentials" if user.is_default_password else None
     }
 
 @router.post("/logout")
@@ -433,4 +550,134 @@ async def cleanup_expired_tokens(
     return {
         "message": f"Cleaned up {cleaned_count} expired API tokens",
         "cleaned_count": cleaned_count
-    } 
+    }
+
+def detect_suspicious_activity(db: Session, ip_address: str) -> dict:
+    """Detect suspicious login activity patterns"""
+    from datetime import datetime, timedelta
+    
+    now = datetime.utcnow()
+    last_24h = now - timedelta(hours=24)
+    last_hour = now - timedelta(hours=1)
+    
+    # Get all attempts from this IP in last 24 hours
+    attempts_24h = db.query(LoginAttempt).filter(
+        LoginAttempt.ip_address == ip_address,
+        LoginAttempt.created_at >= last_24h
+    ).all()
+    
+    # Analyze patterns
+    total_attempts = len(attempts_24h)
+    failed_attempts = len([a for a in attempts_24h if not a.success])
+    success_attempts = len([a for a in attempts_24h if a.success])
+    
+    # Check for multiple usernames (credential stuffing)
+    unique_usernames = len(set(a.username for a in attempts_24h if a.username))
+    
+    # Check for rapid succession attempts
+    attempts_last_hour = len([a for a in attempts_24h if a.created_at >= last_hour])
+    
+    # Check for multiple user agents (potential bot)
+    unique_user_agents = len(set(a.user_agent for a in attempts_24h if a.user_agent))
+    
+    # Determine threat level
+    threat_level = "low"
+    warnings = []
+    
+    if failed_attempts > 20:
+        threat_level = "high"
+        warnings.append("Excessive failed login attempts")
+    elif failed_attempts > 10:
+        threat_level = "medium"
+        warnings.append("High number of failed attempts")
+    
+    if unique_usernames > 5:
+        threat_level = "high"
+        warnings.append("Multiple username attempts (credential stuffing)")
+    
+    if attempts_last_hour > 30:
+        threat_level = "high"
+        warnings.append("Rapid succession login attempts")
+    
+    if unique_user_agents > 3 and total_attempts > 10:
+        threat_level = "medium"
+        warnings.append("Multiple user agents detected")
+    
+    if success_attempts > 0 and failed_attempts > success_attempts * 10:
+        threat_level = "medium"
+        warnings.append("High failure rate despite some successes")
+    
+    return {
+        "ip_address": ip_address,
+        "threat_level": threat_level,
+        "total_attempts_24h": total_attempts,
+        "failed_attempts_24h": failed_attempts,
+        "success_attempts_24h": success_attempts,
+        "unique_usernames": unique_usernames,
+        "attempts_last_hour": attempts_last_hour,
+        "unique_user_agents": unique_user_agents,
+        "warnings": warnings,
+        "recommend_block": threat_level == "high"
+    }
+
+def migrate_login_attempts_table(db: Session) -> bool:
+    """Migrate login_attempts table to add new security columns"""
+    try:
+        from sqlalchemy import text
+        
+        # Check if columns already exist
+        result = db.execute(text("PRAGMA table_info(login_attempts)"))
+        columns = [row[1] for row in result.fetchall()]
+        
+        migrations_needed = []
+        
+        if 'user_agent' not in columns:
+            migrations_needed.append("ALTER TABLE login_attempts ADD COLUMN user_agent TEXT")
+        
+        if 'reason' not in columns:
+            migrations_needed.append("ALTER TABLE login_attempts ADD COLUMN reason TEXT")
+        
+        if 'session_token_partial' not in columns:
+            migrations_needed.append("ALTER TABLE login_attempts ADD COLUMN session_token_partial TEXT")
+        
+        # Execute migrations
+        for migration in migrations_needed:
+            db.execute(text(migration))
+        
+        if migrations_needed:
+            db.commit()
+            logger.info(f"Applied {len(migrations_needed)} security migrations to login_attempts table")
+        
+        return True
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to migrate login_attempts table: {e}")
+        return False
+
+# Security monitoring endpoint
+@router.get("/security/analysis/{ip_address}")
+async def analyze_ip_security(
+    ip_address: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Analyze security threats from an IP address (admin only)"""
+    analysis = detect_suspicious_activity(db, ip_address)
+    
+    # Add recent attempts for context
+    recent_attempts = db.query(LoginAttempt).filter(
+        LoginAttempt.ip_address == ip_address
+    ).order_by(LoginAttempt.created_at.desc()).limit(50).all()
+    
+    analysis["recent_attempts"] = [
+        {
+            "username": attempt.username,
+            "success": attempt.success,
+            "reason": attempt.reason,
+            "user_agent": attempt.user_agent[:100] if attempt.user_agent else None,
+            "created_at": attempt.created_at.isoformat()
+        }
+        for attempt in recent_attempts
+    ]
+    
+    return analysis 

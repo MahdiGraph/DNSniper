@@ -214,7 +214,7 @@ class LiveEventsBroadcaster:
         """Get number of connected clients"""
         with self._client_lock:
             return len(self.connected_clients)
-    
+
     def get_status(self) -> Dict[str, Any]:
         """Get broadcaster status and statistics"""
         with self._client_lock:

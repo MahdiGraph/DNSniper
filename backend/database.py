@@ -51,7 +51,7 @@ def get_db():
         db.rollback()
         raise
     finally:
-        db.close()
+        db.close() 
 
 # Context manager for manual database sessions
 class DatabaseSession:

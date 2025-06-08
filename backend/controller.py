@@ -1683,7 +1683,37 @@ async def get_web_server_config() -> dict:
     """Get current web server configuration"""
     def load_config():
         """Load configuration from config.json with defaults"""
-        config_path = Path(__file__).parent.parent / "config.json"
+        
+        def get_base_directory():
+            """Get the correct base directory for both development and packaged environments"""
+            import sys
+            import os
+            
+            # Check if we're running from a PyInstaller bundle
+            if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                # We're running from a PyInstaller bundle - use the actual binary's directory
+                return Path(os.path.dirname(os.path.abspath(sys.argv[0])))
+            else:
+                # We're running from source - use the current file's directory
+                return Path(__file__).parent.parent
+        
+        def get_smart_static_path():
+            """Intelligently determine the correct static path default"""
+            base_dir = get_base_directory()
+            
+            # Look for packaged structure (static/ directory next to binary/script)
+            if (base_dir / "static").exists():
+                return "static/"
+            
+            # Look for development structure (frontend/build relative to backend)
+            elif (base_dir / "../frontend/build").exists():
+                return "../frontend/build"
+            
+            # Default to development path as fallback
+            else:
+                return "../frontend/build"
+        
+        config_path = get_base_directory() / "config.json"
         
         # Default configuration
         default_config = {
@@ -1692,7 +1722,7 @@ async def get_web_server_config() -> dict:
                 "port": 8000
             },
             "frontend": {
-                "static_path": "../frontend/build"
+                "static_path": get_smart_static_path()
             }
         }
         
@@ -1737,10 +1767,41 @@ async def update_web_server_config(db: Session, host: str, port: int) -> dict:
         
         # Load current config
         def load_config():
-            config_path = Path(__file__).parent.parent / "config.json"
+            
+            def get_base_directory():
+                """Get the correct base directory for both development and packaged environments"""
+                import sys
+                import os
+                
+                # Check if we're running from a PyInstaller bundle
+                if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+                    # We're running from a PyInstaller bundle - use the actual binary's directory
+                    return Path(os.path.dirname(os.path.abspath(sys.argv[0])))
+                else:
+                    # We're running from source - use the current file's directory
+                    return Path(__file__).parent.parent
+            
+            def get_smart_static_path():
+                """Intelligently determine the correct static path default"""
+                base_dir = get_base_directory()
+                
+                # Look for packaged structure (static/ directory next to binary/script)
+                if (base_dir / "static").exists():
+                    return "static/"
+                
+                # Look for development structure (frontend/build relative to backend)
+                elif (base_dir / "../frontend/build").exists():
+                    return "../frontend/build"
+                
+                # Default to development path as fallback
+                else:
+                    return "../frontend/build"
+            
+            config_path = get_base_directory() / "config.json"
+            
             default_config = {
                 "web_server": {"host": "0.0.0.0", "port": 8000},
-                "frontend": {"static_path": "../frontend/build"}
+                "frontend": {"static_path": get_smart_static_path()}
             }
             
             if config_path.exists():
@@ -1758,7 +1819,7 @@ async def update_web_server_config(db: Session, host: str, port: int) -> dict:
             else:
                 return default_config
         
-        config_path = Path(__file__).parent.parent / "config.json"
+        config_path = get_base_directory() / "config.json"
         current_config = load_config()
         
         # Update the configuration

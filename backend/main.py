@@ -2,6 +2,7 @@ import os
 import logging
 import json
 import time
+import argparse
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
@@ -19,25 +20,78 @@ from services.auto_update_service import AutoUpdateService
 from services.firewall_log_monitor import firewall_log_monitor
 from services.live_events import live_events
 from services.scheduler_manager import scheduler_manager
+from version import VERSION, APP_NAME
 import asyncio
 import threading
 from datetime import datetime, timezone, timedelta
 from models.logs import ActionType
 from fastapi.concurrency import run_in_threadpool
 
+# Parse command line arguments only when run directly
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description=f'{APP_NAME} - Advanced Firewall Management Application')
+    parser.add_argument(
+        '-q', '--quiet',
+        action='store_true',
+        help='Run in quiet mode (suppress console logs)'
+    )
+    return parser.parse_args()
+
+# Only parse arguments if running directly (not when imported by uvicorn)
+args = None
+if __name__ == "__main__":
+    args = parse_arguments()
+else:
+    # Default args when imported by uvicorn
+    class DefaultArgs:
+        def __init__(self):
+            self.quiet = False
+    args = DefaultArgs()
+
 # Load configuration from JSON file
 def load_config():
     """Load configuration from config.json with defaults"""
-    config_path = Path(__file__).parent / "config.json"
     
-    # Default configuration
+    def get_base_directory():
+        """Get the correct base directory for both development and packaged environments"""
+        import sys
+        import os
+        
+        # Check if we're running from a PyInstaller bundle
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            # We're running from a PyInstaller bundle - use the actual binary's directory
+            return Path(os.path.dirname(os.path.abspath(sys.argv[0])))
+        else:
+            # We're running from source - use the current file's directory
+            return Path(__file__).parent
+    
+    def get_smart_static_path():
+        """Intelligently determine the correct static path default"""
+        base_dir = get_base_directory()
+        
+        # Look for packaged structure (static/ directory next to binary/script)
+        if (base_dir / "static").exists():
+            return "static/"
+        
+        # Look for development structure (frontend/build relative to backend)
+        elif (base_dir / "../frontend/build").exists():
+            return "../frontend/build"
+        
+        # Default to development path as fallback
+        else:
+            return "../frontend/build"
+    
+    config_path = get_base_directory() / "config.json"
+    
+    # Default configuration with smart static path detection
     default_config = {
         "web_server": {
             "host": "0.0.0.0",
             "port": 8000
         },
         "frontend": {
-            "static_path": "../frontend/build"
+            "static_path": get_smart_static_path()
         }
     }
     
@@ -65,10 +119,21 @@ def load_config():
 config = load_config()
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+if args.quiet:
+    # In quiet mode, only log ERROR and CRITICAL messages to console
+    logging.basicConfig(
+        level=logging.ERROR,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    # Suppress uvicorn access logs completely in quiet mode
+    logging.getLogger("uvicorn.access").setLevel(logging.CRITICAL)
+    logging.getLogger("uvicorn").setLevel(logging.ERROR)
+else:
+    # Normal logging configuration
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 logger = logging.getLogger(__name__)
 
 # Initialize SchedulerManager 
@@ -80,212 +145,226 @@ def get_scheduler_status():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
+    """Application lifespan context manager"""
+    # Startup
+    logger.info("🚀 Starting DNSniper application...")
+    
+    # Create database tables
+    Base.metadata.create_all(bind=engine)
+    
+    # Apply security migrations for enhanced login tracking
     try:
-        # Clean up SQLite WAL and SHM files before database initialization
-        # These files can cause issues if left from previous runs
-        db_path = Path(__file__).parent / "dnsniper.db"
-        wal_file = db_path.with_suffix('.db-wal')
-        shm_file = db_path.with_suffix('.db-shm')
-        
-        for file_path in [wal_file, shm_file]:
-            if file_path.exists():
-                try:
-                    file_path.unlink()
-                    logger.info(f"🧹 Removed SQLite temporary file: {file_path.name}")
-                except Exception as e:
-                    logger.warning(f"⚠️  Could not remove SQLite temporary file: {file_path.name}: {e}")
-        
-        # Create database tables
-        Base.metadata.create_all(bind=engine)
-        # Initialize default settings
+        from routers.auth import migrate_login_attempts_table
         db = SessionLocal()
-        try:
-            # Set default settings if they don't exist
-            default_settings = {
-                "auto_update_enabled": True,
-                "auto_update_interval": 3600,  # 1 hour in seconds
-                "rule_expiration": 86400,  # 24 hours in seconds
-                "max_ips_per_domain": 10,
-                "dns_resolver_primary": "1.1.1.1",
-                "dns_resolver_secondary": "8.8.8.8",
-                "automatic_domain_resolution": True,
-                "rate_limit_delay": 1.0,
-                "logging_enabled": False,
-                "max_log_entries": 10000,
-                "log_retention_days": 7,
-                # Critical IPs configuration for auto-update protection (IPv4 and IPv6 separated)
-                # NOTE: Dynamic detection (local network, DNS resolvers, public IP) happens automatically at runtime
-                "critical_ipv4_ips_ranges": [
-                    # Loopback and null addresses
-                    "0.0.0.0",
-                    "127.0.0.1",
-                    "127.0.0.0/8",          # Entire loopback range
-                    
-                    # RFC 1918 Private Networks (ALL private ranges)
-                    "10.0.0.0/8",           # Class A private (10.0.0.0 - 10.255.255.255)
-                    "172.16.0.0/12",        # Class B private (172.16.0.0 - 172.31.255.255)
-                    "192.168.0.0/16",       # Class C private (192.168.0.0 - 192.168.255.255)
-                    
-                    # Special Use Networks (RFC 3927, RFC 5735, RFC 6598)
-                    "169.254.0.0/16",       # Link-Local (APIPA)
-                    "100.64.0.0/10",        # Carrier Grade NAT (RFC 6598)
-                    
-                    # Multicast and Reserved
-                    "224.0.0.0/4",          # Multicast (224.0.0.0 - 239.255.255.255)
-                    "240.0.0.0/4",          # Reserved (240.0.0.0 - 255.255.255.255)
-                    
-                    # Special Documentation/Testing (RFC 5737)
-                    "192.0.2.0/24",         # TEST-NET-1 (documentation)
-                    "198.51.100.0/24",      # TEST-NET-2 (documentation)
-                    "203.0.113.0/24",       # TEST-NET-3 (documentation)
-                    
-                    # Benchmarking (RFC 2544)
-                    "198.18.0.0/15",        # Network benchmark tests
-                    
-                    # Common DNS servers (to prevent accidental blocking)
-                    "1.1.1.1",              # Cloudflare
-                    "1.0.0.1",              # Cloudflare
-                    "8.8.8.8",              # Google
-                    "8.8.4.4",              # Google
-                    "9.9.9.9",              # Quad9
-                    "208.67.222.222",       # OpenDNS
-                    "208.67.220.220",       # OpenDNS
-                ],  # List of static critical IPv4 addresses and ranges that should never be auto-blocked
-                "critical_ipv6_ips_ranges": [
-                    # Loopback and null addresses
-                    "::",                   # Unspecified address
-                    "::1",                  # Loopback
-                    
-                    # Private/Local Networks (RFC 4193)
-                    "fc00::/7",             # Unique Local Addresses (fc00:: - fdff::)
-                    "fe80::/10",            # Link-Local Addresses
-                    
-                    # Special Networks
-                    "ff00::/8",             # Multicast
-                    "::/128",               # Unspecified
-                    "::1/128",              # Loopback
-                    
-                    # Documentation/Testing (RFC 3849)
-                    "2001:db8::/32",        # Documentation prefix
-                    
-                    # 6to4 and Teredo
-                    "2002::/16",            # 6to4 addressing
-                    "2001::/32",            # Teredo tunneling
-                    
-                    # Common IPv6 DNS servers
-                    "2606:4700:4700::1111", # Cloudflare
-                    "2606:4700:4700::1001", # Cloudflare
-                    "2001:4860:4860::8888", # Google
-                    "2001:4860:4860::8844", # Google
-                    "2620:fe::fe",          # Quad9
-                    "2620:0:ccc::2",        # OpenDNS
-                    "2620:0:ccd::2",        # OpenDNS
-                ],  # List of static critical IPv6 addresses and ranges that should never be auto-blocked
-                # SSL configuration
-                "enable_ssl": False,  # Enable SSL/HTTPS support (master switch)
-                "force_https": False,  # Force HTTP to HTTPS redirection (requires SSL configuration)
-                "ssl_domain": "",    # Domain name for SSL certificate (required for HTTPS)
-                "ssl_certfile": "",  # Path to SSL certificate file (PEM) (required for HTTPS)
-                "ssl_keyfile": ""    # Path to SSL private key file (PEM) (required for HTTPS)
-            }
-            
-            # MIGRATION: Remove old dns_resolver_ipv4/ipv6, migrate to new fields
-            v4 = db.query(Setting).filter(Setting.key == "dns_resolver_ipv4").first()
-            v6 = db.query(Setting).filter(Setting.key == "dns_resolver_ipv6").first()
-            if v4:
-                Setting.set_setting(db, "dns_resolver_primary", v4.value, "Primary DNS resolver")
-                db.delete(v4)
-            if v6:
-                Setting.set_setting(db, "dns_resolver_secondary", v6.value, "Secondary DNS resolver")
-                db.delete(v6)
-            
-            # MIGRATION: Rename confusing "manual_domain_resolution" to "automatic_domain_resolution"
-            old_setting = db.query(Setting).filter(Setting.key == "manual_domain_resolution").first()
-            if old_setting:
-                Setting.set_setting(db, "automatic_domain_resolution", old_setting.get_value(), 
-                                  "Automatically resolve manually-added domains to IPs during auto-update cycles")
-                db.delete(old_setting)
-                logger.info("Migrated manual_domain_resolution to automatic_domain_resolution")
-            
-            db.commit()
-            
-            for key, value in default_settings.items():
-                setting = db.query(Setting).filter(Setting.key == key).first()
-                if not setting:
-                    Setting.set_setting(db, key, value)
-            db.commit()
-            # Create default admin user
-            User.create_default_admin(db)
-        except Exception as e:
-            logger.error(f"Application startup failed: {e}")
-            db = SessionLocal()
-            Log.create_error_log(db, f"Application startup failed: {e}", context="lifespan", mode="manual")
-            Log.cleanup_old_logs(db)
-            db.close()
-            raise
+        migrate_login_attempts_table(db)
         db.close()
-        # Now log that the app is starting, after tables and settings are ready
-        db = SessionLocal()
-        Log.create_rule_log(db, ActionType.update, None, "Starting DNSniper application...", mode="manual")
-        Log.create_rule_log(db, ActionType.update, None, "Database tables created/verified", mode="manual")
-        Log.cleanup_old_logs(db)
-        db.close()
-        # Initialize firewall
-        try:
-            firewall = FirewallService()
-            firewall.initialize_firewall()
-            db = SessionLocal()
-            Log.create_rule_log(db, ActionType.update, None, "Firewall initialized successfully", mode="manual")
-            Log.cleanup_old_logs(db)
-            db.close()
-        except Exception as e:
-            logger.error(f"Failed to initialize firewall: {e}")
-            db = SessionLocal()
-            Log.create_error_log(db, f"Failed to initialize firewall: {e}", context="lifespan", mode="manual")
-            Log.cleanup_old_logs(db)
-            db.close()
-        
-        # Start firewall log monitoring if logging is enabled
-        db = SessionLocal()
-        logging_enabled = Setting.get_setting(db, "logging_enabled", False)
-        if logging_enabled:
-            firewall_log_monitor.start_monitoring()
-            Log.create_rule_log(db, ActionType.update, None, "Firewall log monitoring enabled and started", mode="manual")
-        else:
-            Log.create_rule_log(db, ActionType.update, None, "Firewall log monitoring disabled (logging_enabled=False)", mode="manual")
-        Log.cleanup_old_logs(db)
-        db.close()
-        
-        # Start simple background scheduler
-        scheduler_manager.start_scheduler()
-        
-        yield
     except Exception as e:
-        logger.error(f"Application startup failed: {e}")
-        db = SessionLocal()
-        Log.create_error_log(db, f"Application startup failed: {e}", context="lifespan", mode="manual")
-        Log.cleanup_old_logs(db)
-        db.close()
-        raise
-    finally:
-        # Stop simple scheduler
-        scheduler_manager.stop_scheduler()
-        # Cleanup
-        db = SessionLocal()
-        Log.create_rule_log(db, ActionType.update, None, "Shutting down DNSniper application...", mode="manual")
-        Log.cleanup_old_logs(db)
-        db.close()
+        logger.warning(f"Security migration warning: {e}")
+    
+    # Initialize database with default admin user
+    db = SessionLocal()
+    try:
+        User.create_default_admin(db)
+        logger.info("✅ Default admin user initialized")
         
-        # Stop firewall log monitoring
-        firewall_log_monitor.stop_monitoring()
+        # Initialize default settings with comprehensive configuration
+        default_settings = {
+            "auto_update_enabled": True,
+            "auto_update_interval": 21600,  # 6 hours in seconds
+            "rule_expiration": 86400,  # 24 hours in seconds
+            "max_ips_per_domain": 10,
+            "dns_resolver_primary": "1.1.1.1",
+            "dns_resolver_secondary": "8.8.8.8",
+            "automatic_domain_resolution": True,
+            "rate_limit_delay": 1.0,
+            "logging_enabled": True,
+            "max_log_entries": 10000,
+            "log_retention_days": 7,
+            # Critical IPs configuration for auto-update protection (IPv4 and IPv6 separated)
+            # NOTE: Dynamic detection (local network, DNS resolvers, public IP) happens automatically at runtime
+            "critical_ipv4_ips_ranges": [
+                # Loopback and null addresses
+                "0.0.0.0",
+                "127.0.0.1",
+                "127.0.0.0/8",          # Entire loopback range
+                
+                # RFC 1918 Private Networks (ALL private ranges)
+                "10.0.0.0/8",           # Class A private (10.0.0.0 - 10.255.255.255)
+                "172.16.0.0/12",        # Class B private (172.16.0.0 - 172.31.255.255)
+                "192.168.0.0/16",       # Class C private (192.168.0.0 - 192.168.255.255)
+                
+                # Special Use Networks (RFC 3927, RFC 5735, RFC 6598)
+                "169.254.0.0/16",       # Link-Local (APIPA)
+                "100.64.0.0/10",        # Carrier Grade NAT (RFC 6598)
+                
+                # Multicast and Reserved
+                "224.0.0.0/4",          # Multicast (224.0.0.0 - 239.255.255.255)
+                "240.0.0.0/4",          # Reserved (240.0.0.0 - 255.255.255.255)
+                
+                # Special Documentation/Testing (RFC 5737)
+                "192.0.2.0/24",         # TEST-NET-1 (documentation)
+                "198.51.100.0/24",      # TEST-NET-2 (documentation)
+                "203.0.113.0/24",       # TEST-NET-3 (documentation)
+                
+                # Benchmarking (RFC 2544)
+                "198.18.0.0/15",        # Network benchmark tests
+                
+                # Common DNS servers (to prevent accidental blocking)
+                "1.1.1.1",              # Cloudflare
+                "1.0.0.1",              # Cloudflare
+                "8.8.8.8",              # Google
+                "8.8.4.4",              # Google
+                "9.9.9.9",              # Quad9
+                "208.67.222.222",       # OpenDNS
+                "208.67.220.220",       # OpenDNS
+            ],  # List of static critical IPv4 addresses and ranges that should never be auto-blocked
+            "critical_ipv6_ips_ranges": [
+                # Loopback and null addresses
+                "::",                   # Unspecified address
+                "::1",                  # Loopback
+                
+                # Private/Local Networks (RFC 4193)
+                "fc00::/7",             # Unique Local Addresses (fc00:: - fdff::)
+                "fe80::/10",            # Link-Local Addresses
+                
+                # Special Networks
+                "ff00::/8",             # Multicast
+                "::/128",               # Unspecified
+                "::1/128",              # Loopback
+                
+                # Documentation/Testing (RFC 3849)
+                "2001:db8::/32",        # Documentation prefix
+                
+                # 6to4 and Teredo
+                "2002::/16",            # 6to4 addressing
+                "2001::/32",            # Teredo tunneling
+                
+                # Common IPv6 DNS servers
+                "2606:4700:4700::1111", # Cloudflare
+                "2606:4700:4700::1001", # Cloudflare
+                "2001:4860:4860::8888", # Google
+                "2001:4860:4860::8844", # Google
+                "2620:fe::fe",          # Quad9
+                "2620:0:ccc::2",        # OpenDNS
+                "2620:0:ccd::2",        # OpenDNS
+            ],  # List of static critical IPv6 addresses and ranges that should never be auto-blocked
+            # SSL configuration
+            "enable_ssl": False,  # Enable SSL/HTTPS support (master switch)
+            "force_https": False,  # Force HTTP to HTTPS redirection (requires SSL configuration)
+            "ssl_domain": "",    # Domain name for SSL certificate (required for HTTPS)
+            "ssl_certfile": "",  # Path to SSL certificate file (PEM) (required for HTTPS)
+            "ssl_keyfile": "",    # Path to SSL private key file (PEM) (required for HTTPS)
+            "default_auto_update_sources": []
+        }
+        
+        # MIGRATION: Remove old dns_resolver_ipv4/ipv6, migrate to new fields
+        v4 = db.query(Setting).filter(Setting.key == "dns_resolver_ipv4").first()
+        v6 = db.query(Setting).filter(Setting.key == "dns_resolver_ipv6").first()
+        if v4:
+            Setting.set_setting(db, "dns_resolver_primary", v4.value, "Primary DNS resolver")
+            db.delete(v4)
+        if v6:
+            Setting.set_setting(db, "dns_resolver_secondary", v6.value, "Secondary DNS resolver")
+            db.delete(v6)
+        
+        # MIGRATION: Rename confusing "manual_domain_resolution" to "automatic_domain_resolution"
+        old_setting = db.query(Setting).filter(Setting.key == "manual_domain_resolution").first()
+        if old_setting:
+            Setting.set_setting(db, "automatic_domain_resolution", old_setting.get_value(), 
+                              "Automatically resolve manually-added domains to IPs during auto-update cycles")
+            db.delete(old_setting)
+            logger.info("Migrated manual_domain_resolution to automatic_domain_resolution")
+        
+        db.commit()
+        
+        # Set default settings if they don't exist
+        for key, value in default_settings.items():
+            setting = db.query(Setting).filter(Setting.key == key).first()
+            if not setting:
+                Setting.set_setting(db, key, value)
+        db.commit()
+        
+        # Initialize default auto-update sources if they don't exist
+        default_sources = [
+            {
+                "url": "https://raw.githubusercontent.com/MahdiGraph/DNSniper/refs/heads/main/blacklist-default.txt",
+                "name": "DNSniper Default Blacklist",
+                "list_type": "blacklist"
+            }
+        ]
+        
+        for source_config in default_sources:
+            existing_source = db.query(AutoUpdateSource).filter(AutoUpdateSource.url == source_config["url"]).first()
+            if not existing_source:
+                default_source = AutoUpdateSource(
+                    url=source_config["url"],
+                    name=source_config["name"],
+                    is_active=True,
+                    list_type=source_config["list_type"]
+                )
+                db.add(default_source)
+                logger.info(f"✅ Default auto-update source initialized: {source_config['name']}")
+        db.commit()
+        
+        logger.info("✅ Default settings initialized")
+    except Exception as e:
+        logger.error(f"Failed to create default admin and settings: {e}")
+    finally:
+        db.close()
+    
+    # Clean up old temporary SQLite files
+    temp_files = ["dnsniper.db-wal", "dnsniper.db-shm"]
+    for temp_file in temp_files:
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+                logger.info(f"🧹 Removed SQLite temporary file: {temp_file}")
+            except Exception as e:
+                logger.warning(f"Could not remove temporary file {temp_file}: {e}")
+    
+    # Start the auto-update scheduler
+    try:
+        if scheduler_manager.start_scheduler():
+            logger.info("🔄 Auto-update scheduler started successfully")
+        else:
+            logger.warning("⚠️ Auto-update scheduler was already running")
+    except Exception as e:
+        logger.error(f"❌ Failed to start auto-update scheduler: {e}")
+    
+    # Initialize firewall system
+    try:
+        from services.firewall_service import FirewallService
+        firewall = FirewallService()
+        firewall.initialize_firewall()
+        logger.info("🔥 Firewall system initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize firewall system: {e}")
+    
+    # Application is ready
+    logger.info("✅ DNSniper application startup completed")
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Shutting down DNSniper application...")
+    
+    # Stop the auto-update scheduler
+    try:
+        if scheduler_manager.stop_scheduler(timeout=10):
+            logger.info("🔄 Auto-update scheduler stopped successfully")
+        else:
+            logger.warning("⚠️ Auto-update scheduler was not running or failed to stop")
+    except Exception as e:
+        logger.error(f"❌ Failed to stop auto-update scheduler: {e}")
+    
+    logger.info("✅ DNSniper application shutdown completed")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="DNSniper API",
-    description="""
-## DNSniper - Firewall Management API
+    title=f"{APP_NAME} API",
+    description=f"""
+## {APP_NAME} - Firewall Management API
 
 A comprehensive API for managing firewall rules, domain blacklists/whitelists, IP addresses, and automated threat intelligence updates.
 
@@ -301,7 +380,7 @@ A comprehensive API for managing firewall rules, domain blacklists/whitelists, I
 
 ### Authentication
 
-Most endpoints require authentication using Bearer tokens. Get your API token from the DNSniper web interface:
+Most endpoints require authentication using Bearer tokens. Get your API token from the {APP_NAME} web interface:
 
 1. Navigate to **API Tokens** page
 2. Click **Create Token**
@@ -316,9 +395,9 @@ The API implements rate limiting to prevent abuse. If you exceed rate limits, yo
 
 For additional support, visit the built-in API documentation at `/api-documentation` or contact your system administrator.
     """,
-    version="1.0.0",
+    version=VERSION,
     contact={
-        "name": "DNSniper API Support",
+        "name": f"{APP_NAME} API Support",
         "url": "/api-documentation",
     },
     license_info={
@@ -342,12 +421,27 @@ For additional support, visit the built-in API documentation at `/api-documentat
 
 # Add middleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# CORS configuration - Allow all origins for open source project
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"],  # Open source project - allow access from anywhere
+    allow_credentials=False,  # Must be False when allow_origins=["*"]
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Requested-With",
+        "Accept",
+        "Origin",
+        "User-Agent",
+        "DNT",
+        "Cache-Control",
+        "X-Forwarded-For",
+        "X-Real-IP"
+    ],
+    expose_headers=["X-Total-Count", "X-Content-Range"],
+    max_age=86400,  # 24 hours
 )
 
 # Add SSL/HTTPS middleware for redirect and HSTS
@@ -378,6 +472,7 @@ async def auth_middleware(request: Request, call_next):
     # Skip auth for certain routes
     excluded_paths = [
         "/api/auth/login",
+        "/api/health",
         "/docs",
         "/openapi.json",
         "/redoc"
@@ -436,28 +531,23 @@ async def auth_middleware(request: Request, call_next):
 # Health check endpoint - placed BEFORE API routers (no auth required)
 @app.get("/api/health",
     summary="Health Check",
-    description="Check system health and database connectivity. This endpoint does not require authentication and provides basic system status information.",
+    description="Check basic service availability. This endpoint does not require authentication and provides minimal status information.",
     tags=["System Health"],
     responses={
         200: {
-            "description": "System is healthy and operational",
+            "description": "Service is available and operational",
             "content": {
                 "application/json": {
                     "example": {
                         "status": "healthy",
                         "timestamp": "2024-01-01T12:00:00Z",
-                        "database": "connected",
-                        "stats": {
-                            "domains": 1250,
-                            "ips": 2340,
-                            "ip_ranges": 45
-                        }
+                        "service": "DNSniper API"
                     }
                 }
             }
         },
         503: {
-            "description": "Service unavailable - system unhealthy",
+            "description": "Service unavailable",
             "content": {
                 "application/json": {
                     "example": {
@@ -468,26 +558,13 @@ async def auth_middleware(request: Request, call_next):
         }
     }
 )
-async def health_check(db: Session = Depends(get_db)):
-    """Health check endpoint"""
+async def health_check():
+    """Minimal health check endpoint - no sensitive information exposed"""
     try:
-        # Test database connection
-        db.execute(text("SELECT 1"))
-        
-        # Get basic stats
-        domain_count = db.query(Domain).count()
-        ip_count = db.query(IP).count()
-        ip_range_count = db.query(IPRange).count()
-        
         return {
             "status": "healthy",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "database": "connected",
-            "stats": {
-                "domains": domain_count,
-                "ips": ip_count,
-                "ip_ranges": ip_range_count
-            }
+            "service": "DNSniper API"
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -735,7 +812,20 @@ app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 
 # Serve React frontend static files
-frontend_build_path = Path(__file__).parent / config['frontend']['static_path']
+def get_app_base_directory():
+    """Get the correct base directory for both development and packaged environments"""
+    import sys
+    import os
+    
+    # Check if we're running from a PyInstaller bundle
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # We're running from a PyInstaller bundle - use the actual binary's directory
+        return Path(os.path.dirname(os.path.abspath(sys.argv[0])))
+    else:
+        # We're running from source - use the current file's directory
+        return Path(__file__).parent
+
+frontend_build_path = get_app_base_directory() / config['frontend']['static_path']
 
 if frontend_build_path.exists():
     # Mount static files
@@ -912,25 +1002,12 @@ def custom_openapi():
             "properties": {
                 "status": {"type": "string"},
                 "timestamp": {"type": "string", "format": "date-time"},
-                "database": {"type": "string"},
-                "stats": {
-                    "type": "object",
-                    "properties": {
-                        "domains": {"type": "integer"},
-                        "ips": {"type": "integer"},
-                        "ip_ranges": {"type": "integer"}
-                    }
-                }
+                "service": {"type": "string"}
             },
             "example": {
                 "status": "healthy",
                 "timestamp": "2024-01-01T12:00:00Z",
-                "database": "connected",
-                "stats": {
-                    "domains": 1250,
-                    "ips": 2340,
-                    "ip_ranges": 45
-                }
+                "service": "DNSniper API"
             }
         }
     })
@@ -1059,7 +1136,7 @@ if __name__ == "__main__":
     
     # Check for SSL configuration in database
     ssl_config = None
-    db_path = Path(__file__).parent / "dnsniper.db"
+    db_path = get_app_base_directory() / "dnsniper.db"
     
     if db_path.exists():
         try:
@@ -1106,18 +1183,25 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"⚠️  Could not read SSL settings from database: {e}")
     
+    # Determine log level for uvicorn based on quiet flag
+    uvicorn_log_level = "error" if args.quiet else "info"
+    
     # Start server
-    print(f"🚀 Starting DNSniper on {host}:{port}")
+    if not args.quiet:
+        print(f"🚀 Starting DNSniper on {host}:{port}")
     
     if ssl_config:
-        print(f"🔒 Starting with SSL/HTTPS support")
+        if not args.quiet:
+            print(f"🔒 Starting with SSL/HTTPS support")
         uvicorn.run(
             app, 
             host=host, 
             port=port,
             ssl_certfile=ssl_config['ssl_certfile'],
-            ssl_keyfile=ssl_config['ssl_keyfile']
+            ssl_keyfile=ssl_config['ssl_keyfile'],
+            log_level=uvicorn_log_level
         )
     else:
-        print(f"🌐 Starting without SSL (HTTP only)")
-        uvicorn.run(app, host=host, port=port) 
+        if not args.quiet:
+            print(f"🌐 Starting without SSL (HTTP only)")
+        uvicorn.run(app, host=host, port=port, log_level=uvicorn_log_level) 

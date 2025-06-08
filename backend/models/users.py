@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from database import Base
 import bcrypt
 import secrets
+import random
 
 
 class User(Base):
@@ -71,15 +72,34 @@ class LoginAttempt(Base):
     ip_address = Column(String, nullable=False, index=True)
     username = Column(String, nullable=True)
     success = Column(Boolean, nullable=False, default=False)
+    user_agent = Column(String, nullable=True)  # Browser/client information
+    reason = Column(String, nullable=True)  # Reason for failure: invalid_credentials, rate_limited, account_disabled
+    session_token_partial = Column(String, nullable=True)  # Partial session token for successful logins
     created_at = Column(DateTime, nullable=False, default=func.now())
 
     @classmethod
-    def record_attempt(cls, db: Session, ip_address: str, username: str = None, success: bool = False):
-        """Record a login attempt"""
+    def record_attempt(cls, db: Session, ip_address: str, username: str = None, success: bool = False, 
+                      user_agent: str = None, reason: str = None, session_token: str = None):
+        """Record a login attempt with enhanced details"""
+        # Only occasionally clean up old attempts to avoid performance issues
+        # Do cleanup roughly 1% of the time (every ~100 attempts)
+        if random.random() < 0.01:
+            from datetime import datetime, timedelta
+            cutoff_time = datetime.utcnow() - timedelta(days=30)
+            try:
+                deleted_count = db.query(cls).filter(cls.created_at < cutoff_time).delete()
+                if deleted_count > 0:
+                    db.commit()  # Commit the cleanup separately
+            except Exception:
+                db.rollback()  # Don't let cleanup failures affect login attempts
+        
         attempt = cls(
             ip_address=ip_address,
             username=username,
-            success=success
+            success=success,
+            user_agent=user_agent[:500] if user_agent else None,  # Limit length
+            reason=reason,
+            session_token_partial=session_token
         )
         db.add(attempt)
         db.commit()

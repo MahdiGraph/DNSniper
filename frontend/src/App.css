@@ -82,24 +82,23 @@ code, pre {
 .app {
   display: flex;
   height: 100vh;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
 }
 
 .main-content {
   flex: 1;
   display: flex;
   flex-direction: column;
-  transition: margin-left 0.3s ease;
-  min-width: 0;
+  overflow: hidden;
+  transition: all 0.3s ease;
 }
 
 .main-content.sidebar-open {
-  margin-left: var(--sidebar-width);
+  margin-left: 250px;
 }
 
 .main-content.sidebar-closed {
-  margin-left: var(--sidebar-collapsed);
+  margin-left: 60px;
 }
 
 /* Header */
@@ -264,10 +263,9 @@ code, pre {
 /* Content */
 .content {
   flex: 1;
-  padding: 1.5rem;
-  overflow-x: auto;
+  padding: 20px;
   overflow-y: auto;
-  min-width: 0;
+  background: #f8f9fa;
 }
 
 /* Page Headers */
@@ -2278,38 +2276,34 @@ code, pre {
   padding: 1rem;
   border-top: 1px solid var(--border);
   background: var(--surface);
-}
-
-.user-info {
-  margin-bottom: 0.75rem;
-}
-
-.user-details {
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.75rem;
 }
 
-.user-name {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.default-password-warning {
+.sidebar-version {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
-  font-size: 0.75rem;
-  color: var(--warning-color);
-  font-weight: 500;
+  justify-content: center;
 }
 
-.logout-button-sidebar {
+.version-text {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.sidebar-github {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.github-link {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  width: 100%;
   padding: 0.5rem 0.75rem;
   background: none;
   border: 1px solid var(--border);
@@ -2317,13 +2311,21 @@ code, pre {
   cursor: pointer;
   color: var(--text-secondary);
   font-size: 0.875rem;
+  text-decoration: none;
   transition: all 0.2s;
+  width: 100%;
+  justify-content: center;
 }
 
-.logout-button-sidebar:hover {
+.github-link:hover {
   background: var(--border);
-  color: var(--danger-color);
-  border-color: var(--danger-color);
+  color: var(--primary-color);
+  border-color: var(--primary-color);
+  text-decoration: none;
+}
+
+.github-link svg {
+  flex-shrink: 0;
 }
 
 /* Welcome Banner */
@@ -4962,4 +4964,138 @@ code, pre {
   .loading-modal p {
     font-size: 0.8rem;
   }
+}
+
+/* Footer Styles */
+.app-footer {
+  background: #ffffff;
+  border-top: 1px solid var(--border);
+  padding: 12px 24px;
+}
+
+.footer-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+}
+
+.footer-brand {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.footer-right {
+  display: flex;
+  align-items: center;
+}
+
+.footer-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  font-size: 14px;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.footer-link:hover {
+  color: var(--primary-color);
+  background: rgba(59, 130, 246, 0.05);
+  border-color: rgba(59, 130, 246, 0.1);
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+.footer-link svg {
+  transition: transform 0.2s ease;
+}
+
+.footer-link:hover svg {
+  transform: scale(1.1);
+}
+
+/* Dark mode footer */
+@media (prefers-color-scheme: dark) {
+  .app-footer {
+    background: #1f2937;
+    border-top-color: #374151;
+  }
+  
+  .footer-brand {
+    color: #e5e7eb;
+  }
+  
+  .footer-link {
+    color: #9ca3af;
+  }
+  
+  .footer-link:hover {
+    color: #60a5fa;
+    background: rgba(96, 165, 250, 0.1);
+    border-color: rgba(96, 165, 250, 0.2);
+  }
+}
+
+/* Mobile responsive footer */
+@media (max-width: 768px) {
+  .app-footer {
+    padding: 10px 16px;
+  }
+  
+  .footer-content {
+    flex-direction: column;
+    gap: 8px;
+    text-align: center;
+  }
+  
+  .footer-brand {
+    font-size: 13px;
+  }
+  
+  .footer-link {
+    font-size: 13px;
+    padding: 6px 10px;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-footer {
+    padding: 8px 12px;
+  }
+  
+  .footer-brand {
+    font-size: 12px;
+  }
+  
+  .footer-link {
+    font-size: 12px;
+    padding: 4px 8px;
+    gap: 4px;
+  }
+  
+  .footer-link svg {
+    width: 14px;
+    height: 14px;
+  }
+}
+
+/* Login Container and related styles start from here */
+.login-container {
 }

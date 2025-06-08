@@ -136,7 +136,7 @@ class SchedulerManager:
                     }
             finally:
                 db.close()
-
+    
     def _scheduler_loop(self):
         """The main scheduler loop with improved resource management"""
         logger.info("[SchedulerManager] Background scheduler thread started")
@@ -275,10 +275,10 @@ class SchedulerManager:
         # Clean up event loop before exit
         if self._event_loop and not self._event_loop.is_closed():
             try:
-                # Broadcast scheduler stop event
+        # Broadcast scheduler stop event
                 self._event_loop.run_until_complete(live_events.broadcast_scheduler_event("scheduler_stopped", {
-                    "message": "Auto-update scheduler stopped",
-                    "status": "stopped"
+            "message": "Auto-update scheduler stopped",
+            "status": "stopped"
                 }))
                 self._event_loop.close()
             except Exception as e:

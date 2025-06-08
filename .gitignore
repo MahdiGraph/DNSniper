@@ -6,11 +6,15 @@ __pycache__/
 *.pyc
 *.pdb
 *.egg-info/
+.pytest_cache/
 
 # Virtual environments
 venv/
 .env/
 .venv/
+packager/
+multi-packager/
+dnsniper*.zip
 
 # SQLite DB
 *.db

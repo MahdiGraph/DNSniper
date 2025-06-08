@@ -28,6 +28,11 @@
   margin-bottom: 1rem;
 }
 
+.login-logo.success {
+  color: var(--success-color);
+  animation: successPulse 1.5s ease-in-out infinite;
+}
+
 .login-header h1 {
   margin: 0.5rem 0;
   color: var(--text-primary);
@@ -148,6 +153,162 @@
   color: var(--danger-color);
   font-size: 0.875rem;
   margin-bottom: 0.5rem;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.error-message > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.error-message.rate-limited {
+  background: #fef3cd;
+  border-color: #fbbf24;
+  color: #92400e;
+}
+
+.countdown-display {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
+  width: 100%;
+  justify-content: center;
+}
+
+.countdown-display small {
+  font-weight: 600;
+  font-family: var(--font-mono, 'Courier New', monospace);
+  font-size: 0.75rem;
+  color: inherit;
+}
+
+.login-button.rate-limited {
+  background: #f59e0b;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.login-button.rate-limited:hover {
+  background: #f59e0b;
+  transform: none;
+  box-shadow: none;
+}
+
+.form-group input:disabled.rate-limited {
+  background: #fef3cd;
+  border-color: #fbbf24;
+  color: #92400e;
+}
+
+/* Countdown animation effect */
+@keyframes countdown-pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.countdown-display {
+  animation: countdown-pulse 2s ease-in-out infinite;
+}
+
+/* Rate limited form styling */
+.login-form:has(.error-message.rate-limited) .form-group input {
+  border-color: #fbbf24;
+}
+
+.login-form:has(.error-message.rate-limited) .login-button {
+  background: #f59e0b;
+  cursor: not-allowed;
+}
+
+/* Enhanced clock icon styling for rate limits */
+.error-message.rate-limited svg {
+  color: #f59e0b;
+  animation: tick 1s ease-in-out infinite;
+}
+
+@keyframes tick {
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(5deg);
+  }
+  75% {
+    transform: rotate(-5deg);
+  }
+}
+
+.success-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 8px;
+  color: var(--success-color);
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-top: 1rem;
+  animation: slideInUp 0.5s ease-out;
+}
+
+.success-message > div {
+  flex: 1;
+}
+
+.success-message small {
+  font-weight: 400;
+  font-size: 0.75rem;
+  color: rgba(34, 197, 94, 0.8);
+  line-height: 1.3;
+}
+
+.loading-progress {
+  margin-top: 1.5rem;
+  animation: slideInUp 0.8s ease-out;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 4px;
+  background: rgba(59, 130, 246, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--primary-color), var(--success-color));
+  border-radius: 2px;
+  animation: progressFill 2s ease-in-out;
+}
+
+@keyframes progressFill {
+  0% {
+    width: 0%;
+    transform: translateX(-100%);
+  }
+  50% {
+    width: 70%;
+    transform: translateX(0%);
+  }
+  100% {
+    width: 100%;
+    transform: translateX(0%);
+  }
 }
 
 .login-footer {
@@ -171,6 +332,28 @@
 .login-footer small {
   color: var(--text-muted);
   font-size: 0.75rem;
+}
+
+@keyframes successPulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 0.8;
+  }
+}
+
+@keyframes slideInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* Responsive design */

@@ -16,9 +16,12 @@ import {
   Layers,
   LogOut,
   Lock,
-  Key
+  Key,
+  Github,
+  ExternalLink
 } from 'lucide-react';
 import './App.css';
+import { APP_NAME, VERSION, GITHUB_URL } from './version';
 
 // Import components
 import Login from './components/Login';
@@ -186,7 +189,7 @@ function Header({ apiStatus, onMenuClick, user, onLogout }) {
         <button className="menu-button" onClick={onMenuClick}>
           <Menu size={20} />
         </button>
-        <h1 className="header-title">DNSniper</h1>
+        <h1 className="header-title">{APP_NAME}</h1>
       </div>
       <div className="header-right">
         <div className={`status-indicator ${apiStatus}`}>
@@ -216,7 +219,7 @@ function Sidebar({ isOpen, onToggle, user, onLogout }) {
       <div className="sidebar-header">
         <div className="sidebar-logo">
           <Shield size={24} />
-          {isOpen && <span>DNSniper</span>}
+          {isOpen && <span>{APP_NAME}</span>}
         </div>
         {isOpen && (
           <button className="sidebar-close" onClick={onToggle}>
@@ -248,6 +251,28 @@ function Sidebar({ isOpen, onToggle, user, onLogout }) {
           );
         })}
       </nav>
+      {isOpen && (
+        <div className="sidebar-footer">
+          <div className="sidebar-version">
+            <span className="version-text">
+              {APP_NAME} v{VERSION}
+            </span>
+          </div>
+          <div className="sidebar-github">
+            <a 
+              href={GITHUB_URL} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="github-link"
+              title={`Visit ${APP_NAME} on GitHub`}
+            >
+              <Github size={16} />
+              <span>GitHub</span>
+              <ExternalLink size={12} />
+            </a>
+          </div>
+        </div>
+      )}
     </aside>
   );
 }
